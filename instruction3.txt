@@ -1,11 +1,1 @@
-@ability: instruction_toggle
-@code:
-// Ability to activate or disable instruction modules
-APP.instruction_toggle = {
-    active: true,
-    toggle: function(status) {
-        this.active = status;
-        console.log("instruction_toggle set to: " + this.status);
-    }
-};
-@end
+(Sent to Gemini Live)
