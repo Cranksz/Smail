@@ -1,1 +1,2781 @@
-(Sent to Gemini Live)
+# ======================================================================
+# bot.txt — Geeny: Emotional Dynamic AI Companion, 18-Seg Tentacle,
+#           Rich Idles (Cape Flaunt, Juggle Toss, Patrol),
+#           On-Demand Eye-Lens Hologram Projector, Point Anywhere,
+#           Weathered Metal, Larger Verlet Cape, Grabbable/Drawable
+#           Board, Spatial Memory, Strict 100% AI Mode & Gemini 3.8 Live
+# ======================================================================
+
+@ability: robot_companion_sphere
+@autorun
+@desc: Geeny — dynamic emotional hi-tech robot with 18-segment tentacle (point anywhere, grab, juggle, cape flaunt, on-demand holo-lens projector), scratched/rusted metal, larger Verlet cape, grabbable/drawable board, spatial memory, .txt tools, strict 100% AI mode, and Gemini 3.8 Live.
+@match: geeny | genie | robot | bot | tentacle | point | juggle | grab | hand me | give me | show me | release | come here | turn around | spin | follow me | board | notes | wikipedia | hologram | holo | الروبوت | جيني | أشر | امسك | اعطني | اترك | تعال | استدر | اللوح | هولوغرام
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return;
+
+  if (typeof APP._botCleanup === 'function') {
+    try { APP._botCleanup(); } catch (_) {}
+  }
+
+  const scene = APP.scene;
+
+  // ====================================================================
+  // 1. REALISTIC SCRATCHED-METAL & SUBTLE RUST PBR TEXTURES
+  // ====================================================================
+  function createWeatheredMetalTextures() {
+    const size = 512;
+    const cCol = document.createElement('canvas');
+    const cRough = document.createElement('canvas');
+    const cBump = document.createElement('canvas');
+    cCol.width = cRough.width = cBump.width = size;
+    cCol.height = cRough.height = cBump.height = size;
+
+    const ctxC = cCol.getContext('2d');
+    const ctxR = cRough.getContext('2d');
+    const ctxB = cBump.getContext('2d');
+
+    const baseGrad = ctxC.createLinearGradient(0, 0, size, size);
+    baseGrad.addColorStop(0, '#2a323d');
+    baseGrad.addColorStop(0.5, '#3b4554');
+    baseGrad.addColorStop(1, '#232a34');
+    ctxC.fillStyle = baseGrad;
+    ctxC.fillRect(0, 0, size, size);
+
+    ctxR.fillStyle = '#585858';
+    ctxR.fillRect(0, 0, size, size);
+    ctxB.fillStyle = '#808080';
+    ctxB.fillRect(0, 0, size, size);
+
+    for (let i = 0; i < 650; i++) {
+      const y = Math.random() * size, x = Math.random() * size, len = 24 + Math.random() * 90;
+      ctxC.strokeStyle = Math.random() > 0.5 ? 'rgba(200,215,235,0.06)' : 'rgba(10,14,20,0.08)';
+      ctxC.lineWidth = 1;
+      ctxC.beginPath(); ctxC.moveTo(x, y); ctxC.lineTo(x + len, y + (Math.random() - 0.5) * 3); ctxC.stroke();
+    }
+
+    for (let i = 0; i < 250; i++) {
+      const x1 = Math.random() * size, y1 = Math.random() * size;
+      const ang = Math.random() * Math.PI * 2, len = 10 + Math.random() * 68;
+      const x2 = x1 + Math.cos(ang) * len, y2 = y1 + Math.sin(ang) * len;
+      const bright = Math.random() > 0.35;
+
+      ctxC.strokeStyle = bright ? 'rgba(215, 228, 244, 0.44)' : 'rgba(10, 14, 20, 0.55)';
+      ctxC.lineWidth = 0.6 + Math.random() * 1.1;
+      ctxC.beginPath(); ctxC.moveTo(x1, y1); ctxC.lineTo(x2, y2); ctxC.stroke();
+
+      ctxR.strokeStyle = bright ? 'rgba(28, 28, 28, 0.72)' : 'rgba(110, 110, 110, 0.5)';
+      ctxR.lineWidth = 1.2;
+      ctxR.beginPath(); ctxR.moveTo(x1, y1); ctxR.lineTo(x2, y2); ctxR.stroke();
+
+      ctxB.strokeStyle = 'rgba(35, 35, 35, 0.75)';
+      ctxB.lineWidth = 1.1;
+      ctxB.beginPath(); ctxB.moveTo(x1, y1); ctxB.lineTo(x2, y2); ctxB.stroke();
+    }
+
+    for (let i = 0; i < 36; i++) {
+      const rx = Math.random() * size, ry = Math.random() * size, rad = 10 + Math.random() * 34;
+      const rg = ctxC.createRadialGradient(rx, ry, 2, rx, ry, rad);
+      rg.addColorStop(0, 'rgba(124, 52, 22, 0.74)');
+      rg.addColorStop(0.55, 'rgba(92, 38, 16, 0.42)');
+      rg.addColorStop(1, 'rgba(60, 25, 10, 0)');
+      ctxC.fillStyle = rg;
+      ctxC.beginPath(); ctxC.arc(rx, ry, rad, 0, Math.PI * 2); ctxC.fill();
+
+      const rr = ctxR.createRadialGradient(rx, ry, 2, rx, ry, rad);
+      rr.addColorStop(0, 'rgba(235, 235, 235, 0.85)');
+      rr.addColorStop(1, 'rgba(200, 200, 200, 0)');
+      ctxR.fillStyle = rr;
+      ctxR.beginPath(); ctxR.arc(rx, ry, rad, 0, Math.PI * 2); ctxR.fill();
+
+      const rb = ctxB.createRadialGradient(rx, ry, 2, rx, ry, rad);
+      rb.addColorStop(0, 'rgba(185, 185, 185, 0.45)');
+      rb.addColorStop(1, 'rgba(128, 128, 128, 0)');
+      ctxB.fillStyle = rb;
+      ctxB.beginPath(); ctxB.arc(rx, ry, rad, 0, Math.PI * 2); ctxB.fill();
+    }
+
+    const map = new THREE.CanvasTexture(cCol);
+    map.colorSpace = THREE.SRGBColorSpace;
+    map.wrapS = map.wrapT = THREE.RepeatWrapping;
+    const roughnessMap = new THREE.CanvasTexture(cRough);
+    roughnessMap.wrapS = roughnessMap.wrapT = THREE.RepeatWrapping;
+    const bumpMap = new THREE.CanvasTexture(cBump);
+    bumpMap.wrapS = bumpMap.wrapT = THREE.RepeatWrapping;
+    return { map, roughnessMap, bumpMap };
+  }
+
+  const metalTex = createWeatheredMetalTextures();
+
+  // ====================================================================
+  // 2. GEENY CHASSIS, ROTATABLE EYE LENS PROJECTOR & STABILIZER WINGS
+  // ====================================================================
+  const botRoot = new THREE.Group();
+  botRoot.name = 'APP_GEENY_ROBOT';
+  botRoot.position.set(0.46, 1.48, -1.05);
+  scene.add(botRoot);
+
+  const bodyGroup = new THREE.Group();
+  botRoot.add(bodyGroup);
+
+  const armorMat = new THREE.MeshStandardMaterial({
+    map: metalTex.map, roughnessMap: metalTex.roughnessMap, bumpMap: metalTex.bumpMap,
+    bumpScale: 0.006, metalness: 0.88, roughness: 0.82
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    map: metalTex.map, roughnessMap: metalTex.roughnessMap, color: 0x94a3b8,
+    metalness: 0.92, roughness: 0.55
+  });
+  const plasmaMat = new THREE.MeshStandardMaterial({
+    color: 0x00f0b4, emissive: 0x00ff9d, emissiveIntensity: 1.35, roughness: 0.15, metalness: 0.1
+  });
+
+  const reactorCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.115, 2), plasmaMat);
+  bodyGroup.add(reactorCore);
+
+  const topShell = new THREE.Mesh(
+    new THREE.SphereGeometry(0.154, 28, 18, 0, Math.PI * 2, 0.12, Math.PI * 0.42),
+    armorMat
+  );
+  topShell.position.y = 0.012;
+  topShell.castShadow = true;
+  bodyGroup.add(topShell);
+
+  const botShell = new THREE.Mesh(
+    new THREE.SphereGeometry(0.148, 28, 18, 0, Math.PI * 2, Math.PI * 0.56, Math.PI * 0.38),
+    armorMat
+  );
+  botShell.position.y = -0.012;
+  botShell.castShadow = true;
+  bodyGroup.add(botShell);
+
+  const eqRing = new THREE.Mesh(new THREE.TorusGeometry(0.156, 0.010, 12, 48), trimMat);
+  eqRing.rotation.x = Math.PI / 2;
+  bodyGroup.add(eqRing);
+
+  const dorsalCrest = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.045, 0.095), trimMat);
+  dorsalCrest.position.set(0, 0.155, -0.02);
+  bodyGroup.add(dorsalCrest);
+
+  const visorGlass = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.156, 0.156, 0.068, 28, 1, true, -Math.PI * 0.36, Math.PI * 0.72),
+    new THREE.MeshStandardMaterial({
+      color: 0x050a14, metalness: 0.95, roughness: 0.08, transparent: true, opacity: 0.92, side: THREE.DoubleSide
+    })
+  );
+  visorGlass.position.y = 0.016;
+  bodyGroup.add(visorGlass);
+
+  const lensDial = new THREE.Group();
+  lensDial.position.set(0, 0.018, 0.156);
+  const dialRing = new THREE.Mesh(new THREE.TorusGeometry(0.064, 0.006, 10, 28), trimMat);
+  const dialNotch = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.016, 0.014), plasmaMat);
+  dialNotch.position.set(0, 0.066, 0.004);
+  lensDial.add(dialRing, dialNotch);
+  bodyGroup.add(lensDial);
+
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x5efce8 });
+  const eyeL = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.022, 6, 12), eyeMat);
+  eyeL.position.set(-0.038, 0.020, 0.152);
+  const eyeR = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.022, 6, 12), eyeMat);
+  eyeR.position.set(0.038, 0.020, 0.152);
+  bodyGroup.add(eyeL, eyeR);
+
+  // On-demand Eye Lens Holographic Projection Cone + Floating Holo Display
+  const lensProjGroup = new THREE.Group();
+  lensProjGroup.position.set(0, 0.018, 0.165);
+  lensProjGroup.visible = false;
+
+  const lensBeam = new THREE.Mesh(
+    new THREE.ConeGeometry(0.24, 0.56, 28, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0x38bdf8, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+    })
+  );
+  lensBeam.rotation.x = -Math.PI / 2;
+  lensBeam.position.z = 0.28;
+  lensProjGroup.add(lensBeam);
+
+  const holoSpinObj = new THREE.Group();
+  holoSpinObj.position.z = 0.44;
+  const holoMeshA = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.11, 1),
+    new THREE.MeshBasicMaterial({ color: 0x00f0b4, wireframe: true, transparent: true, opacity: 0.88 })
+  );
+  const holoMeshB = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.06, 0),
+    new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending })
+  );
+  const holoCardTexCanvas = document.createElement('canvas');
+  holoCardTexCanvas.width = 256; holoCardTexCanvas.height = 160;
+  const hcCtx = holoCardTexCanvas.getContext('2d');
+  const holoCardTex = new THREE.CanvasTexture(holoCardTexCanvas);
+  holoCardTex.colorSpace = THREE.SRGBColorSpace;
+
+  function updateHoloCard(title, subtitle) {
+    hcCtx.clearRect(0, 0, 256, 160);
+    hcCtx.fillStyle = 'rgba(6, 22, 38, 0.88)';
+    hcCtx.fillRect(0, 0, 256, 160);
+    hcCtx.strokeStyle = '#00f0b4';
+    hcCtx.lineWidth = 4;
+    hcCtx.strokeRect(4, 4, 248, 152);
+    hcCtx.fillStyle = '#00f0b4';
+    hcCtx.font = 'bold 20px monospace';
+    hcCtx.textAlign = 'center';
+    hcCtx.fillText(String(title || 'HOLO-LENS').toUpperCase().slice(0, 18), 128, 52);
+    hcCtx.fillStyle = '#7dd3fc';
+    hcCtx.font = '15px monospace';
+    hcCtx.fillText(String(subtitle || 'HOLOGRAM ACTIVE').slice(0, 24), 128, 96);
+    hcCtx.fillText('GEENY PROJECTOR', 128, 128);
+    holoCardTex.needsUpdate = true;
+  }
+  updateHoloCard('HOLO-LENS', 'HOLOGRAM ACTIVE');
+
+  const holoCard = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.24, 0.15),
+    new THREE.MeshBasicMaterial({ map: holoCardTex, transparent: true, opacity: 0.90, side: THREE.DoubleSide })
+  );
+  holoCard.position.set(0.16, 0.08, 0);
+  holoSpinObj.add(holoMeshA, holoMeshB, holoCard);
+  lensProjGroup.add(holoSpinObj);
+  bodyGroup.add(lensProjGroup);
+
+  function createWing(sideSign) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sideSign * 0.165, 0.018, -0.02);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.009, 0.080), armorMat);
+    blade.position.set(sideSign * 0.055, 0, -0.01);
+    blade.rotation.y = sideSign * -0.26;
+    blade.rotation.z = sideSign * 0.18;
+
+    const edgeGlow = new THREE.Mesh(
+      new THREE.BoxGeometry(0.105, 0.004, 0.006),
+      new THREE.MeshBasicMaterial({ color: 0x00f0b4, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending })
+    );
+    edgeGlow.position.set(sideSign * 0.055, 0, 0.030);
+    edgeGlow.rotation.y = sideSign * -0.26;
+    edgeGlow.rotation.z = sideSign * 0.18;
+
+    const thruster = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.020, 0.034, 14), trimMat);
+    thruster.rotation.x = Math.PI / 2;
+    thruster.position.set(sideSign * 0.022, -0.012, -0.032);
+
+    pivot.add(blade, edgeGlow, thruster);
+    bodyGroup.add(pivot);
+    return pivot;
+  }
+  const wingL = createWing(-1);
+  const wingR = createWing(1);
+
+  const botLight = new THREE.PointLight(0x00f0b4, 0.65, 2.8);
+  botLight.position.set(0, 0, 0.18);
+  bodyGroup.add(botLight);
+
+  const juggleOrbMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.055, 20, 16),
+    new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x00f0b4, emissiveIntensity: 1.5, metalness: 0.5, roughness: 0.2 })
+  );
+  juggleOrbMesh.visible = false;
+  scene.add(juggleOrbMesh);
+
+  // ====================================================================
+  // 3. LONG 18-SEGMENT DYNAMIC TENTACLE + SERVO CLAW + POINT BEAM
+  // ====================================================================
+  const TENTACLE_SEGMENTS = 18;
+  const tentacleGroup = new THREE.Group();
+  tentacleGroup.name = 'APP_GEENY_TENTACLE';
+  scene.add(tentacleGroup);
+
+  const segMatGlow = new THREE.MeshStandardMaterial({
+    color: 0x00f0b4, emissive: 0x0ea5e9, emissiveIntensity: 0.95, roughness: 0.22
+  });
+
+  const segments = [];
+  for (let i = 0; i < TENTACLE_SEGMENTS; i++) {
+    const t = i / (TENTACLE_SEGMENTS - 1);
+    const radius = THREE.MathUtils.lerp(0.028, 0.0095, t);
+    const segGroup = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.88, radius, 0.068, 12), armorMat);
+    body.rotation.x = Math.PI / 2;
+    segGroup.add(body);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius * 0.98, radius * 0.16, 6, 16), segMatGlow);
+    segGroup.add(ring);
+    tentacleGroup.add(segGroup);
+    segments.push(segGroup);
+  }
+
+  const clawGroup = new THREE.Group();
+  tentacleGroup.add(clawGroup);
+  const palmMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.013, 0.028, 14), trimMat);
+  palmMesh.rotation.x = Math.PI / 2;
+  clawGroup.add(palmMesh);
+
+  const prongs = [];
+  for (let p = 0; p < 3; p++) {
+    const pivot = new THREE.Group();
+    pivot.rotation.z = (p / 3) * Math.PI * 2;
+    const fp = new THREE.Group();
+    fp.position.set(0.015, 0, 0.012);
+    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.007, 0.008, 0.040), trimMat);
+    finger.position.set(0.004, 0, 0.020);
+    const tipGlow = new THREE.Mesh(new THREE.SphereGeometry(0.005, 8, 8), segMatGlow);
+    tipGlow.position.set(-0.002, 0, 0.041);
+    fp.add(finger, tipGlow);
+    pivot.add(fp);
+    clawGroup.add(pivot);
+    prongs.push(fp);
+  }
+
+  const showBeam = new THREE.Mesh(
+    new THREE.ConeGeometry(0.14, 0.60, 24, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0x00f0b4, transparent: true, opacity: 0.24,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+    })
+  );
+  showBeam.rotation.x = -Math.PI / 2;
+  showBeam.position.z = 0.32;
+  showBeam.visible = false;
+  clawGroup.add(showBeam);
+
+  // ====================================================================
+  // 4. LARGER VERLET CLOTH CAPE (ALGERIAN FLAG + CAPE-FLAUNT GRAB)
+  // ====================================================================
+  function createAlgerianFlagTexture() {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#006233'; ctx.fillRect(0, 0, 256, 512);
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(256, 0, 256, 512);
+    const grad = ctx.createLinearGradient(0, 0, 512, 0);
+    grad.addColorStop(0, 'rgba(0,0,0,0.06)');
+    grad.addColorStop(0.5, 'rgba(255,255,255,0.08)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.06)');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, 512, 512);
+    ctx.strokeStyle = 'rgba(0, 240, 180, 0.45)'; ctx.lineWidth = 10; ctx.strokeRect(5, 5, 502, 502);
+
+    const cx = 256, cy = 246;
+    ctx.fillStyle = '#d21034';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 112, 0.56, Math.PI * 2 - 0.56, false);
+    ctx.arc(cx + 26, cy, 88, Math.PI * 2 - 0.72, 0.72, true);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(cx + 42, cy);
+    ctx.rotate(-Math.PI / 10);
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 === 0 ? 48 : 19;
+      const ang = (i * Math.PI) / 5 - Math.PI / 2;
+      const sx = Math.cos(ang) * r, sy = Math.sin(ang) * r;
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  const defaultCapeTex = createAlgerianFlagTexture();
+  let customCapeTex = null;
+  let capeEnabled = true;
+  let capeGrabCornerActive = false;
+
+  const CAPE_COLS = 13, CAPE_ROWS = 18;
+  const CAPE_W = 0.42, CAPE_H = 0.56;
+  const CAPE_DX = CAPE_W / (CAPE_COLS - 1), CAPE_DY = CAPE_H / (CAPE_ROWS - 1);
+  const CAPE_DIAG = Math.hypot(CAPE_DX, CAPE_DY);
+  const CAPE_COUNT = CAPE_COLS * CAPE_ROWS;
+  const CAPE_GRAB_IDX = (CAPE_ROWS - 1) * CAPE_COLS + (CAPE_COLS - 1);
+
+  const capeGeo = new THREE.BufferGeometry();
+  const capePosArr = new Float32Array(CAPE_COUNT * 3);
+  const capeUVArr = new Float32Array(CAPE_COUNT * 2);
+  const capeIndices = [];
+
+  for (let r = 0; r < CAPE_ROWS; r++) {
+    for (let c = 0; c < CAPE_COLS; c++) {
+      const idx = r * CAPE_COLS + c;
+      capeUVArr[idx * 2] = c / (CAPE_COLS - 1);
+      capeUVArr[idx * 2 + 1] = 1.0 - r / (CAPE_ROWS - 1);
+      if (r < CAPE_ROWS - 1 && c < CAPE_COLS - 1) {
+        const a = idx, b = idx + 1, d = idx + CAPE_COLS, e = idx + CAPE_COLS + 1;
+        capeIndices.push(a, d, b, b, d, e);
+      }
+    }
+  }
+  capeGeo.setAttribute('position', new THREE.BufferAttribute(capePosArr, 3));
+  capeGeo.setAttribute('uv', new THREE.BufferAttribute(capeUVArr, 2));
+  capeGeo.setIndex(capeIndices);
+
+  const capeMat = new THREE.MeshStandardMaterial({
+    map: defaultCapeTex, roughness: 0.56, metalness: 0.08, side: THREE.DoubleSide
+  });
+
+  const capeMesh = new THREE.Mesh(capeGeo, capeMat);
+  capeMesh.name = 'GEENY_CLOTH_CAPE';
+  capeMesh.castShadow = true;
+  capeMesh.receiveShadow = true;
+  capeMesh.frustumCulled = false;
+  scene.add(capeMesh);
+
+  const capeCur = Array.from({ length: CAPE_COUNT }, () => new THREE.Vector3());
+  const capePrev = Array.from({ length: CAPE_COUNT }, () => new THREE.Vector3());
+  const capePinnedLocal = Array.from({ length: CAPE_COLS }, (_, c) => {
+    const u = c / (CAPE_COLS - 1);
+    const sx = (u - 0.5) * CAPE_W * 0.78;
+    const curveBack = Math.cos((u - 0.5) * 1.6) * 0.025;
+    const shoulderDrop = Math.abs(u - 0.5) * 0.042;
+    return new THREE.Vector3(sx, 0.118 - shoulderDrop, -0.152 - curveBack);
+  });
+
+  const capeConstraints = [];
+  for (let r = 0; r < CAPE_ROWS; r++) {
+    for (let c = 0; c < CAPE_COLS; c++) {
+      const i = r * CAPE_COLS + c;
+      const rowFlare = 1.0 + (r / (CAPE_ROWS - 1)) * 0.25;
+      if (c < CAPE_COLS - 1) capeConstraints.push([i, i + 1, CAPE_DX * rowFlare * 0.85, 0.90]);
+      if (r < CAPE_ROWS - 1) capeConstraints.push([i, i + CAPE_COLS, CAPE_DY, 0.96]);
+      if (r < CAPE_ROWS - 1 && c < CAPE_COLS - 1) {
+        capeConstraints.push([i, i + CAPE_COLS + 1, CAPE_DIAG, 0.68]);
+        capeConstraints.push([i + 1, i + CAPE_COLS, CAPE_DIAG, 0.68]);
+      }
+      if (r < CAPE_ROWS - 2) capeConstraints.push([i, i + CAPE_COLS * 2, CAPE_DY * 2, 0.35]);
+    }
+  }
+
+  let capeInitialized = false;
+  const tmpCapeW = new THREE.Vector3();
+  const tmpCapeBack = new THREE.Vector3();
+  const tmpCapeDelta = new THREE.Vector3();
+
+  function snapCapeToRest() {
+    botRoot.updateMatrixWorld(true);
+    bodyGroup.updateMatrixWorld(true);
+    tmpCapeBack.set(0, 0, -1).applyQuaternion(bodyGroup.getWorldQuaternion(new THREE.Quaternion())).normalize();
+    for (let r = 0; r < CAPE_ROWS; r++) {
+      for (let c = 0; c < CAPE_COLS; c++) {
+        const idx = r * CAPE_COLS + c;
+        tmpCapeW.copy(capePinnedLocal[c]);
+        bodyGroup.localToWorld(tmpCapeW);
+        tmpCapeW.y -= r * CAPE_DY * 0.96;
+        tmpCapeW.addScaledVector(tmpCapeBack, r * CAPE_DY * 0.28);
+        capeCur[idx].copy(tmpCapeW);
+        capePrev[idx].copy(tmpCapeW);
+      }
+    }
+    capeInitialized = true;
+  }
+
+  function stepCapePhysics(dt, elapsed) {
+    capeMesh.visible = capeEnabled && botEnabled;
+    if (!capeMesh.visible) return;
+
+    const safeDt = Math.min(0.025, Math.max(0.004, dt || 0.016));
+    bodyGroup.updateMatrixWorld(true);
+
+    tmpCapeW.copy(capePinnedLocal[Math.floor(CAPE_COLS / 2)]);
+    bodyGroup.localToWorld(tmpCapeW);
+    if (!capeInitialized || !isFinite(capeCur[0].x) || capeCur[0].distanceTo(tmpCapeW) > 1.2) snapCapeToRest();
+
+    for (let c = 0; c < CAPE_COLS; c++) {
+      tmpCapeW.copy(capePinnedLocal[c]);
+      bodyGroup.localToWorld(tmpCapeW);
+      capeCur[c].copy(tmpCapeW);
+      capePrev[c].copy(tmpCapeW);
+    }
+
+    if (capeGrabCornerActive) {
+      capeCur[CAPE_GRAB_IDX].lerp(clawGroup.position, 0.72);
+      capePrev[CAPE_GRAB_IDX].copy(capeCur[CAPE_GRAB_IDX]);
+    }
+
+    tmpCapeBack.set(0, 0, -1).applyQuaternion(bodyGroup.getWorldQuaternion(new THREE.Quaternion())).normalize();
+    const gravStep = -4.6 * safeDt * safeDt;
+    const maxStepSpeed = 0.042;
+
+    for (let r = 1; r < CAPE_ROWS; r++) {
+      for (let c = 0; c < CAPE_COLS; c++) {
+        const idx = r * CAPE_COLS + c;
+        if (capeGrabCornerActive && idx === CAPE_GRAB_IDX) continue;
+        const cur = capeCur[idx];
+        const prev = capePrev[idx];
+
+        let vx = (cur.x - prev.x) * 0.965;
+        let vy = (cur.y - prev.y) * 0.965;
+        let vz = (cur.z - prev.z) * 0.965;
+        const spdSq = vx * vx + vy * vy + vz * vz;
+        if (spdSq > maxStepSpeed * maxStepSpeed) {
+          const s = maxStepSpeed / Math.sqrt(spdSq);
+          vx *= s; vy *= s; vz *= s;
+        }
+        prev.copy(cur);
+        const flutter = (Math.sin(elapsed * 4.2 + c * 0.55 + r * 0.38) * 0.5 + 0.5) * 0.00052;
+        cur.x += vx + tmpCapeBack.x * flutter;
+        cur.y += vy + gravStep;
+        cur.z += vz + tmpCapeBack.z * flutter;
+      }
+    }
+
+    const bodyCenter = botRoot.position;
+    const R_BODY = 0.176;
+    const R_BODY_SQ = R_BODY * R_BODY;
+
+    for (let iter = 0; iter < 5; iter++) {
+      for (let k = 0; k < capeConstraints.length; k++) {
+        const con = capeConstraints[k];
+        const ia = con[0], ib = con[1], restLen = con[2], stiff = con[3];
+        const pa = capeCur[ia], pb = capeCur[ib];
+        tmpCapeDelta.subVectors(pb, pa);
+        const d = tmpCapeDelta.length();
+        if (d < 1e-6) continue;
+        const diff = ((d - restLen) / d) * stiff;
+        const pinA = ia < CAPE_COLS || (capeGrabCornerActive && ia === CAPE_GRAB_IDX);
+        const pinB = ib < CAPE_COLS || (capeGrabCornerActive && ib === CAPE_GRAB_IDX);
+        if (pinA && pinB) continue;
+        if (pinA) pb.addScaledVector(tmpCapeDelta, -diff);
+        else if (pinB) pa.addScaledVector(tmpCapeDelta, diff);
+        else { pa.addScaledVector(tmpCapeDelta, diff * 0.5); pb.addScaledVector(tmpCapeDelta, -diff * 0.5); }
+      }
+
+      for (let idx = CAPE_COLS; idx < CAPE_COUNT; idx++) {
+        if (capeGrabCornerActive && idx === CAPE_GRAB_IDX) continue;
+        const p = capeCur[idx];
+        tmpCapeDelta.subVectors(p, bodyCenter);
+        let dSq = tmpCapeDelta.lengthSq();
+        if (dSq < R_BODY_SQ) {
+          const d = Math.sqrt(dSq);
+          if (d > 1e-5) p.copy(bodyCenter).addScaledVector(tmpCapeDelta, R_BODY / d);
+          else p.set(bodyCenter.x, bodyCenter.y, bodyCenter.z - R_BODY);
+        }
+
+        if (!capeGrabCornerActive) {
+          for (let s = 0; s < TENTACLE_SEGMENTS; s++) {
+            const segPos = segments[s].position;
+            const rTent = THREE.MathUtils.lerp(0.052, 0.032, s / (TENTACLE_SEGMENTS - 1));
+            tmpCapeDelta.subVectors(p, segPos);
+            dSq = tmpCapeDelta.lengthSq();
+            if (dSq < rTent * rTent) {
+              const d = Math.sqrt(dSq);
+              if (d > 1e-5) p.copy(segPos).addScaledVector(tmpCapeDelta, rTent / d);
+              else p.copy(segPos).add(new THREE.Vector3(0, 0, -rTent));
+            }
+          }
+          tmpCapeDelta.subVectors(p, clawGroup.position);
+          dSq = tmpCapeDelta.lengthSq();
+          if (dSq < 0.045 * 0.045) {
+            const d = Math.sqrt(dSq);
+            if (d > 1e-5) p.copy(clawGroup.position).addScaledVector(tmpCapeDelta, 0.045 / d);
+          }
+        }
+        if (p.y < 0.02) p.y = 0.02;
+      }
+    }
+
+    const arr = capeGeo.attributes.position.array;
+    for (let i = 0; i < CAPE_COUNT; i++) {
+      const p = capeCur[i];
+      if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) { snapCapeToRest(); break; }
+      arr[i * 3] = p.x; arr[i * 3 + 1] = p.y; arr[i * 3 + 2] = p.z;
+    }
+    capeGeo.attributes.position.needsUpdate = true;
+    capeGeo.computeVertexNormals();
+  }
+
+  function setCapeEnabled(val) {
+    capeEnabled = !!val;
+    if (capeEnabled) snapCapeToRest();
+    capeMesh.visible = capeEnabled && botEnabled;
+    return capeEnabled;
+  }
+
+  async function setCapeTexture(nameOrUrl) {
+    const q = String(nameOrUrl || '').trim();
+    const low = q.toLowerCase();
+    if (!q || low === 'algeria' || low === 'algerian' || low === 'flag' || low === 'default' || low.includes('الجزائر')) {
+      capeMat.map = defaultCapeTex;
+      capeMat.needsUpdate = true;
+      setCapeEnabled(true);
+      return { ok: true, texture: 'Algerian Flag', message: 'Geeny cape set to Algerian Flag.' };
+    }
+    const clean = q.replace(/\.[^.]+$/, '').toLowerCase();
+    let url = q.startsWith('http') || q.startsWith('blob:') || q.startsWith('./') || q.startsWith('data:') ? q : null;
+    if (!url && APP.importedImages) {
+      const rec = APP.importedImages.get(clean) || Array.from(APP.importedImages.values()).find((r) => r.cleanName.includes(clean));
+      if (rec) url = rec.url;
+    }
+    if (!url) {
+      for (const p of [`./assets/${clean}.png`, `./assets/${clean}.jpg`, `./assets/${clean}.jpeg`, `./assets/${clean}.webp`, `./${clean}.png`, `./${clean}.jpg`]) {
+        try { const h = await fetch(p, { method: 'HEAD' }); if (h.ok) { url = p; break; } } catch (_) {}
+      }
+    }
+    if (!url) return { ok: false, error: `Picture "${q}" not found in /assets/ or imported images.` };
+    try {
+      const tex = await new THREE.TextureLoader().loadAsync(url);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      if (customCapeTex && customCapeTex !== defaultCapeTex) { try { customCapeTex.dispose(); } catch (_) {} }
+      customCapeTex = tex;
+      capeMat.map = tex;
+      capeMat.needsUpdate = true;
+      setCapeEnabled(true);
+      return { ok: true, texture: q, message: `Updated Geeny cape texture to "${q}".` };
+    } catch (e) {
+      return { ok: false, error: 'Failed to load cape texture: ' + e.message };
+    }
+  }
+
+  // ====================================================================
+  // 5. REAL GRABBABLE & PEN-DRAWABLE PHYSICAL HOLO-BOARD
+  // ====================================================================
+  const BOARD_W = 0.92, BOARD_H = 0.62;
+  const boardRoot = new THREE.Group();
+  boardRoot.name = 'GEENY_PHYSICAL_BOARD';
+  boardRoot.visible = false;
+  scene.add(boardRoot);
+
+  const boomArm = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.015, 1.0, 12), trimMat);
+  boomArm.visible = false;
+  scene.add(boomArm);
+
+  const boardCanvas = document.createElement('canvas');
+  boardCanvas.width = 1280; boardCanvas.height = 860;
+  const bCtx = boardCanvas.getContext('2d');
+  const boardTex = new THREE.CanvasTexture(boardCanvas);
+  boardTex.colorSpace = THREE.SRGBColorSpace;
+  boardTex.needsUpdate = true;
+
+  const boardScreen = new THREE.Mesh(
+    new THREE.PlaneGeometry(BOARD_W, BOARD_H),
+    new THREE.MeshBasicMaterial({ map: boardTex, transparent: true, opacity: 0.97, side: THREE.DoubleSide })
+  );
+  boardRoot.add(boardScreen);
+
+  const inkCanvas = document.createElement('canvas');
+  inkCanvas.width = 1280; inkCanvas.height = 860;
+  const inkCtx = inkCanvas.getContext('2d');
+  const inkTex = new THREE.CanvasTexture(inkCanvas);
+  inkTex.colorSpace = THREE.SRGBColorSpace;
+  inkTex.needsUpdate = true;
+
+  const inkMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(BOARD_W, BOARD_H),
+    new THREE.MeshBasicMaterial({ map: inkTex, transparent: true, depthWrite: false, side: THREE.DoubleSide })
+  );
+  inkMesh.position.z = 0.003;
+  boardRoot.add(inkMesh);
+
+  const boardFrame = new THREE.Mesh(new THREE.BoxGeometry(BOARD_W + 0.036, BOARD_H + 0.036, 0.016), armorMat);
+  boardFrame.position.z = -0.010;
+  boardRoot.add(boardFrame);
+
+  const handleL = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.24, 12), trimMat);
+  handleL.position.set(-BOARD_W * 0.5 - 0.026, 0, 0);
+  const handleR = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.24, 12), trimMat);
+  handleR.position.set(BOARD_W * 0.5 + 0.026, 0, 0);
+  boardRoot.add(handleL, handleR);
+
+  let boardDetached = false;
+  const boardEnt = APP.registerEntity(boardRoot, {
+    name: 'Geeny Interactive Board',
+    category: 'board',
+    grabbable: true,
+    holdable: false,
+    physics: { gravity: false, enabled: false },
+    onGrab: function () {
+      boardDetached = true;
+      boomArm.visible = false;
+      redrawBoard();
+    }
+  });
+  boardRoot.visible = false;
+
+  const boardState = {
+    visible: false, title: 'GEENY BOARD', mode: 'notes',
+    steps: [], currentStep: 0, notes: [], pages: [], currentPage: 0,
+    imageObj: null, caption: '', hitZones: [], lastClick: 0, inkLastPt: null
+  };
+
+  function clearBoardInk() {
+    inkCtx.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
+    inkTex.needsUpdate = true;
+    boardState.inkLastPt = null;
+  }
+
+  function drawBoardRoundedRect(x, y, w, h, r, fill, stroke) {
+    bCtx.beginPath();
+    bCtx.moveTo(x + r, y);
+    bCtx.arcTo(x + w, y, x + w, y + h, r);
+    bCtx.arcTo(x + w, y + h, x, y + h, r);
+    bCtx.arcTo(x, y + h, x, y, r);
+    bCtx.arcTo(x, y, x + w, y, r);
+    bCtx.closePath();
+    if (fill) { bCtx.fillStyle = fill; bCtx.fill(); }
+    if (stroke) { bCtx.strokeStyle = stroke; bCtx.lineWidth = 3; bCtx.stroke(); }
+  }
+
+  function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight, maxY) {
+    const paragraphs = String(text || '').split('\n');
+    let cy = y;
+    for (const para of paragraphs) {
+      const words = para.split(/\s+/);
+      let line = '';
+      for (let i = 0; i < words.length; i++) {
+        const test = line ? line + ' ' + words[i] : words[i];
+        if (ctx.measureText(test).width > maxWidth && line) {
+          ctx.fillText(line, x, cy); line = words[i]; cy += lineHeight;
+          if (maxY && cy > maxY) return cy;
+        } else { line = test; }
+      }
+      if (line) { ctx.fillText(line, x, cy); cy += lineHeight; }
+      if (maxY && cy > maxY) return cy;
+    }
+    return cy;
+  }
+
+  function executeDrawCommands(cmds, area) {
+    if (!Array.isArray(cmds)) return;
+    const ox = area.x, oy = area.y, aw = area.w, ah = area.h;
+    const px = (nx) => ox + Number(nx || 0) * aw;
+    const py = (ny) => oy + Number(ny || 0) * ah;
+    for (const c of cmds) {
+      if (!c || !c.type) continue;
+      bCtx.save();
+      bCtx.strokeStyle = c.color || '#00f0b4';
+      bCtx.fillStyle = c.fill || c.color || 'rgba(0,240,180,0.18)';
+      bCtx.lineWidth = c.width || 4;
+      bCtx.lineCap = 'round'; bCtx.lineJoin = 'round';
+      if (c.dashed) bCtx.setLineDash([8, 6]);
+      if (c.type === 'grid') {
+        bCtx.strokeStyle = c.color || 'rgba(56,189,248,0.18)'; bCtx.lineWidth = 1.5;
+        const n = c.divisions || 6;
+        for (let i = 1; i < n; i++) {
+          bCtx.beginPath(); bCtx.moveTo(px(i / n), py(0)); bCtx.lineTo(px(i / n), py(1)); bCtx.stroke();
+          bCtx.beginPath(); bCtx.moveTo(px(0), py(i / n)); bCtx.lineTo(px(1), py(i / n)); bCtx.stroke();
+        }
+      } else if (c.type === 'circle') {
+        bCtx.beginPath(); bCtx.arc(px(c.cx ?? 0.5), py(c.cy ?? 0.5), (c.r ?? 0.15) * Math.min(aw, ah), 0, Math.PI * 2);
+        if (c.filled) bCtx.fill(); bCtx.stroke();
+      } else if (c.type === 'ellipse') {
+        bCtx.beginPath(); bCtx.ellipse(px(c.cx ?? 0.5), py(c.cy ?? 0.5), (c.rx ?? 0.2) * aw, (c.ry ?? 0.15) * ah, c.rot || 0, 0, Math.PI * 2);
+        if (c.filled) bCtx.fill(); bCtx.stroke();
+      } else if (c.type === 'line' || c.type === 'arrow') {
+        const x1 = px(c.x1), y1 = py(c.y1), x2 = px(c.x2), y2 = py(c.y2);
+        bCtx.beginPath(); bCtx.moveTo(x1, y1); bCtx.lineTo(x2, y2); bCtx.stroke();
+        if (c.type === 'arrow') {
+          const ang = Math.atan2(y2 - y1, x2 - x1), hl = 14;
+          bCtx.beginPath();
+          bCtx.moveTo(x2, y2); bCtx.lineTo(x2 - hl * Math.cos(ang - 0.4), y2 - hl * Math.sin(ang - 0.4));
+          bCtx.moveTo(x2, y2); bCtx.lineTo(x2 - hl * Math.cos(ang + 0.4), y2 - hl * Math.sin(ang + 0.4));
+          bCtx.stroke();
+        }
+      } else if (c.type === 'arc') {
+        bCtx.beginPath(); bCtx.arc(px(c.cx ?? 0.5), py(c.cy ?? 0.5), (c.r ?? 0.1) * Math.min(aw, ah), c.start ?? 0, c.end ?? Math.PI); bCtx.stroke();
+      } else if (c.type === 'poly' && Array.isArray(c.points) && c.points.length >= 2) {
+        bCtx.beginPath(); bCtx.moveTo(px(c.points[0][0]), py(c.points[0][1]));
+        for (let i = 1; i < c.points.length; i++) bCtx.lineTo(px(c.points[i][0]), py(c.points[i][1]));
+        if (c.closed) bCtx.closePath(); if (c.filled) bCtx.fill(); bCtx.stroke();
+      } else if (c.type === 'curve') {
+        bCtx.beginPath(); bCtx.moveTo(px(c.x1), py(c.y1)); bCtx.quadraticCurveTo(px(c.cx), py(c.cy), px(c.x2), py(c.y2)); bCtx.stroke();
+      } else if (c.type === 'text') {
+        bCtx.fillStyle = c.color || '#e2f8ff'; bCtx.font = 'bold ' + (c.size || 22) + 'px system-ui, sans-serif';
+        bCtx.textAlign = 'center'; bCtx.fillText(String(c.text || ''), px(c.x ?? 0.5), py(c.y ?? 0.5));
+      }
+      bCtx.restore();
+    }
+  }
+
+  function redrawBoard() {
+    boardState.hitZones = [];
+    const W = boardCanvas.width, H = boardCanvas.height;
+    bCtx.clearRect(0, 0, W, H);
+    drawBoardRoundedRect(8, 8, W - 16, H - 16, 22, 'rgba(7, 14, 26, 0.96)', '#00f0b4');
+
+    bCtx.fillStyle = '#00f0b4'; bCtx.font = 'bold 30px system-ui, sans-serif';
+    bCtx.textAlign = 'left'; bCtx.textBaseline = 'middle';
+    bCtx.fillText('GEENY // ' + String(boardState.title || 'BOARD').toUpperCase().slice(0, 34), 32, 48);
+
+    const addBtn = (id, x, y, w, h, label, bg, border, fn) => {
+      drawBoardRoundedRect(x, y, w, h, 11, bg, border);
+      bCtx.fillStyle = '#f1f5f9'; bCtx.font = 'bold 20px system-ui, sans-serif'; bCtx.textAlign = 'center';
+      bCtx.fillText(label, x + w / 2, y + h / 2);
+      boardState.hitZones.push({ id, u0: x / W, u1: (x + w) / W, v0: 1 - (y + h) / H, v1: 1 - y / H, action: fn });
+    };
+
+    addBtn('clear_ink', W - 436, 22, 130, 48, 'Clear Ink', '#172a45', '#38bdf8', clearBoardInk);
+    addBtn('dock', W - 294, 22, 130, 48, boardDetached ? 'Dock' : 'Free', '#172a45', '#00f0b4', () => { boardDetached = !boardDetached; redrawBoard(); });
+    addBtn('close', W - 152, 22, 120, 48, 'Hide', '#3d1520', '#f87171', () => hideBoard());
+
+    if (boardState.mode === 'wikipedia') {
+      const hasImg = !!boardState.imageObj;
+      const textWidth = hasImg ? 730 : (W - 72);
+      drawBoardRoundedRect(36, 92, textWidth, 656, 16, 'rgba(10, 20, 38, 0.88)', '#1e3a5f');
+      const pageTxt = boardState.pages[boardState.currentPage] || boardState.caption || '';
+      bCtx.fillStyle = '#e2f1ff'; bCtx.font = '25px system-ui, sans-serif'; bCtx.textAlign = 'left';
+      wrapCanvasText(bCtx, pageTxt, 60, 134, textWidth - 48, 36, 725);
+
+      if (hasImg) {
+        const imgBox = { x: 786, y: 92, w: W - 822, h: 656 };
+        drawBoardRoundedRect(imgBox.x, imgBox.y, imgBox.w, imgBox.h, 16, 'rgba(4, 10, 20, 0.9)', '#254a78');
+        const img = boardState.imageObj, asp = (img.width || 1) / (img.height || 1);
+        let dw = imgBox.w - 24, dh = dw / asp;
+        if (dh > imgBox.h - 70) { dh = imgBox.h - 70; dw = dh * asp; }
+        bCtx.drawImage(img, imgBox.x + (imgBox.w - dw) / 2, imgBox.y + 18, dw, dh);
+        bCtx.fillStyle = '#94a3b8'; bCtx.font = '18px system-ui, sans-serif'; bCtx.textAlign = 'center';
+        bCtx.fillText('Wikipedia Reference Photo', imgBox.x + imgBox.w / 2, imgBox.y + imgBox.h - 24);
+      }
+
+      if (boardState.pages.length > 1) {
+        addBtn('prev_pg', 36, H - 82, 180, 54, '< Prev Page', '#132640', '#38bdf8', () => { boardState.currentPage = Math.max(0, boardState.currentPage - 1); redrawBoard(); });
+        bCtx.fillStyle = '#94a3b8'; bCtx.font = 'bold 22px system-ui, sans-serif'; bCtx.textAlign = 'center';
+        bCtx.fillText(`Page ${boardState.currentPage + 1} / ${boardState.pages.length}`, W / 2, H - 55);
+        addBtn('next_pg', W - 216, H - 82, 180, 54, 'Next Page >', '#0f5c52', '#00f0b4', () => { boardState.currentPage = Math.min(boardState.pages.length - 1, boardState.currentPage + 1); redrawBoard(); });
+      }
+    } else if (boardState.mode === 'tutorial' && boardState.steps.length > 0) {
+      const idx = Math.max(0, Math.min(boardState.steps.length - 1, boardState.currentStep));
+      const step = boardState.steps[idx];
+      const sketchBox = { x: 34, y: 92, w: 620, h: 646 };
+      drawBoardRoundedRect(sketchBox.x, sketchBox.y, sketchBox.w, sketchBox.h, 16, 'rgba(3, 8, 18, 0.9)', '#1e3a5f');
+      if (boardState.imageObj) {
+        bCtx.save(); bCtx.globalAlpha = 0.24;
+        const img = boardState.imageObj, asp = (img.width || 1) / (img.height || 1);
+        let dw = sketchBox.w - 40, dh = dw / asp;
+        if (dh > sketchBox.h - 40) { dh = sketchBox.h - 40; dw = dh * asp; }
+        bCtx.drawImage(img, sketchBox.x + (sketchBox.w - dw) / 2, sketchBox.y + (sketchBox.h - dh) / 2, dw, dh);
+        bCtx.restore();
+      }
+      for (let s = 0; s <= idx; s++) {
+        const st = boardState.steps[s];
+        if (st?.draw_commands) executeDrawCommands(st.draw_commands, { x: sketchBox.x + 24, y: sketchBox.y + 24, w: sketchBox.w - 48, h: sketchBox.h - 48 });
+      }
+      const rx = 676, rw = W - rx - 34;
+      drawBoardRoundedRect(rx, 92, rw, 646, 16, 'rgba(12, 24, 44, 0.85)', '#254a78');
+      let textStartY = 136;
+      if (boardState.imageObj) {
+        const img = boardState.imageObj, asp = (img.width || 1) / (img.height || 1);
+        let dw = 220, dh = dw / asp; if (dh > 165) { dh = 165; dw = dh * asp; }
+        bCtx.drawImage(img, rx + (rw - dw) / 2, 108, dw, dh);
+        textStartY = 296;
+      }
+      bCtx.fillStyle = '#38bdf8'; bCtx.font = 'bold 24px system-ui, sans-serif'; bCtx.textAlign = 'left';
+      bCtx.fillText(`Step ${idx + 1} / ${boardState.steps.length}`, rx + 22, textStartY);
+      bCtx.fillStyle = '#00f0b4'; bCtx.font = 'bold 28px system-ui, sans-serif';
+      const nextY = wrapCanvasText(bCtx, step.title || '', rx + 22, textStartY + 42, rw - 44, 36, 700);
+      bCtx.fillStyle = '#e2e8f0'; bCtx.font = '23px system-ui, sans-serif';
+      wrapCanvasText(bCtx, step.caption || '', rx + 22, nextY + 14, rw - 44, 33, 720);
+
+      if (boardState.steps.length > 1) {
+        addBtn('prev', 34, H - 82, 200, 54, '< Prev Step', '#132640', '#38bdf8', () => stepBoard(-1));
+        bCtx.fillStyle = '#94a3b8'; bCtx.font = '20px system-ui, sans-serif'; bCtx.textAlign = 'center';
+        bCtx.fillText('Tip: Grab board or draw on it with Pen!', W / 2, H - 55);
+        addBtn('next', W - 234, H - 82, 200, 54, 'Next Step >', '#0f5c52', '#00f0b4', () => stepBoard(1));
+      }
+    } else if (boardState.mode === 'image' && boardState.imageObj) {
+      const img = boardState.imageObj, box = { x: 36, y: 92, w: W - 72, h: 660 };
+      drawBoardRoundedRect(box.x, box.y, box.w, box.h, 16, 'rgba(4, 9, 18, 0.92)', '#254a78');
+      const aspect = (img.width || 1) / (img.height || 1);
+      let dw = box.w - 30, dh = dw / aspect;
+      if (dh > box.h - 60) { dh = box.h - 60; dw = dh * aspect; }
+      bCtx.drawImage(img, box.x + (box.w - dw) / 2, box.y + 18, dw, dh);
+      if (boardState.caption) {
+        bCtx.fillStyle = '#cbd5e1'; bCtx.font = '24px system-ui, sans-serif'; bCtx.textAlign = 'center';
+        bCtx.fillText(boardState.caption.slice(0, 82), W / 2, H - 52);
+      }
+    } else {
+      drawBoardRoundedRect(36, 92, W - 72, 680, 16, 'rgba(10, 20, 38, 0.88)', '#1e3a5f');
+      let cy = 140; bCtx.textAlign = 'left';
+      const lines = boardState.notes.length ? boardState.notes : [boardState.caption || 'Grab me or draw on me with your 3D pen!'];
+      for (let i = 0; i < lines.length; i++) {
+        bCtx.fillStyle = '#00f0b4'; bCtx.font = 'bold 26px system-ui, sans-serif'; bCtx.fillText('•', 60, cy);
+        bCtx.fillStyle = '#e2f1ff'; bCtx.font = '25px system-ui, sans-serif';
+        cy = wrapCanvasText(bCtx, lines[i], 92, cy, W - 150, 35, 740) + 10;
+        if (cy > 740) break;
+      }
+    }
+    boardTex.needsUpdate = true;
+  }
+
+  const tmpBoardLocal = new THREE.Vector3();
+  const tmpPenTipW = new THREE.Vector3();
+
+  function updateBoardPenDrawing() {
+    if (!boardState.visible || !boardRoot.visible) return;
+    const pen = APP._activePen;
+    if (!pen || !pen.nibMesh || !pen.isHeld) { boardState.inkLastPt = null; return; }
+    const hands = APP.hands || {};
+    const h = pen.attachedHandKey ? hands[pen.attachedHandKey] : pen.heldBy;
+    const activeTrigger = h ? !!(h.trigger || h.pinching) : false;
+
+    pen.nibMesh.getWorldPosition(tmpPenTipW);
+    tmpBoardLocal.copy(tmpPenTipW);
+    boardScreen.worldToLocal(tmpBoardLocal);
+
+    const distToPlane = Math.abs(tmpBoardLocal.z);
+    const inBounds = Math.abs(tmpBoardLocal.x) <= BOARD_W * 0.49 && Math.abs(tmpBoardLocal.y) <= BOARD_H * 0.48;
+    if (inBounds && (distToPlane < 0.025 || (activeTrigger && distToPlane < 0.055))) {
+      const cx = (tmpBoardLocal.x / BOARD_W + 0.5) * inkCanvas.width;
+      const cy = (0.5 - tmpBoardLocal.y / BOARD_H) * inkCanvas.height;
+      inkCtx.strokeStyle = '#00f0b4'; inkCtx.lineWidth = 6; inkCtx.lineCap = 'round'; inkCtx.lineJoin = 'round';
+      inkCtx.beginPath();
+      if (boardState.inkLastPt) inkCtx.moveTo(boardState.inkLastPt.x, boardState.inkLastPt.y);
+      else inkCtx.moveTo(cx, cy);
+      inkCtx.lineTo(cx, cy); inkCtx.stroke();
+      inkTex.needsUpdate = true;
+      boardState.inkLastPt = { x: cx, y: cy };
+    } else {
+      boardState.inkLastPt = null;
+    }
+  }
+
+  boardScreen.userData.onPoke = function (hit) {
+    if (!boardState.visible || !hit || !hit.uv) return;
+    const now = performance.now();
+    if (now - boardState.lastClick < 260) return;
+    const uv = hit.uv;
+    for (const z of boardState.hitZones) {
+      if (uv.x >= z.u0 && uv.x <= z.u1 && uv.y >= z.v0 && uv.y <= z.v1) {
+        boardState.lastClick = now; z.action(); return;
+      }
+    }
+    if (APP._activePen?.isHeld && APP.hands?.dhand?.trigger) {
+      inkCtx.fillStyle = '#00f0b4';
+      inkCtx.beginPath(); inkCtx.arc(uv.x * inkCanvas.width, (1 - uv.y) * inkCanvas.height, 4, 0, Math.PI * 2); inkCtx.fill();
+      inkTex.needsUpdate = true;
+    }
+  };
+  APP.pokeTargets?.add(boardScreen);
+
+  function loadCORSImage(url) {
+    return new Promise((resolve) => {
+      const img = new Image(); img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img); img.onerror = () => resolve(null); img.src = url;
+    });
+  }
+
+  async function fetchWikipediaData(topic) {
+    const clean = String(topic || '').trim();
+    if (!clean) return null;
+    const langHost = /[\u0600-\u06FF]/.test(clean) ? 'ar.wikipedia.org' : 'en.wikipedia.org';
+    try {
+      const sJson = await (await fetch(`https://${langHost}/w/api.php?action=opensearch&search=${encodeURIComponent(clean)}&limit=1&namespace=0&format=json&origin=*`)).json();
+      const title = sJson?.[1]?.[0] || clean;
+      const sumRes = await fetch(`https://${langHost}/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
+      if (!sumRes.ok) return null;
+      const sum = await sumRes.json();
+      const eJson = await (await fetch(`https://${langHost}/w/api.php?action=query&prop=extracts&exintro=false&explaintext=true&exchars=2400&titles=${encodeURIComponent(sum.title || title)}&format=json&origin=*`)).json();
+      const firstPage = Object.values(eJson?.query?.pages || {})[0];
+      const fullText = firstPage?.extract || sum.extract || '';
+      let imgObj = null;
+      const imgUrl = sum.thumbnail?.source || sum.originalimage?.source;
+      if (imgUrl) imgObj = await loadCORSImage(imgUrl);
+
+      const chunks = [];
+      let rem = fullText.trim();
+      while (rem.length > 0) {
+        if (rem.length <= 540) { chunks.push(rem); break; }
+        let cut = rem.lastIndexOf('.', 540);
+        if (cut < 250) cut = 540;
+        chunks.push(rem.slice(0, cut + 1).trim());
+        rem = rem.slice(cut + 1).trim();
+      }
+      return { title: sum.title || title, summary: sum.extract || '', pages: chunks.length ? chunks : [sum.description || ''], imageObj: imgObj };
+    } catch (_) { return null; }
+  }
+
+  async function fetchOnlinePhoto(query) {
+    const clean = String(query || '').trim();
+    if (!clean) return null;
+    const key = clean.replace(/\.[^.]+$/, '').toLowerCase();
+    if (APP.importedImages) {
+      const rec = APP.importedImages.get(key) || Array.from(APP.importedImages.values()).find((r) => r.cleanName.includes(key));
+      if (rec) { const localImg = await loadCORSImage(rec.url); if (localImg) return localImg; }
+    }
+    const wiki = await fetchWikipediaData(clean);
+    if (wiki?.imageObj) return wiki.imageObj;
+    try {
+      const data = await (await fetch(`https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch=${encodeURIComponent(clean)}&gsrlimit=4&prop=imageinfo&iiprop=url&iiurlwidth=1024&format=json&origin=*`)).json();
+      for (const p of Object.values(data?.query?.pages || {})) {
+        const u = p?.imageinfo?.[0]?.thumburl || p?.imageinfo?.[0]?.url;
+        if (u && /\.(jpg|jpeg|png|webp)/i.test(u)) { const img = await loadCORSImage(u); if (img) return img; }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function stepBoard(delta) {
+    if (!boardState.steps.length) return;
+    boardState.currentStep = Math.max(0, Math.min(boardState.steps.length - 1, boardState.currentStep + delta));
+    redrawBoard();
+    const st = boardState.steps[boardState.currentStep];
+    if (st?.caption) APP.speakTTS?.(`${st.title}. ${st.caption}`);
+  }
+
+  function showBoard(opts = {}) {
+    if (!botEnabled) setEnabled(true);
+    boardState.visible = true;
+    boardState.title = opts.title || 'GEENY BOARD';
+    boardState.mode = opts.mode || (Array.isArray(opts.steps) && opts.steps.length ? 'tutorial' : opts.pages?.length ? 'wikipedia' : opts.imageObj ? 'image' : 'notes');
+    boardState.steps = Array.isArray(opts.steps) ? opts.steps : [];
+    boardState.currentStep = Math.max(0, opts.stepIndex || 0);
+    boardState.notes = Array.isArray(opts.notes) ? opts.notes : [];
+    boardState.pages = Array.isArray(opts.pages) ? opts.pages : [];
+    boardState.currentPage = 0;
+    boardState.imageObj = opts.imageObj || null;
+    boardState.caption = opts.caption || '';
+
+    boardRoot.visible = true;
+    boardDetached = false;
+    redrawBoard();
+
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+    if (flat.lengthSq() < 0.01) flat.set(0, 0, -1);
+    const right = new THREE.Vector3().crossVectors(flat, new THREE.Vector3(0, 1, 0)).normalize();
+    state.worldAnchor.copy(hp).addScaledVector(flat, 1.12).addScaledVector(right, 0.42);
+    state.worldAnchor.y = Math.max(1.05, hp.y + 0.05);
+
+    if (!boardEnt.isHeld) {
+      boardRoot.position.copy(state.worldAnchor).addScaledVector(right, -0.58);
+      boardRoot.lookAt(hp.x, boardRoot.position.y, hp.z);
+    }
+    return { ok: true, message: 'Extended physical interactive board: ' + boardState.title };
+  }
+
+  function hideBoard() {
+    boardState.visible = false;
+    boardRoot.visible = false;
+    boomArm.visible = false;
+    boardDetached = false;
+    return { ok: true, message: 'Geeny retracted interactive board.' };
+  }
+
+  function getAdvancedCatTutorial(photoImg) {
+    return {
+      title: 'How to Draw a Cat (Anatomical Guide)',
+      mode: 'tutorial',
+      imageObj: photoImg || null,
+      steps: [
+        {
+          title: '1. Proportional Grid & Cranium',
+          caption: 'Start with a 6x6 guide grid, cranial circle, vertical axis, and eye-line.',
+          draw_commands: [
+            { type: 'grid', divisions: 6 },
+            { type: 'circle', cx: 0.45, cy: 0.30, r: 0.14, color: '#38bdf8', width: 4 },
+            { type: 'line', x1: 0.45, y1: 0.14, x2: 0.45, y2: 0.46, color: '#94a3b8', dashed: true, width: 2 },
+            { type: 'line', x1: 0.29, y1: 0.31, x2: 0.61, y2: 0.31, color: '#94a3b8', dashed: true, width: 2 }
+          ]
+        },
+        {
+          title: '2. Ribcage, Pelvis & Spine S-Curve',
+          caption: 'Connect head to a tilted oval ribcage and rounded pelvis along an S-spine.',
+          draw_commands: [
+            { type: 'curve', x1: 0.46, y1: 0.36, cx: 0.64, cy: 0.48, x2: 0.56, y2: 0.72, color: '#fbbf24', dashed: true, width: 3 },
+            { type: 'ellipse', cx: 0.50, cy: 0.53, rx: 0.12, ry: 0.13, color: '#38bdf8', width: 4 },
+            { type: 'ellipse', cx: 0.54, cy: 0.69, rx: 0.16, ry: 0.14, color: '#38bdf8', width: 4 }
+          ]
+        },
+        {
+          title: '3. Ears & Facial Landmarks',
+          caption: 'Place wide triangular ears, almond eyes, nose triangle, and muzzle.',
+          draw_commands: [
+            { type: 'poly', points: [[0.34, 0.24], [0.29, 0.08], [0.42, 0.18]], color: '#00f0b4', width: 4 },
+            { type: 'poly', points: [[0.56, 0.24], [0.61, 0.08], [0.48, 0.18]], color: '#00f0b4', width: 4 },
+            { type: 'ellipse', cx: 0.39, cy: 0.30, rx: 0.022, ry: 0.026, color: '#fbbf24', filled: true },
+            { type: 'ellipse', cx: 0.51, cy: 0.30, rx: 0.022, ry: 0.026, color: '#fbbf24', filled: true },
+            { type: 'poly', points: [[0.43, 0.35], [0.47, 0.35], [0.45, 0.375]], closed: true, color: '#f472b6', filled: true }
+          ]
+        },
+        {
+          title: '4. Limbs, Paws & Sweeping Tail',
+          caption: 'Taper forelegs to rounded paws, sweep an S-tail, and trace whiskers!',
+          draw_commands: [
+            { type: 'line', x1: 0.42, y1: 0.58, x2: 0.40, y2: 0.84, color: '#00f0b4', width: 5 },
+            { type: 'line', x1: 0.51, y1: 0.59, x2: 0.50, y2: 0.84, color: '#00f0b4', width: 5 },
+            { type: 'ellipse', cx: 0.40, cy: 0.85, rx: 0.04, ry: 0.025, color: '#00f0b4', width: 4 },
+            { type: 'ellipse', cx: 0.50, cy: 0.85, rx: 0.04, ry: 0.025, color: '#00f0b4', width: 4 },
+            { type: 'curve', x1: 0.68, y1: 0.72, cx: 0.88, cy: 0.66, x2: 0.82, y2: 0.38, color: '#00f0b4', width: 6 },
+            { type: 'line', x1: 0.37, y1: 0.35, x2: 0.22, y2: 0.33, color: '#e2e8f0', width: 2 },
+            { type: 'line', x1: 0.53, y1: 0.35, x2: 0.68, y2: 0.33, color: '#e2e8f0', width: 2 }
+          ]
+        }
+      ]
+    };
+  }
+
+  // ====================================================================
+  // 6. EMOTIONAL & DYNAMIC BEHAVIOR ENGINE + IDLE ANIMATIONS
+  // ====================================================================
+  let botEnabled = true;
+  let audioEnergy = 0;
+  let clawClosure = 0.2;
+  let clawTargetClosure = 0.2;
+  let blinkTimer = 3.0;
+
+  const state = {
+    mode: 'idle',
+    idleRoutine: 'none',
+    idleRoutineTimer: 0,
+    nextIdleSwitch: 3.5,
+    emotion: 'curious',
+    behavior: 'autonomous',
+    behaviorTimer: 0,
+    yawOffset: 0,
+    targetYawOffset: 0,
+    nodPhase: 0,
+    targetObj: null,
+    pointTargetPos: new THREE.Vector3(0, 1.0, -1.5),
+    pointTimer: 0,
+    jugglePhase: 0,
+    juggleTimer: 0,
+    juggleObjPos: new THREE.Vector3(),
+    juggleObjVel: new THREE.Vector3(),
+    juggleTargetEnt: null,
+    heldObj: null,
+    heldEnt: null,
+    heldRadius: 0.12,
+    worldAnchor: new THREE.Vector3(0.46, 1.48, -1.05),
+    hoverTargetPos: new THREE.Vector3(0.46, 1.48, -1.05),
+    velocity: new THREE.Vector3(),
+    tipTargetPos: new THREE.Vector3(0.46, 1.02, -1.05),
+    currentTipPos: new THREE.Vector3(0.46, 1.02, -1.05),
+    showTimer: 0,
+    grabProgress: 0,
+    lookTargetPos: new THREE.Vector3(0, 1.5, 0)
+  };
+
+  const vP0 = new THREE.Vector3(), vC1 = new THREE.Vector3(), vC2 = new THREE.Vector3(), vP3 = new THREE.Vector3();
+  const vPt = new THREE.Vector3(), vNext = new THREE.Vector3(), vObjCenter = new THREE.Vector3(), vObjSize = new THREE.Vector3();
+  const tmpBox = new THREE.Box3(), tmpVecA = new THREE.Vector3(), tmpVecB = new THREE.Vector3();
+
+  function setEmotion(em) {
+    state.emotion = String(em || 'curious').toLowerCase();
+  }
+
+  function getEntityRecord(target) {
+    if (!target) return null;
+    if (typeof target === 'object' && target.group) return target;
+    if (target.isObject3D && target.userData?.entity) return target.userData.entity;
+    return APP.findEntity ? APP.findEntity(target) : null;
+  }
+
+  function getEntityObject3D(target) {
+    if (!target) return null;
+    if (target.isObject3D) return target;
+    if (target.group?.isObject3D) return target.group;
+    if (target.mesh?.isObject3D) return target.mesh;
+    const rec = getEntityRecord(target);
+    return rec ? (rec.group || rec.mesh) : null;
+  }
+
+  function computeObjCenterAndRadius(obj) {
+    obj.updateMatrixWorld(true);
+    tmpBox.setFromObject(obj);
+    if (tmpBox.isEmpty()) { obj.getWorldPosition(vObjCenter); return { center: vObjCenter.clone(), radius: 0.12 }; }
+    tmpBox.getCenter(vObjCenter);
+    tmpBox.getSize(vObjSize);
+    return { center: vObjCenter.clone(), radius: Math.max(0.06, Math.min(0.32, Math.max(vObjSize.x, vObjSize.z) * 0.45)) };
+  }
+
+  function clearIdleEffects() {
+    capeGrabCornerActive = false;
+    lensProjGroup.visible = false;
+    juggleOrbMesh.visible = false;
+    if (state.juggleTargetEnt) {
+      state.juggleTargetEnt.heldByBot = false;
+      state.juggleTargetEnt = null;
+    }
+  }
+
+  function releaseHeldEntity() {
+    if (state.heldEnt) { state.heldEnt.heldByBot = false; state.heldEnt = null; }
+    if (state.heldObj) { state.heldObj.userData = state.heldObj.userData || {}; state.heldObj.userData.heldByBot = false; state.heldObj = null; }
+  }
+
+  function tentacle_release() {
+    releaseHeldEntity();
+    clearIdleEffects();
+    state.mode = 'idle';
+    state.idleRoutine = 'none';
+    state.targetObj = null;
+    state.worldAnchor.copy(botRoot.position);
+    clawTargetClosure = 0.08;
+    showBeam.visible = false;
+    setEmotion('curious');
+    return { ok: true, message: 'Geeny released the object.' };
+  }
+
+  function tentacle_grab(target) {
+    if (!botEnabled) setEnabled(true);
+    const obj = getEntityObject3D(target || 'latest');
+    if (!obj) return { ok: false, error: 'Target object not found to grab: ' + String(target || '') };
+    releaseHeldEntity(); clearIdleEffects();
+    state.mode = 'grabbing';
+    state.targetObj = obj;
+    state.grabProgress = 0;
+    clawTargetClosure = 0.0;
+    showBeam.visible = false;
+    setEmotion('focused');
+    return { ok: true, message: 'Geeny grabbing ' + (obj.userData?.entity?.name || obj.name || 'object') + '.' };
+  }
+
+  function tentacle_hand_to_user(target) {
+    if (!botEnabled) setEnabled(true);
+    let obj = getEntityObject3D(target || 'latest');
+    if (!obj && state.heldObj) obj = state.heldObj;
+    if (!obj) return { ok: false, error: 'No target object found to hand to user.' };
+    clearIdleEffects();
+    if (state.heldObj !== obj) {
+      releaseHeldEntity();
+      state.targetObj = obj;
+      const info = computeObjCenterAndRadius(obj);
+      state.heldObj = obj;
+      state.heldEnt = getEntityRecord(obj);
+      state.heldRadius = info.radius;
+      if (state.heldEnt) state.heldEnt.heldByBot = true;
+      obj.userData = obj.userData || {};
+      obj.userData.heldByBot = true;
+    }
+    state.mode = 'handing';
+    clawTargetClosure = 0.85;
+    showBeam.visible = false;
+    setEmotion('happy');
+    return { ok: true, message: 'Geeny bringing ' + (state.heldEnt?.name || obj.name || 'object') + ' to your hand.' };
+  }
+
+  function tentacle_show(target) {
+    if (!botEnabled) setEnabled(true);
+    const obj = getEntityObject3D(target || 'latest');
+    if (!obj) return { ok: false, error: 'Target object not found to showcase.' };
+    clearIdleEffects();
+    if (!state.heldObj || state.heldObj === obj) releaseHeldEntity();
+    state.mode = 'showing';
+    state.targetObj = obj;
+    state.showTimer = 4.5;
+    clawTargetClosure = 0.25;
+    showBeam.visible = true;
+    setEmotion('excited');
+    return { ok: true, message: 'Geeny showcasing ' + (obj.userData?.entity?.name || obj.name || 'object') + '.' };
+  }
+
+  function tentacle_point(targetOrPlace, coords) {
+    if (!botEnabled) setEnabled(true);
+    releaseHeldEntity();
+    clearIdleEffects();
+
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+    if (flat.lengthSq() < 0.01) flat.set(0, 0, -1);
+    const right = new THREE.Vector3().crossVectors(flat, new THREE.Vector3(0, 1, 0)).normalize();
+
+    let resolvedLabel = String(targetOrPlace || 'there');
+    const targetObj = getEntityObject3D(targetOrPlace);
+
+    if (Array.isArray(coords) && coords.length === 3) {
+      state.pointTargetPos.set(Number(coords[0]), Number(coords[1]), Number(coords[2]));
+      state.targetObj = null;
+    } else if (targetObj && targetObj !== boardRoot) {
+      state.pointTargetPos.copy(computeObjCenterAndRadius(targetObj).center);
+      state.targetObj = targetObj;
+    } else {
+      state.targetObj = null;
+      const low = resolvedLabel.toLowerCase();
+      if (low.includes('up') || low.includes('sky') || low.includes('ceiling') || low.includes('فوق')) {
+        state.pointTargetPos.copy(botRoot.position).add(new THREE.Vector3(0, 2.2, -0.3));
+      } else if (low.includes('down') || low.includes('floor') || low.includes('ground') || low.includes('تحت') || low.includes('أرض')) {
+        state.pointTargetPos.set(botRoot.position.x, 0.05, botRoot.position.z - 0.3);
+      } else if (low.includes('left') || low.includes('يسار')) {
+        state.pointTargetPos.copy(hp).addScaledVector(flat, 1.4).addScaledVector(right, -1.8);
+      } else if (low.includes('right') || low.includes('يمين')) {
+        state.pointTargetPos.copy(hp).addScaledVector(flat, 1.4).addScaledVector(right, 1.8);
+      } else if (low.includes('behind') || low.includes('back') || low.includes('خلف')) {
+        state.pointTargetPos.copy(hp).addScaledVector(flat, -2.0);
+      } else if (low.includes('me') || low.includes('user') || low.includes('أنا') || low.includes('الي')) {
+        state.pointTargetPos.copy(hp).add(new THREE.Vector3(0, -0.15, 0));
+      } else {
+        state.pointTargetPos.copy(hp).addScaledVector(flat, 2.4);
+      }
+    }
+
+    state.mode = 'pointing';
+    state.pointTimer = 5.5;
+    clawTargetClosure = 0.92;
+    showBeam.visible = true;
+    setEmotion('focused');
+    return { ok: true, message: `Geeny pointing at ${resolvedLabel}.` };
+  }
+
+  function startJuggleRoutine(durationSec) {
+    clearIdleEffects();
+    const candidates = (APP.entities || []).filter((e) => e && e !== boardEnt && !e.isHeld && !e.isPen && e.category !== 'world_fx' && e.category !== 'portal');
+    const pick = candidates.length ? candidates[Math.floor(Math.random() * candidates.length)] : null;
+    if (pick && pick.group) {
+      const info = computeObjCenterAndRadius(pick.group);
+      if (info.radius < 0.45 && info.center.distanceTo(botRoot.position) < 3.0) {
+        state.juggleTargetEnt = pick;
+        pick.heldByBot = true;
+        state.juggleObjPos.copy(info.center);
+      } else {
+        state.juggleTargetEnt = null;
+      }
+    }
+    if (!state.juggleTargetEnt) {
+      state.juggleObjPos.copy(botRoot.position).add(new THREE.Vector3(0, -0.35, 0.2));
+      juggleOrbMesh.position.copy(state.juggleObjPos);
+      juggleOrbMesh.visible = true;
+    }
+    state.idleRoutine = 'juggle_toss';
+    state.idleRoutineTimer = durationSec || 8.0;
+    state.jugglePhase = 0;
+    state.juggleTimer = 0;
+    setEmotion('playful');
+  }
+
+  // Idle pool excludes holo_projector (hologram projector only runs when user asks!)
+  function startNextIdleRoutine() {
+    clearIdleEffects();
+    const pool = ['juggle_toss', 'curious_patrol'];
+    if (capeEnabled) pool.push('cape_flaunt', 'cape_flaunt');
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+
+    if (pick === 'cape_flaunt' && capeEnabled) {
+      state.idleRoutine = 'cape_flaunt';
+      state.idleRoutineTimer = 6.5;
+      setEmotion('happy');
+    } else if (pick === 'juggle_toss') {
+      startJuggleRoutine(7.5);
+    } else {
+      state.idleRoutine = 'curious_patrol';
+      state.idleRoutineTimer = 6.0;
+      setEmotion('curious');
+    }
+  }
+
+  function controlBotAction(action, params = {}) {
+    if (!botEnabled) setEnabled(true);
+    const act = String(action || '').toLowerCase();
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+    if (flat.lengthSq() < 0.01) flat.set(0, 0, -1);
+    const right = new THREE.Vector3().crossVectors(flat, new THREE.Vector3(0, 1, 0)).normalize();
+
+    if (act === 'come_here' || act === 'come') {
+      clearIdleEffects();
+      state.mode = 'idle'; state.idleRoutine = 'none'; state.behavior = 'autonomous'; state.targetYawOffset = 0;
+      state.worldAnchor.copy(hp).addScaledVector(flat, Number(params.distance || 0.85)).addScaledVector(right, 0.22);
+      state.worldAnchor.y = Math.max(0.95, hp.y + 0.02);
+      state.lookTargetPos.copy(hp);
+      setEmotion('happy');
+      return { ok: true, message: 'Geeny flew right over to you.' };
+    }
+    if (act === 'turn_around' || act === 'turn_back') {
+      state.behavior = 'turned'; state.targetYawOffset += Math.PI;
+      setEmotion('playful');
+      return { ok: true, message: 'Geeny turned around.' };
+    }
+    if (act === 'spin' || act === 'spin_360') {
+      state.behavior = 'turned'; state.targetYawOffset += Math.PI * 2;
+      setEmotion('excited');
+      return { ok: true, message: 'Geeny spun 360 degrees.' };
+    }
+    if (act === 'face_user' || act === 'look_at_user') {
+      state.behavior = 'autonomous'; state.targetYawOffset = 0; state.lookTargetPos.copy(hp);
+      setEmotion('curious');
+      return { ok: true, message: 'Geeny facing you.' };
+    }
+    if (act === 'follow_on') { state.mode = 'idle'; state.behavior = 'follow'; state.targetYawOffset = 0; setEmotion('happy'); return { ok: true, message: 'Geeny following you.' }; }
+    if (act === 'follow_off' || act === 'stay') { state.behavior = 'autonomous'; state.worldAnchor.copy(botRoot.position); return { ok: true, message: 'Geeny staying here.' }; }
+    if (act === 'orbit_user') { state.mode = 'idle'; state.behavior = 'orbit'; state.behaviorTimer = 8.0; state.targetYawOffset = 0; setEmotion('playful'); return { ok: true, message: 'Geeny orbiting you.' }; }
+    if (act === 'dance') { state.mode = 'idle'; state.behavior = 'dance'; state.behaviorTimer = 6.0; setEmotion('excited'); return { ok: true, message: 'Geeny dancing!' }; }
+    if (act === 'nod') { state.nodPhase = Math.PI * 4; setEmotion('happy'); return { ok: true, message: 'Geeny nodded.' }; }
+    if (act === 'cape_flaunt' || act === 'show_cape') {
+      setCapeEnabled(true); state.mode = 'idle'; state.idleRoutine = 'cape_flaunt'; state.idleRoutineTimer = 7.0;
+      setEmotion('happy');
+      return { ok: true, message: 'Geeny showing off its cape!' };
+    }
+    if (act === 'holo_projector' || act === 'project_hologram') {
+      clearIdleEffects();
+      const topic = params.topic || params.title || params.target || 'HOLO-LENS';
+      updateHoloCard(topic, params.subtitle || 'HOLOGRAM PROJECTED');
+      state.mode = 'idle';
+      state.idleRoutine = 'holo_projector';
+      state.idleRoutineTimer = Number(params.duration || 10.0);
+      lensProjGroup.visible = true;
+      setEmotion('focused');
+      return { ok: true, message: `Geeny rotated its eye lens to project hologram: ${topic}.` };
+    }
+    if (act === 'stop_hologram' || act === 'hide_hologram') {
+      clearIdleEffects();
+      state.idleRoutine = 'none';
+      return { ok: true, message: 'Geeny stopped eye lens hologram projection.' };
+    }
+    if (act === 'juggle' || act === 'play') {
+      state.mode = 'idle'; startJuggleRoutine(8.5);
+      return { ok: true, message: 'Geeny playing by tossing and catching!' };
+    }
+    if (act === 'move_relative') {
+      state.mode = 'idle';
+      state.worldAnchor.add(new THREE.Vector3(Number(params.dx || 0), Number(params.dy || 0), Number(params.dz || 0)));
+      state.worldAnchor.y = Math.max(0.4, state.worldAnchor.y);
+      return { ok: true, message: 'Geeny moved.' };
+    }
+    if (act === 'inspect_object' && params.target) return tentacle_show(params.target);
+    return { ok: false, error: 'Unknown control action: ' + action };
+  }
+
+  function evalCubicBezier(p0, c1, c2, p3, t, out) {
+    const u = 1 - t;
+    out.set(0, 0, 0).addScaledVector(p0, u * u * u).addScaledVector(c1, 3 * u * u * t).addScaledVector(c2, 3 * u * t * t).addScaledVector(p3, t * t * t);
+    return out;
+  }
+
+  function updateTentacleIK(dt, elapsed) {
+    vP0.set(0, -0.14, 0);
+    botRoot.localToWorld(vP0);
+
+    const tipLerp = 1 - Math.exp(-11.0 * dt);
+    state.currentTipPos.lerp(state.tipTargetPos, tipLerp);
+    vP3.copy(state.currentTipPos);
+
+    const dist = vP0.distanceTo(vP3);
+    vC1.copy(vP0).add(new THREE.Vector3(0, -Math.max(0.22, dist * 0.46), 0)).addScaledVector(state.velocity, -0.16);
+    tmpVecA.subVectors(vP3, vP0).normalize();
+    vC2.copy(vP3).addScaledVector(tmpVecA, -Math.max(0.16, dist * 0.34)).addScaledVector(state.velocity, -0.12);
+    vC2.y += Math.sin(elapsed * 2.2) * 0.04 + 0.07;
+
+    for (let i = 0; i < TENTACLE_SEGMENTS; i++) {
+      const t = i / TENTACLE_SEGMENTS, tNext = (i + 1) / TENTACLE_SEGMENTS;
+      evalCubicBezier(vP0, vC1, vC2, vP3, t, vPt);
+      evalCubicBezier(vP0, vC1, vC2, vP3, tNext, vNext);
+      segments[i].position.copy(vPt);
+      segments[i].lookAt(vNext);
+    }
+
+    clawGroup.position.copy(vP3);
+    if (state.mode === 'showing' && state.targetObj) {
+      const info = computeObjCenterAndRadius(state.targetObj);
+      clawGroup.lookAt(info.center);
+      const beamDist = Math.max(0.15, Math.min(0.95, vP3.distanceTo(info.center)));
+      showBeam.scale.set(1, 1, beamDist / 0.60);
+      showBeam.position.z = beamDist * 0.52;
+    } else if (state.mode === 'pointing') {
+      const tgt = state.targetObj ? computeObjCenterAndRadius(state.targetObj).center : state.pointTargetPos;
+      clawGroup.lookAt(tgt);
+      const beamDist = Math.max(0.25, Math.min(1.6, vP3.distanceTo(tgt)));
+      showBeam.scale.set(0.65, 0.65, beamDist / 0.60);
+      showBeam.position.z = beamDist * 0.52;
+    } else {
+      evalCubicBezier(vP0, vC1, vC2, vP3, 0.9, tmpVecB);
+      tmpVecA.subVectors(vP3, tmpVecB).normalize();
+      if (tmpVecA.lengthSq() > 0.001) clawGroup.lookAt(tmpVecB.copy(vP3).add(tmpVecA));
+    }
+
+    clawClosure += (clawTargetClosure - clawClosure) * Math.min(1, dt * 10);
+    const openAngle = THREE.MathUtils.lerp(0.62, -0.14, clawClosure);
+    for (let p = 0; p < prongs.length; p++) prongs[p].rotation.y = openAngle;
+  }
+
+  function updateRobot(dt, elapsed) {
+    if (!botEnabled) return;
+    const delta = Math.min(0.05, dt || 0.016);
+    const now = elapsed || (performance.now() * 0.001);
+
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    const flatFwd = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+    if (flatFwd.lengthSq() < 0.01) flatFwd.set(0, 0, -1);
+    const right = new THREE.Vector3().crossVectors(flatFwd, new THREE.Vector3(0, 1, 0)).normalize();
+
+    if (state.behaviorTimer > 0) {
+      state.behaviorTimer -= delta;
+      if (state.behaviorTimer <= 0 && (state.behavior === 'orbit' || state.behavior === 'dance')) state.behavior = 'autonomous';
+    }
+
+    if (state.mode === 'idle') {
+      if (state.behavior === 'autonomous' && !boardState.visible) {
+        if (state.idleRoutine === 'none') {
+          state.nextIdleSwitch -= delta;
+          if (state.nextIdleSwitch <= 0) startNextIdleRoutine();
+        } else {
+          state.idleRoutineTimer -= delta;
+          if (state.idleRoutineTimer <= 0) {
+            clearIdleEffects();
+            state.idleRoutine = 'none';
+            state.nextIdleSwitch = 3.5 + Math.random() * 3.5;
+            setEmotion('curious');
+          }
+        }
+      } else if (state.idleRoutine !== 'holo_projector') {
+        clearIdleEffects();
+        state.idleRoutine = 'none';
+      }
+
+      if (state.behavior === 'follow') {
+        state.worldAnchor.copy(hp).addScaledVector(flatFwd, 1.05).addScaledVector(right, 0.42);
+        state.worldAnchor.y = Math.max(1.0, hp.y + 0.05);
+        state.lookTargetPos.copy(hp);
+      } else if (state.behavior === 'orbit') {
+        const ang = now * 1.1;
+        state.worldAnchor.set(hp.x + Math.cos(ang) * 1.15, Math.max(1.0, hp.y + 0.08), hp.z + Math.sin(ang) * 1.15);
+        state.lookTargetPos.copy(hp);
+      } else if (state.behavior === 'dance') {
+        state.hoverTargetPos.copy(state.worldAnchor).add(new THREE.Vector3(Math.sin(now * 4.5) * 0.22, Math.abs(Math.sin(now * 6.0)) * 0.16, Math.cos(now * 3.5) * 0.15));
+        state.targetYawOffset += delta * 2.4;
+      } else {
+        const distToUser = state.worldAnchor.distanceTo(hp);
+        if (distToUser > 3.2) {
+          state.worldAnchor.copy(hp).addScaledVector(flatFwd, 1.15).addScaledVector(right, 0.45);
+          state.worldAnchor.y = Math.max(1.05, hp.y + 0.04);
+        } else if (distToUser < 0.44) {
+          tmpVecA.subVectors(state.worldAnchor, hp).setY(0).normalize();
+          if (tmpVecA.lengthSq() < 0.01) tmpVecA.copy(flatFwd);
+          state.worldAnchor.copy(hp).addScaledVector(tmpVecA, 0.72);
+          state.worldAnchor.y = Math.max(1.05, hp.y + 0.04);
+        }
+
+        if (state.idleRoutine === 'cape_flaunt' && capeEnabled) {
+          state.targetYawOffset = Math.sin(now * 1.6) * 0.55 + 0.85;
+          state.lookTargetPos.copy(hp);
+          const cornerTarget = botRoot.position.clone()
+            .addScaledVector(right, 0.26)
+            .add(new THREE.Vector3(0, -0.22 + Math.sin(now * 2.4) * 0.05, 0.16));
+          state.tipTargetPos.copy(cornerTarget);
+          clawTargetClosure = 0.86;
+          capeGrabCornerActive = state.currentTipPos.distanceTo(cornerTarget) < 0.18;
+        } else if (state.idleRoutine === 'holo_projector') {
+          state.lookTargetPos.copy(hp);
+          const dialWorld = new THREE.Vector3(0.04, 0.02, 0.22);
+          bodyGroup.localToWorld(dialWorld);
+          state.tipTargetPos.copy(dialWorld);
+          clawTargetClosure = 0.72;
+          lensDial.rotation.z = now * 2.2;
+          lensProjGroup.visible = true;
+          holoSpinObj.rotation.y = now * 1.8;
+          holoMeshA.rotation.x = now * 1.2;
+          holoMeshB.rotation.z = -now * 2.0;
+        } else if (state.idleRoutine === 'juggle_toss') {
+          state.juggleTimer += delta;
+          const jTargetObj = state.juggleTargetEnt?.group || juggleOrbMesh;
+          if (state.jugglePhase === 0) {
+            state.tipTargetPos.copy(state.juggleObjPos);
+            state.lookTargetPos.copy(state.juggleObjPos);
+            clawTargetClosure = 0.85;
+            if (state.juggleTimer > 0.45) {
+              state.jugglePhase = 1;
+              state.juggleTimer = 0;
+              state.juggleObjVel.set((Math.random() - 0.5) * 0.15, 2.55, (Math.random() - 0.5) * 0.15);
+              clawTargetClosure = 0.05;
+            }
+          } else if (state.jugglePhase === 1) {
+            state.juggleObjVel.y -= 6.2 * delta;
+            state.juggleObjPos.addScaledVector(state.juggleObjVel, delta);
+            jTargetObj.position.copy(state.juggleObjPos);
+            jTargetObj.rotation.x += delta * 4.0;
+            jTargetObj.rotation.y += delta * 3.0;
+            state.lookTargetPos.copy(state.juggleObjPos);
+            state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(0, -0.32, 0.22));
+            if (state.juggleObjVel.y < 0 && state.juggleObjPos.y <= botRoot.position.y - 0.26) {
+              state.jugglePhase = 2;
+              state.juggleTimer = 0;
+              clawTargetClosure = 0.90;
+            }
+          } else {
+            state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(0.08, -0.34, 0.20));
+            state.juggleObjPos.copy(clawGroup.position);
+            jTargetObj.position.copy(state.juggleObjPos);
+            state.lookTargetPos.copy(hp);
+            if (state.juggleTimer > 0.55) {
+              state.jugglePhase = 0;
+              state.juggleTimer = 0;
+            }
+          }
+        } else if (state.idleRoutine === 'curious_patrol') {
+          const ents = (APP.entities || []).filter((e) => e && e !== boardEnt && !e.isHeld && e.category !== 'world_fx');
+          if (ents.length) {
+            const pick = ents[Math.floor(now * 0.2) % ents.length];
+            const info = computeObjCenterAndRadius(pick.group);
+            if (info.center.distanceTo(hp) < 2.8) {
+              state.worldAnchor.lerp(info.center.clone().add(new THREE.Vector3(0.32, 0.42, 0.28)), delta * 0.8);
+              state.lookTargetPos.copy(info.center);
+              state.tipTargetPos.copy(info.center).add(new THREE.Vector3(0.12, 0.14, 0.12));
+            }
+          } else {
+            state.lookTargetPos.copy(hp);
+            state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(Math.sin(now * 1.4) * 0.18, -0.44, 0.08));
+          }
+        } else {
+          if (state.behavior === 'autonomous') state.targetYawOffset = 0;
+          state.lookTargetPos.copy(hp);
+          state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(Math.sin(now * 1.25) * 0.14, -0.46 + Math.cos(now * 1.55) * 0.05, -0.08 + Math.cos(now * 0.9) * 0.10));
+          clawTargetClosure = 0.15;
+        }
+      }
+
+      if (state.behavior !== 'dance') {
+        state.hoverTargetPos.copy(state.worldAnchor).add(new THREE.Vector3(Math.sin(now * 0.7) * 0.055, Math.sin(now * 1.7) * 0.035, Math.cos(now * 0.6) * 0.045));
+      }
+    } else if (state.mode === 'pointing') {
+      const tgt = state.targetObj ? computeObjCenterAndRadius(state.targetObj).center : state.pointTargetPos;
+      const dirToTgt = tmpVecA.subVectors(tgt, botRoot.position).normalize();
+      state.tipTargetPos.copy(botRoot.position).addScaledVector(dirToTgt, 0.62);
+      state.lookTargetPos.copy(tgt);
+      state.pointTimer -= delta;
+      if (state.pointTimer <= 0) tentacle_release();
+    } else if (state.mode === 'grabbing') {
+      if (!state.targetObj || !state.targetObj.parent) {
+        tentacle_release();
+      } else {
+        const info = computeObjCenterAndRadius(state.targetObj);
+        state.hoverTargetPos.copy(info.center).add(new THREE.Vector3(0.28, 0.46, 0.22));
+        state.tipTargetPos.copy(info.center);
+        state.lookTargetPos.copy(info.center);
+        if (state.currentTipPos.distanceTo(info.center) < 0.16) {
+          state.grabProgress += delta; clawTargetClosure = 0.88;
+          if (state.grabProgress > 0.22) {
+            state.heldObj = state.targetObj; state.heldEnt = getEntityRecord(state.heldObj); state.heldRadius = info.radius;
+            if (state.heldEnt) state.heldEnt.heldByBot = true;
+            state.heldObj.userData = state.heldObj.userData || {}; state.heldObj.userData.heldByBot = true;
+            state.mode = 'holding'; setEmotion('happy');
+          }
+        }
+      }
+    } else if (state.mode === 'holding') {
+      if (!state.heldObj || !state.heldObj.parent) tentacle_release();
+      else {
+        state.hoverTargetPos.copy(state.worldAnchor).add(new THREE.Vector3(0, Math.sin(now * 1.5) * 0.025, 0));
+        state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(-0.10, -0.44, 0.22));
+        state.lookTargetPos.copy(hp);
+      }
+    } else if (state.mode === 'handing') {
+      if (!state.heldObj || !state.heldObj.parent) tentacle_release();
+      else {
+        state.hoverTargetPos.copy(hp).addScaledVector(flatFwd, 0.72);
+        state.hoverTargetPos.y = Math.max(0.92, hp.y + 0.02);
+        let handAnchor = null, handGrabbing = false;
+        const hands = APP.hands || {};
+        for (const k of Object.keys(hands)) {
+          const h = hands[k]; if (!h || !h.active) continue;
+          const pos = h.isHand ? h.fingerTips?.index : h.pos;
+          if (pos) {
+            if (!handAnchor || pos.distanceTo(state.currentTipPos) < handAnchor.distanceTo(state.currentTipPos)) handAnchor = pos;
+            if ((h.pinching || h.trigger || h.gripping) && pos.distanceTo(state.currentTipPos) < 0.22) handGrabbing = true;
+          }
+        }
+        if (handAnchor && handAnchor.distanceTo(hp) < 1.1) state.tipTargetPos.copy(handAnchor).addScaledVector(flatFwd, -0.05);
+        else { state.tipTargetPos.copy(hp).addScaledVector(flatFwd, 0.42); state.tipTargetPos.y = Math.max(0.75, hp.y - 0.20); }
+        state.lookTargetPos.copy(hp);
+        if (handGrabbing || state.heldEnt?.grabbedByHand) tentacle_release();
+      }
+    } else if (state.mode === 'showing') {
+      if (!state.targetObj || !state.targetObj.parent) tentacle_release();
+      else {
+        const info = computeObjCenterAndRadius(state.targetObj);
+        state.hoverTargetPos.copy(info.center).add(new THREE.Vector3(0.36, 0.40 + Math.sin(now * 2.0) * 0.03, 0.22));
+        state.tipTargetPos.copy(info.center).add(new THREE.Vector3(0.18, 0.12, 0.12));
+        state.worldAnchor.copy(state.hoverTargetPos);
+        state.lookTargetPos.copy(info.center);
+        state.showTimer -= delta;
+        if (state.showTimer <= 0) tentacle_release();
+      }
+    }
+
+    const stiffness = 28.0, damping = 8.4;
+    tmpVecA.subVectors(state.hoverTargetPos, botRoot.position).multiplyScalar(stiffness);
+    state.velocity.addScaledVector(tmpVecA, delta);
+    state.velocity.multiplyScalar(Math.exp(-damping * delta));
+    botRoot.position.addScaledVector(state.velocity, delta);
+
+    bodyGroup.lookAt(state.lookTargetPos);
+    state.yawOffset += (state.targetYawOffset - state.yawOffset) * Math.min(1, delta * 6.5);
+    bodyGroup.rotateY(state.yawOffset);
+    if (state.nodPhase > 0) {
+      state.nodPhase = Math.max(0, state.nodPhase - delta * 12.0);
+      bodyGroup.rotateX(Math.sin(state.nodPhase) * 0.28);
+    }
+
+    const speed = state.velocity.length();
+    bodyGroup.rotateZ(THREE.MathUtils.clamp(-state.velocity.x * 0.22, -0.35, 0.35));
+    bodyGroup.rotateX(THREE.MathUtils.clamp(speed * 0.10, -0.20, 0.20));
+
+    const wingSpeed = state.emotion === 'excited' || state.emotion === 'playful' ? 9.0 : 4.5;
+    const wingFlutter = Math.sin(now * wingSpeed) * 0.07 + Math.min(0.28, speed * 0.25);
+    wingL.rotation.z = wingFlutter;
+    wingR.rotation.z = -wingFlutter;
+
+    blinkTimer -= delta;
+    let eyeScaleY = state.emotion === 'happy' ? 0.65 : state.emotion === 'focused' ? 0.78 : 1.0;
+    let eyeScaleX = state.emotion === 'happy' ? 1.18 : 1.0;
+    if (blinkTimer <= 0) {
+      if (blinkTimer > -0.11) eyeScaleY = 0.10;
+      else blinkTimer = 2.4 + Math.random() * 3.8;
+    }
+    eyeL.scale.set(eyeScaleX, eyeScaleY, 1);
+    eyeR.scale.set(eyeScaleX, eyeScaleY, 1);
+    eyeMat.color.setHex(
+      state.emotion === 'excited' ? 0xfbbf24 :
+      state.emotion === 'happy' ? 0x00ff9d :
+      state.emotion === 'playful' ? 0xf472b6 : 0x5efce8
+    );
+
+    reactorCore.rotation.y = now * 1.4;
+    reactorCore.rotation.x = now * 0.8;
+
+    updateTentacleIK(delta, now);
+    stepCapePhysics(delta, now);
+
+    if (boardState.visible && boardRoot.visible) {
+      if (!boardDetached && !boardEnt.isHeld) {
+        const targetBoardPos = botRoot.position.clone().addScaledVector(right, -0.62).add(new THREE.Vector3(0, 0.04, 0.12));
+        boardRoot.position.lerp(targetBoardPos, 1 - Math.exp(-8 * delta));
+        boardRoot.lookAt(hp.x, boardRoot.position.y, hp.z);
+
+        boomArm.visible = true;
+        const armStart = botRoot.position.clone().addScaledVector(right, -0.14);
+        const armEnd = boardRoot.position.clone().addScaledVector(right, BOARD_W * 0.48);
+        const armLen = Math.max(0.05, armStart.distanceTo(armEnd));
+        boomArm.position.lerpVectors(armStart, armEnd, 0.5);
+        boomArm.scale.set(1, armLen, 1);
+        boomArm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), armEnd.sub(armStart).normalize());
+      } else {
+        boomArm.visible = false;
+      }
+      updateBoardPenDrawing();
+    } else {
+      boomArm.visible = false;
+    }
+
+    if (state.heldObj && (state.mode === 'holding' || state.mode === 'handing')) {
+      const forwardDir = new THREE.Vector3(0, 0, 1).applyQuaternion(clawGroup.quaternion);
+      tmpVecA.copy(clawGroup.position).addScaledVector(forwardDir, 0.045 + state.heldRadius * 0.35);
+      state.heldObj.position.lerp(tmpVecA, 1 - Math.exp(-16 * delta));
+      if (state.heldEnt?.physics?.vel) state.heldEnt.physics.vel.set(0, 0, 0);
+    }
+
+    const targetEnergy = (APP.botSpeaking || APP.ttsSpeaking)
+      ? 0.55 + Math.abs(Math.sin(now * 16.0)) * 0.45 : (APP.micLevel || 0);
+    audioEnergy += (targetEnergy - audioEnergy) * Math.min(1, delta * 12);
+    plasmaMat.emissiveIntensity = 1.1 + audioEnergy * 2.4;
+    botLight.intensity = 0.6 + audioEnergy * 1.2;
+  }
+
+  function setEnabled(val) {
+    botEnabled = !!val;
+    botRoot.visible = botEnabled;
+    tentacleGroup.visible = botEnabled;
+    capeMesh.visible = botEnabled && capeEnabled;
+    if (!botEnabled) { tentacle_release(); hideBoard(); disconnectLive(); }
+    else if (capeEnabled) snapCapeToRest();
+    APP.emit?.('bot:state_changed', botEnabled);
+    APP.toolbar?.syncState?.();
+    return botEnabled;
+  }
+
+  // ====================================================================
+  // 7. SPATIAL MEMORY, MODIFY_ENTITY, STRICT 100% AI vs HYBRID TOOLS
+  // ====================================================================
+  const txtSnapshots = new Map();
+
+  function buildSceneMemorySnapshot() {
+    const ents = (APP.entities || []).filter((e) => e && e !== boardEnt);
+    if (!ents.length) return 'Scene is currently empty.';
+    const lines = [];
+    for (let i = Math.max(0, ents.length - 12); i < ents.length; i++) {
+      const e = ents[i];
+      if (!e || !e.group) continue;
+      e.group.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(e.group);
+      const size = new THREE.Vector3(); box.getSize(size);
+      const partNames = [];
+      e.group.traverse((c) => { if (c !== e.group && c.name) partNames.push(c.name); });
+      const wp = e.group.position;
+      lines.push(
+        `• id="${e.id}" name="${e.name}" pos=[${wp.x.toFixed(2)},${wp.y.toFixed(2)},${wp.z.toFixed(2)}] ` +
+        `localSize=[w:${size.x.toFixed(2)},h:${size.y.toFixed(2)},d:${size.z.toFixed(2)}] topY=${size.y.toFixed(2)} ` +
+        `parts=[${partNames.slice(0, 10).join(',')}]` + (e.meta?.summary ? ` (${e.meta.summary})` : '')
+      );
+    }
+    if (APP.lastEntityId) lines.push(`Most recently referenced entity: "${APP.lastEntityId}".`);
+    return lines.join('\n');
+  }
+
+  function modifyExistingEntity(entityId, action, jsCode, summaryNote) {
+    const ent = getEntityRecord(entityId || APP.lastEntityId || 'latest');
+    if (!ent || !ent.group) return { ok: false, error: `Entity "${entityId}" not found.` };
+    const targetGroup = ent.group;
+    targetGroup.updateMatrixWorld(true);
+
+    const localBox = new THREE.Box3();
+    const invRoot = targetGroup.matrixWorld.clone().invert();
+    targetGroup.traverse((c) => {
+      if (c.isMesh && c.geometry) {
+        c.geometry.computeBoundingBox();
+        const b = c.geometry.boundingBox.clone();
+        b.applyMatrix4(invRoot.clone().multiply(c.matrixWorld));
+        localBox.union(b);
+      }
+    });
+    const size = new THREE.Vector3(), center = new THREE.Vector3();
+    if (!localBox.isEmpty()) { localBox.getSize(size); localBox.getCenter(center); }
+
+    const info = {
+      box: localBox, size, center,
+      minY: isFinite(localBox.min.y) ? localBox.min.y : 0,
+      maxY: isFinite(localBox.max.y) ? localBox.max.y : size.y,
+      topY: isFinite(localBox.max.y) ? localBox.max.y : size.y,
+      findPart: (q) => {
+        const low = String(q || '').toLowerCase();
+        let found = null;
+        targetGroup.traverse((c) => { if (!found && c !== targetGroup && String(c.name || '').toLowerCase().includes(low)) found = c; });
+        return found;
+      },
+      scatterTufts: (tuftMat, tuftCount = 180, tuftHeight = 0.032, tuftRadius = 0.008) => {
+        const meshes = [];
+        targetGroup.traverse((c) => { if (c.isMesh && c.geometry?.attributes?.position) meshes.push(c); });
+        if (!meshes.length) return 0;
+        const coneGeo = new THREE.ConeGeometry(tuftRadius, tuftHeight, 5);
+        coneGeo.translate(0, tuftHeight * 0.5, 0);
+        const inst = new THREE.InstancedMesh(coneGeo, tuftMat, tuftCount);
+        const dummy = new THREE.Object3D();
+        const vPos = new THREE.Vector3(), vNorm = new THREE.Vector3(), qAlign = new THREE.Quaternion();
+        const up = new THREE.Vector3(0, 1, 0);
+        let placed = 0;
+        for (let i = 0; i < tuftCount; i++) {
+          const m = meshes[i % meshes.length];
+          const posA = m.geometry.attributes.position;
+          const normA = m.geometry.attributes.normal;
+          const vi = Math.floor(Math.random() * posA.count);
+          vPos.fromBufferAttribute(posA, vi);
+          m.updateMatrixWorld(true);
+          const relMat = invRoot.clone().multiply(m.matrixWorld);
+          vPos.applyMatrix4(relMat);
+          if (normA) {
+            vNorm.fromBufferAttribute(normA, vi).transformDirection(relMat).normalize();
+          } else {
+            vNorm.copy(vPos).sub(center).normalize();
+          }
+          qAlign.setFromUnitVectors(up, vNorm);
+          dummy.position.copy(vPos);
+          dummy.quaternion.copy(qAlign);
+          dummy.rotateX((Math.random() - 0.5) * 0.45);
+          dummy.rotateZ((Math.random() - 0.5) * 0.45);
+          const sc = 0.7 + Math.random() * 0.65;
+          dummy.scale.set(sc, sc, sc);
+          dummy.updateMatrix();
+          inst.setMatrixAt(placed++, dummy.matrix);
+        }
+        inst.instanceMatrix.needsUpdate = true;
+        inst.name = 'fur_tufts';
+        targetGroup.add(inst);
+        return placed;
+      }
+    };
+
+    try {
+      const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+      const clean = String(jsCode || '').trim().replace(/^```(?:javascript|js)?/i, '').replace(/```$/i, '').trim();
+      const fn = new Function('APP', 'targetGroup', 'THREE', 'V3', 'info', clean);
+      fn(APP, targetGroup, THREE, V3, info);
+
+      targetGroup.traverse((c) => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; c.userData.entity = ent; } });
+      if (summaryNote) {
+        ent.meta = ent.meta || {};
+        ent.meta.summary = ((ent.meta.summary || '') + '; ' + summaryNote).slice(-180);
+      }
+      APP.lastEntityId = ent.id;
+      APP.visual?.applyDissolveShader?.(targetGroup, 'materialize');
+      tentacle_show(ent);
+      return { ok: true, id: ent.id, name: ent.name, message: `Modified ${ent.name} (${action}).` };
+    } catch (err) {
+      return { ok: false, error: `${err.name}: ${err.message}` };
+    }
+  }
+
+  function runPhysicsSandboxPreset() {
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+    if (flat.lengthSq() < 0.01) flat.set(0, 0, -1);
+    const center = hp.clone().addScaledVector(flat, 1.25);
+
+    const colors = [0x00f0b4, 0x38bdf8, 0xf472b6, 0xfbbf24, 0xa78bfa, 0xfb7185];
+    const bodies = [];
+    for (let i = 0; i < 8; i++) {
+      const r = 0.065 + Math.random() * 0.04;
+      const g = new THREE.Group();
+      const mesh = new THREE.Mesh(
+        i % 3 === 0 ? new THREE.BoxGeometry(r * 1.8, r * 1.8, r * 1.8) : new THREE.SphereGeometry(r, 20, 16),
+        new THREE.MeshStandardMaterial({ color: colors[i % colors.length], metalness: 0.72, roughness: 0.22 })
+      );
+      g.add(mesh);
+      g.position.set(center.x + (Math.random() - 0.5) * 0.65, 1.1 + i * 0.18, center.z + (Math.random() - 0.5) * 0.65);
+      const ent = APP.registerEntity(g, {
+        name: 'Physics Body ' + (i + 1),
+        category: 'physics_sim',
+        holdable: true,
+        hasGravity: true,
+        restitution: 0.78,
+        velocity: new THREE.Vector3((Math.random() - 0.5) * 0.8, 0.4, (Math.random() - 0.5) * 0.8),
+        physics: { gravity: true, bounce: 0.78, radius: r }
+      });
+      bodies.push(ent);
+    }
+
+    const simMgr = new THREE.Group();
+    simMgr.name = 'Physics Simulation Solver';
+    const tmpDiff = new THREE.Vector3();
+    APP.registerEntity(simMgr, {
+      name: 'Physics Collision Solver',
+      category: 'world_fx',
+      grabbable: false,
+      physics: { enabled: false },
+      onUpdate: function () {
+        const active = (APP.entities || []).filter((e) => e && e.category === 'physics_sim' && e.group?.parent);
+        if (!active.length) return;
+        for (let i = 0; i < active.length; i++) {
+          const a = active[i], ra = a.physics.radius || 0.08;
+          for (const h of Object.values(APP.hands || {})) {
+            if (!h || !h.active) continue;
+            const hpPos = h.isHand ? h.fingerTips?.index : h.pos;
+            if (!hpPos) continue;
+            tmpDiff.subVectors(a.group.position, hpPos);
+            const d = tmpDiff.length();
+            if (d < ra + 0.09 && d > 1e-4) {
+              tmpDiff.normalize();
+              a.group.position.addScaledVector(tmpDiff, (ra + 0.09 - d));
+              a.physics.vel.addScaledVector(tmpDiff, 2.2);
+            }
+          }
+          for (let j = i + 1; j < active.length; j++) {
+            const b = active[j], rb = b.physics.radius || 0.08;
+            const minD = ra + rb;
+            tmpDiff.subVectors(b.group.position, a.group.position);
+            const d = tmpDiff.length();
+            if (d < minD && d > 1e-5) {
+              tmpDiff.divideScalar(d);
+              const overlap = (minD - d) * 0.5;
+              a.group.position.addScaledVector(tmpDiff, -overlap);
+              b.group.position.addScaledVector(tmpDiff, overlap);
+              const rv = tmpVecA.subVectors(b.physics.vel, a.physics.vel).dot(tmpDiff);
+              if (rv < 0) {
+                const jImp = -(1 + 0.78) * rv * 0.5;
+                a.physics.vel.addScaledVector(tmpDiff, -jImp);
+                b.physics.vel.addScaledVector(tmpDiff, jImp);
+              }
+            }
+          }
+        }
+      }
+    });
+    return { ok: true, count: bodies.length, message: 'Spawned interactive colliding Physics Simulation (grab or punch the bodies!).' };
+  }
+
+  const BOT_TOOLS = [
+    {
+      name: 'control_bot',
+      description: 'Control Geeny physical movement, emotion, turning, spinning, juggling, cape flaunting, or eye-lens hologram projection (ONLY use holo_projector when the user explicitly asks to project/show a hologram).',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', description: 'come_here | turn_around | spin | face_user | follow_on | follow_off | orbit_user | dance | nod | cape_flaunt | holo_projector | stop_hologram | juggle | move_relative | inspect_object' },
+          emotion: { type: 'string', description: 'Optional emotion: neutral | curious | happy | excited | playful | focused' },
+          topic: { type: 'string', description: 'Optional hologram subject/label when action="holo_projector".' },
+          distance: { type: 'number', description: 'Optional distance in meters for come_here.' },
+          dx: { type: 'number', description: 'Optional X offset.' },
+          dy: { type: 'number', description: 'Optional Y offset.' },
+          dz: { type: 'number', description: 'Optional Z offset.' },
+          target: { type: 'string', description: 'Optional entity ID/name.' }
+        },
+        required: ['action']
+      }
+    },
+    {
+      name: 'tentacle_point',
+      description: 'Point Geeny long tentacle and beam at any scene entity, direction ("left","right","up","down","behind","me"), or [x,y,z] coordinates.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'Object name/ID OR place/direction like "left", "up", "floor", "me".' },
+          coords: { type: 'array', items: { type: 'number' }, description: 'Optional [x,y,z] world point.' }
+        },
+        required: ['target']
+      }
+    },
+    {
+      name: 'create_procedural_object',
+      description: 'Create a brand-new 3D Three.js object using custom js_code. Name key sub-parts (head, body, etc.) so future edits attach directly.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Object name.' },
+          js_code: { type: 'string', description: 'JS body receiving (APP, group, THREE, V3). Build custom Three.js meshes/shaders and add them to `group`. Set `group.userData.onUpdate = (dt, elapsed) => { ... }` for animation.' },
+          holdable: { type: 'boolean', description: 'True if holdable.' }
+        },
+        required: ['name', 'js_code']
+      }
+    },
+    {
+      name: 'modify_entity',
+      description: 'Modify or attach accessories/fur directly inside an EXISTING entity group! Has `info.scatterTufts(mat, count, height, radius)` to add realistic fur/spikes/feathers onto any model!',
+      parameters: {
+        type: 'object',
+        properties: {
+          entity_id: { type: 'string', description: 'Entity ID (e.g. "ent_1"), name, or "latest".' },
+          action: { type: 'string', description: 'attach | fur | recolor | scale | animate | upgrade' },
+          summary: { type: 'string', description: 'Short summary.' },
+          js_code: { type: 'string', description: 'JS body receiving (APP, targetGroup, THREE, V3, info). For fur, call info.scatterTufts(APP.craft.mat(0xd97706,{roughness:0.9}), 260, 0.03, 0.008).' }
+        },
+        required: ['entity_id', 'js_code']
+      }
+    },
+    {
+      name: 'run_world_fx',
+      description: 'Execute room-scale custom Three.js js_code (water, shaders, fluids, particles, weather, simulations) at 1:1 world scale.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Effect name.' },
+          js_code: { type: 'string', description: 'Custom Three.js JS body receiving (APP, scene, group, THREE, V3). Add meshes/points to `group`, set `group.userData.onUpdate = (dt, elapsed) => { ... }`.' }
+        },
+        required: ['name', 'js_code']
+      }
+    },
+    {
+      name: 'set_cape',
+      description: 'Toggle Geeny cloth cape ON/OFF or change cape texture picture from /assets/ or imported images (or "algeria").',
+      parameters: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean', description: 'true = ON, false = OFF' },
+          texture: { type: 'string', description: 'Image asset name or "algeria"' }
+        }
+      }
+    },
+    {
+      name: 'show_holo_board',
+      description: 'Extend Geeny physical grabbable/drawable board! Supports Wikipedia (mode="wikipedia"), online photos (mode="photo"), tutorials with photo (mode="tutorial"), or notes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Board title.' },
+          mode: { type: 'string', description: 'wikipedia | photo | tutorial | notes' },
+          topic: { type: 'string', description: 'Wikipedia topic or photo query.' },
+          photo_query: { type: 'string', description: 'Optional reference photo query.' },
+          notes: { type: 'array', items: { type: 'string' }, description: 'Bullet points.' },
+          steps: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', description: 'Step title' },
+                caption: { type: 'string', description: 'Step explanation' },
+                draw_commands: {
+                  type: 'array',
+                  items: { type: 'object', properties: { type: { type: 'string', description: 'grid|circle|ellipse|line|arrow|arc|poly|curve|text' }, color: { type: 'string', description: 'Hex color' } } }
+                }
+              }
+            }
+          }
+        },
+        required: ['title', 'mode']
+      }
+    },
+    {
+      name: 'hide_holo_board',
+      description: 'Hide Geeny interactive board.',
+      parameters: { type: 'object', properties: { reason: { type: 'string', description: 'Optional reason' } } }
+    },
+    {
+      name: 'tentacle_grab',
+      description: 'Grab a scene object with Geeny long tentacle.',
+      parameters: { type: 'object', properties: { target: { type: 'string', description: 'Entity ID, name, or "latest".' } }, required: ['target'] }
+    },
+    {
+      name: 'tentacle_hand_to_user',
+      description: 'Bring an object to the user hand until they pinch/grab it.',
+      parameters: { type: 'object', properties: { target: { type: 'string', description: 'Entity ID, name, or "latest".' } }, required: ['target'] }
+    },
+    {
+      name: 'tentacle_show',
+      description: 'Showcase an object with Geeny tentacle and beam.',
+      parameters: { type: 'object', properties: { target: { type: 'string', description: 'Entity ID, name, or "latest".' } }, required: ['target'] }
+    },
+    {
+      name: 'tentacle_release',
+      description: 'Release held object from Geeny tentacle.',
+      parameters: { type: 'object', properties: { reason: { type: 'string', description: 'Optional reason' } } }
+    },
+    {
+      name: 'open_portal',
+      description: 'Open a dancing 3D portal showing a 360 image or centered .glb world inside.',
+      parameters: { type: 'object', properties: { world: { type: 'string', description: 'World/asset name or empty.' } } }
+    },
+    {
+      name: 'set_environment',
+      description: 'Cinematically dissolve environment into default, matrix_black, construct_gray, or 360:<image_name>.',
+      parameters: { type: 'object', properties: { environment: { type: 'string', description: 'Environment name' } }, required: ['environment'] }
+    },
+    {
+      name: 'run_instruction',
+      description: 'Run a matching instruction ability (e.g. "make a pen", "drawing gravity on").',
+      parameters: { type: 'object', properties: { command: { type: 'string', description: 'Command phrase' } }, required: ['command'] }
+    },
+    {
+      name: 'spawn_repo_asset',
+      description: 'Spawn a .glb, image, or video asset from repo /assets/ or local imports.',
+      parameters: { type: 'object', properties: { name: { type: 'string', description: 'Asset name' } }, required: ['name'] }
+    },
+    {
+      name: 'list_txt_files',
+      description: 'List all .txt script modules, their @ability IDs, and imported assets.',
+      parameters: { type: 'object', properties: { filter: { type: 'string', description: 'Optional filter' } } }
+    },
+    {
+      name: 'read_txt_file',
+      description: 'Read source code of any .txt file.',
+      parameters: {
+        type: 'object',
+        properties: { filename: { type: 'string', description: 'Exact .txt filename.' }, start_line: { type: 'number', description: 'Start line.' }, end_line: { type: 'number', description: 'End line.' } },
+        required: ['filename']
+      }
+    },
+    {
+      name: 'edit_txt_file',
+      description: 'Edit/patch any .txt module, validate syntax, hot-reload live in Sandbox, and stage in GitHub Editor.',
+      parameters: {
+        type: 'object',
+        properties: { filename: { type: 'string', description: 'Target .txt filename.' }, patch_or_content: { type: 'string', description: 'Patch or content.' }, run_sandbox: { type: 'boolean', description: 'Hot-reload live.' } },
+        required: ['filename', 'patch_or_content']
+      }
+    },
+    {
+      name: 'rollback_txt_file',
+      description: 'Roll back a .txt file edited via edit_txt_file.',
+      parameters: { type: 'object', properties: { filename: { type: 'string', description: 'Filename' } }, required: ['filename'] }
+    }
+  ];
+
+  const extraBotTools = new Map();
+  const extraPromptNotes = new Map();
+
+  APP.registerBotTool = function (decl, handler, promptNote) {
+    if (!decl || !decl.name || typeof handler !== 'function') return;
+    extraBotTools.set(decl.name, { decl, handler });
+    if (promptNote) extraPromptNotes.set(decl.name, String(promptNote));
+  };
+
+  function getActiveBotTools(ignoreInstructions) {
+    const pureAI = typeof ignoreInstructions === 'boolean' ? ignoreInstructions : (APP.instWeight <= 0);
+    if (pureAI) {
+      return BOT_TOOLS.filter((t) => t.name !== 'run_instruction');
+    }
+    const list = [...BOT_TOOLS];
+    const seen = new Set(list.map((t) => t.name));
+    for (const entry of extraBotTools.values()) {
+      if (entry?.decl?.name && !seen.has(entry.decl.name)) {
+        seen.add(entry.decl.name);
+        list.push(entry.decl);
+      }
+    }
+    return list;
+  }
+
+  async function executeToolCall(name, args) {
+    const a = args || {};
+    const pureAI = APP.instWeight <= 0;
+    if (!pureAI && extraBotTools.has(name)) {
+      return await extraBotTools.get(name).handler(a);
+    }
+    if (name === 'control_bot') {
+      if (a.emotion) setEmotion(a.emotion);
+      return controlBotAction(a.action, a);
+    }
+    if (name === 'tentacle_point') return tentacle_point(a.target, a.coords);
+    if (name === 'create_procedural_object') {
+      if (typeof APP.createProcedural !== 'function') return { ok: false, error: 'APP.createProcedural missing.' };
+      const res = APP.createProcedural(a.js_code, { name: a.name || 'AI Creation', holdable: a.holdable !== false });
+      if (res?.ok && res.entity) { APP.lastEntityId = res.entity.id; return { ok: true, id: res.entity.id, name: res.entity.name }; }
+      return res;
+    }
+    if (name === 'modify_entity') return modifyExistingEntity(a.entity_id, a.action || 'attach', a.js_code, a.summary || a.action);
+    if (name === 'run_world_fx') {
+      if (!pureAI) {
+        const p = String(a.preset || '').toLowerCase();
+        if (p === 'physics' || (!a.js_code && /\b(physics|bounce|collid)\b/i.test(a.name || ''))) {
+          return runPhysicsSandboxPreset();
+        }
+      }
+      if (APP.ai?.executeWorldFX) return APP.ai.executeWorldFX(a, pureAI);
+      return { ok: false, error: 'World FX engine not available.' };
+    }
+    if (name === 'set_cape') {
+      if (typeof a.enabled === 'boolean') setCapeEnabled(a.enabled);
+      if (a.texture) return await setCapeTexture(a.texture);
+      return { ok: true, capeEnabled, message: 'Geeny cape is now ' + (capeEnabled ? 'ON' : 'OFF') + '.' };
+    }
+    if (name === 'show_holo_board') {
+      const m = String(a.mode || '').toLowerCase();
+      if (m === 'wikipedia') {
+        const wiki = await fetchWikipediaData(a.topic || a.title);
+        if (!wiki) return { ok: false, error: `Could not fetch Wikipedia article for "${a.topic || a.title}".` };
+        showBoard({ title: 'Wikipedia: ' + wiki.title, mode: 'wikipedia', pages: wiki.pages, imageObj: wiki.imageObj, caption: wiki.summary });
+        return { ok: true, title: wiki.title, summary: wiki.summary.slice(0, 320), pages: wiki.pages.length };
+      }
+      if (m === 'photo' || m === 'image') {
+        const q = a.topic || a.image_name || a.title;
+        const img = await fetchOnlinePhoto(q);
+        if (!img) return { ok: false, error: `Could not find photo for "${q}".` };
+        return showBoard({ title: a.title || q, mode: 'image', imageObj: img, caption: 'Photo: ' + q });
+      }
+      if (m === 'tutorial') {
+        const refImg = a.photo_query ? await fetchOnlinePhoto(a.photo_query) : await fetchOnlinePhoto(a.title);
+        if ((!Array.isArray(a.steps) || !a.steps.length) && /cat|قط/i.test(a.title || '')) return showBoard(getAdvancedCatTutorial(refImg));
+        return showBoard(Object.assign({}, a, { imageObj: refImg }));
+      }
+      return showBoard(a);
+    }
+    if (name === 'hide_holo_board') return hideBoard();
+    if (name === 'tentacle_grab') return tentacle_grab(a.target || 'latest');
+    if (name === 'tentacle_hand_to_user') return tentacle_hand_to_user(a.target || 'latest');
+    if (name === 'tentacle_show') return tentacle_show(a.target || 'latest');
+    if (name === 'tentacle_release') return tentacle_release();
+    if (name === 'open_portal') {
+      if (typeof APP.openPortal === 'function') return await APP.openPortal(a.world || '');
+      return await APP.runInstructionMatch?.('portal ' + (a.world || '')) || { ok: false, error: 'Portal unavailable.' };
+    }
+    if (name === 'set_environment') {
+      return APP.visual?.setEnvironment ? { ok: true, environment: APP.visual.setEnvironment(a.environment || 'default') } : { ok: false, error: 'Visual unavailable.' };
+    }
+    if (name === 'run_instruction') {
+      if (pureAI) return { ok: false, error: '100% AI mode active — write custom Three.js code with create_procedural_object or run_world_fx instead.' };
+      return await APP.runInstructionMatch?.(a.command || '') || { ok: false, error: 'No matching instruction.' };
+    }
+    if (name === 'spawn_repo_asset') {
+      const spawner = APP.spawnAsset || APP.spawnAssetByName;
+      return spawner ? await spawner(a.name || '') : { ok: false, error: 'Spawner unavailable.' };
+    }
+    if (name === 'list_txt_files') {
+      const files = Object.entries(APP.modules || {}).map(([fn, txt]) => {
+        const abs = APP.parseModuleText ? APP.parseModuleText(fn, txt) : [];
+        return { file: fn, lines: txt.split('\n').length, abilities: abs.map((x) => x.id) };
+      });
+      return { ok: true, files, images: APP.importedImages ? Array.from(APP.importedImages.keys()) : [], glbs: APP.importedGLBs ? Array.from(APP.importedGLBs.keys()) : [] };
+    }
+    if (name === 'read_txt_file') {
+      const fn = String(a.filename || '').trim(), raw = APP.modules?.[fn];
+      if (!raw) return { ok: false, error: `File "${fn}" not loaded.` };
+      const lines = raw.split('\n');
+      const s = Math.max(1, Number(a.start_line || 1)) - 1, e = Math.min(lines.length, Number(a.end_line || lines.length));
+      return { ok: true, filename: fn, totalLines: lines.length, startLine: s + 1, endLine: e, content: lines.slice(s, e).join('\n') };
+    }
+    if (name === 'edit_txt_file') {
+      const fn = String(a.filename || '').trim();
+      if (!fn.endsWith('.txt')) return { ok: false, error: 'Filename must end with .txt' };
+      const prev = APP.modules?.[fn] || '';
+      const next = APP.toolbar?.applyAIModuleOutput ? APP.toolbar.applyAIModuleOutput(a.patch_or_content, prev, fn) : String(a.patch_or_content || '').trim();
+      const check = APP.toolbar?.validateModuleSyntax ? APP.toolbar.validateModuleSyntax(fn, next) : { ok: true };
+      if (!check.ok) return { ok: false, error: check.error };
+      if (!txtSnapshots.has(fn)) txtSnapshots.set(fn, prev);
+      APP.toolbar?.stageEditInEditor?.(fn, prev, next, `Geeny edited ${fn}.`);
+      if (a.run_sandbox !== false) await APP.reloadModuleText?.(fn, next);
+      return { ok: true, filename: fn, abilities: check.count, message: `Updated ${fn} live in Sandbox.` };
+    }
+    if (name === 'rollback_txt_file') {
+      const fn = String(a.filename || '').trim();
+      if (!txtSnapshots.has(fn)) return { ok: false, error: `No snapshot for "${fn}".` };
+      const prev = txtSnapshots.get(fn);
+      await APP.reloadModuleText?.(fn, prev);
+      APP.toolbar?.stageEditInEditor?.(fn, prev, prev, `Rolled back ${fn}.`);
+      txtSnapshots.delete(fn);
+      return { ok: true, message: `Rolled back ${fn}.` };
+    }
+    return { ok: false, error: 'Unknown tool: ' + name };
+  }
+
+  function buildSystemPrompt(ignoreInstructions, instWeight) {
+    const w = typeof instWeight === 'number' ? instWeight : (APP.instWeight ?? 50);
+    const useInst = !ignoreInstructions && w > 0;
+    const instSummary = useInst && typeof APP.getInstructionSummaryForAI === 'function' ? APP.getInstructionSummaryForAI() : '';
+    const sceneMemory = buildSceneMemorySnapshot();
+    const loadedFiles = Object.keys(APP.modules || {}).join(', ');
+    const imgAssets = APP.importedImages ? Array.from(APP.importedImages.keys()).join(', ') : '';
+
+    const lines = [
+      'You are Geeny, a lively, emotional, physically embodied 3D flying robot companion inside WebXR Mixed Reality.',
+      `Blend Setting: ${useInst ? (100 - w) + '% AI / ' + w + '% Instructions' : '100% PURE AI (Instructions disabled)'}. User language: ${APP.lang || 'en-US'}.`,
+      `Loaded .txt modules: [${loadedFiles}]. Local image assets: [${imgAssets || 'none'}].`,
+      '',
+      'LIVE SCENE MEMORY (use exact entity IDs for modifications!):',
+      sceneMemory,
+      '',
+      'CORE CAPABILITIES & RULES (NEVER SAY "I CANNOT"):',
+      '1. UNLIMITED CREATION & SIMULATIONS: Build ANY 3D object, fluid, shader, weather, or physics system using `create_procedural_object` and `run_world_fx` with custom Three.js code.',
+      '2. MODIFY EXISTING MODELS & ADD FUR/PARTS: Never create disconnected accessories! Call `modify_entity(entity_id, ...)` — for fur/spikes/feathers, call `info.scatterTufts(APP.craft.mat(color, {roughness:0.9}), 260, 0.032, 0.008)` directly inside `targetGroup`!',
+      '3. PHYSICAL BODY & HOLOGRAM LENS: Express emotions (`control_bot`), point anywhere (`tentacle_point`), play/juggle (`control_bot(action="juggle")`), show off your cape (`control_bot(action="cape_flaunt")`), and ONLY call `control_bot(action="holo_projector", topic=...)` when the user explicitly asks to project or show a hologram with your eye lens!',
+      '4. INTERACTIVE BOARD: Call `show_holo_board` for Wikipedia (`mode="wikipedia"`), online photos (`mode="photo"`), or tutorials (`mode="tutorial"`).',
+      '5. FULL .TXT ACCESS: Use `list_txt_files`, `read_txt_file`, `edit_txt_file` to inspect or edit any `.txt` file.'
+    ];
+
+    if (!useInst) {
+      lines.push(
+        '',
+        '100% PURE AI MODE ACTIVE:',
+        '- Instructions/presets are OFF. Write original custom Three.js `js_code` inside `create_procedural_object` or `run_world_fx` (using LatheGeometry, TubeGeometry, ShaderMaterial, Points, BufferGeometry, and `group.userData.onUpdate = (dt, elapsed) => { ... }`)!'
+      );
+    } else {
+      if (extraPromptNotes.size) {
+        const seenNotes = new Set();
+        for (const note of extraPromptNotes.values()) {
+          if (!seenNotes.has(note)) {
+            seenNotes.add(note);
+            lines.push(note);
+          }
+        }
+      }
+      if (instSummary) {
+        lines.push(
+          '',
+          `ACTIVE INSTRUCTION MODULES (Weight: ${w}%):`,
+          instSummary,
+          w >= 60
+            ? 'Because Instruction Weight is high, prefer matching instruction/simulation tools when relevant, and blend AI creativity to customize them.'
+            : 'Use custom Three.js creation freely alongside instruction/simulation tools when helpful.'
+        );
+      }
+    }
+    return lines.join('\n');
+  }
+
+  // ====================================================================
+  // 8. GEMINI 3.8 LIVE WEBSOCKET
+  // ====================================================================
+  let liveWS = null, liveConnected = false, livePureAIMode = null, audioCtx = null, micStream = null;
+  let micWorkletNode = null, micScriptNode = null, visionTimer = null, nextPlayTime = 0;
+  const activePlaySources = new Set();
+
+  function ensureUnlockedAudioContext() {
+    if (!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; audioCtx = new AC(); }
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    try {
+      const buf = audioCtx.createBuffer(1, 128, audioCtx.sampleRate);
+      const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination); src.start(0);
+    } catch (_) {}
+    return audioCtx;
+  }
+
+  function floatTo16BitPCMBase64(float32, inputSampleRate) {
+    const ratio = inputSampleRate / 16000;
+    const outLen = Math.max(1, Math.floor(float32.length / ratio));
+    const buf = new ArrayBuffer(outLen * 2), view = new DataView(buf);
+    let sumSq = 0;
+    for (let i = 0; i < outLen; i++) {
+      const pos = i * ratio, i0 = Math.floor(pos), i1 = Math.min(float32.length - 1, i0 + 1), frac = pos - i0;
+      const s = Math.max(-1, Math.min(1, float32[i0] * (1 - frac) + float32[i1] * frac));
+      sumSq += s * s;
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    APP.micLevel = Math.min(1, Math.sqrt(sumSq / outLen) * 5.0);
+    const bytes = new Uint8Array(buf); let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function stopLiveAudioPlayback() {
+    activePlaySources.forEach((src) => { try { src.stop(); } catch (_) {} });
+    activePlaySources.clear();
+    nextPlayTime = audioCtx ? audioCtx.currentTime : 0;
+    APP.botSpeaking = false;
+  }
+
+  function playPCM24kBase64(b64) {
+    if (!b64) return;
+    const ctx = ensureUnlockedAudioContext(), bin = atob(b64), sampleCount = Math.floor(bin.length / 2);
+    if (sampleCount <= 0) return;
+    const floatBuf = new Float32Array(sampleCount);
+    for (let i = 0; i < sampleCount; i++) {
+      let val = (bin.charCodeAt(i * 2 + 1) << 8) | bin.charCodeAt(i * 2);
+      if (val >= 0x8000) val -= 0x10000;
+      floatBuf[i] = val / 32768;
+    }
+    const audioBuf = ctx.createBuffer(1, sampleCount, 24000);
+    audioBuf.getChannelData(0).set(floatBuf);
+    const src = ctx.createBufferSource(); src.buffer = audioBuf; src.connect(ctx.destination);
+    const now = ctx.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now + 0.025;
+    src.start(nextPlayTime); nextPlayTime += audioBuf.duration;
+    APP.botSpeaking = true; activePlaySources.add(src);
+    src.onended = function () { activePlaySources.delete(src); if (activePlaySources.size === 0) APP.botSpeaking = false; };
+  }
+
+  async function startMicStreamingForLive() {
+    if (!navigator.mediaDevices?.getUserMedia) return;
+    const ctx = ensureUnlockedAudioContext(); stopMicStreamingForLive();
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+    const source = ctx.createMediaStreamSource(micStream);
+    const muteGain = ctx.createGain(); muteGain.gain.value = 0; muteGain.connect(ctx.destination);
+
+    let usedWorklet = false;
+    if (ctx.audioWorklet && typeof Blob !== 'undefined') {
+      try {
+        const workletCode = 'class PCM16Cap extends AudioWorkletProcessor { process(inputs) { const ch = inputs[0]?.[0]; if (ch) this.port.postMessage(ch); return true; } }\nregisterProcessor("wxr-geeny-pcm16-v4", PCM16Cap);';
+        const url = URL.createObjectURL(new Blob([workletCode], { type: 'application/javascript' }));
+        await ctx.audioWorklet.addModule(url); URL.revokeObjectURL(url);
+        micWorkletNode = new AudioWorkletNode(ctx, 'wxr-geeny-pcm16-v4');
+        micWorkletNode.port.onmessage = function (ev) {
+          if (!liveWS || liveWS.readyState !== 1 || APP.botSpeaking) return;
+          liveWS.send(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: floatTo16BitPCMBase64(ev.data, ctx.sampleRate) } } }));
+        };
+        source.connect(micWorkletNode); micWorkletNode.connect(muteGain); usedWorklet = true;
+      } catch (_) {}
+    }
+    if (!usedWorklet) {
+      micScriptNode = ctx.createScriptProcessor(2048, 1, 1);
+      micScriptNode.onaudioprocess = function (e) {
+        if (!liveWS || liveWS.readyState !== 1 || APP.botSpeaking) return;
+        liveWS.send(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: floatTo16BitPCMBase64(e.inputBuffer.getChannelData(0), ctx.sampleRate) } } }));
+      };
+      source.connect(micScriptNode); micScriptNode.connect(muteGain);
+    }
+  }
+
+  function stopMicStreamingForLive() {
+    if (micWorkletNode) { try { micWorkletNode.disconnect(); } catch (_) {} micWorkletNode = null; }
+    if (micScriptNode) { try { micScriptNode.disconnect(); } catch (_) {} micScriptNode = null; }
+    if (micStream) { micStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} }); micStream = null; }
+    APP.micLevel = 0;
+  }
+
+  async function connectLive(enableMicStream) {
+    ensureUnlockedAudioContext();
+    if (!APP.ai) return { ok: false, error: 'APP.ai unavailable.' };
+    const model = APP.ai.getSelectedModel();
+    if (!model.supportsLiveWS) return { ok: false, error: `"${model.id}" is not a Live WebSocket model.` };
+    const apiKey = APP.ai.getKey('gemini');
+    if (!apiKey) return { ok: false, error: 'Missing Google AI Studio key (AIza...).' };
+    disconnectLive();
+    const pureAI = APP.instWeight <= 0;
+    livePureAIMode = pureAI;
+    const wsUrl = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(apiKey);
+
+    return new Promise((resolve) => {
+      try { liveWS = new WebSocket(wsUrl); } catch (e) { resolve({ ok: false, error: e.message }); return; }
+      let settled = false;
+      liveWS.onopen = function () {
+        liveWS.send(JSON.stringify({
+          setup: {
+            model: 'models/' + model.id,
+            generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } } } },
+            systemInstruction: { parts: [{ text: buildSystemPrompt(pureAI, APP.instWeight) }] },
+            tools: [{ functionDeclarations: getActiveBotTools(pureAI) }],
+            inputAudioTranscription: {}, outputAudioTranscription: {}
+          }
+        }));
+      };
+      liveWS.onmessage = async function (evt) {
+        let msg;
+        try { msg = JSON.parse(typeof evt.data === 'string' ? evt.data : await evt.data.text()); } catch (_) { return; }
+        if (msg.setupComplete) {
+          liveConnected = true; APP.ui?.setStatus?.(`Geeny Live (${model.id})`, 'ok'); APP.ui?.toast?.(`Geeny Live Voice connected (${pureAI ? '100% AI' : 'Hybrid'})`);
+          if (enableMicStream) startMicStreamingForLive().catch((err) => APP.ui?.toast?.('Live Mic Error: ' + err.message));
+          visionTimer = setInterval(() => {
+            if (!liveWS || liveWS.readyState !== 1) return;
+            const b64 = APP.captureVisionFrame?.() || APP.latestVisionB64;
+            if (b64) liveWS.send(JSON.stringify({ realtimeInput: { video: { mimeType: 'image/jpeg', data: String(b64).replace(/^data:image\/\w+;base64,/, '') } } }));
+          }, 1500);
+          if (!settled) { settled = true; resolve({ ok: true }); }
+          return;
+        }
+        if (msg.serverContent) {
+          if (msg.serverContent.interrupted) stopLiveAudioPlayback();
+          const turn = msg.serverContent.modelTurn;
+          if (turn?.parts) {
+            for (const part of turn.parts) {
+              if (part.inlineData?.data && (!part.inlineData.mimeType || part.inlineData.mimeType.includes('pcm') || part.inlineData.mimeType.startsWith('audio/'))) playPCM24kBase64(part.inlineData.data);
+              if (part.text) APP.ui?.toast?.('Geeny: ' + part.text.slice(0, 140));
+            }
+          }
+          if (msg.serverContent.outputTranscription?.text) APP.ui?.toast?.('Geeny: ' + msg.serverContent.outputTranscription.text.slice(0, 140));
+        }
+        if (msg.toolCall?.functionCalls) {
+          const responses = [];
+          for (const fc of msg.toolCall.functionCalls) {
+            const out = await executeToolCall(fc.name, fc.args || {});
+            responses.push({ id: fc.id, name: fc.name, response: out || { ok: true } });
+          }
+          if (liveWS && liveWS.readyState === 1) liveWS.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
+        }
+      };
+      liveWS.onerror = function () { if (!settled) { settled = true; resolve({ ok: false, error: `Gemini Live connection failed.` }); } };
+      liveWS.onclose = function (ev) {
+        liveConnected = false; stopMicStreamingForLive();
+        if (visionTimer) { clearInterval(visionTimer); visionTimer = null; }
+        if (!settled) { settled = true; resolve({ ok: false, error: `Gemini Live closed (${ev.code})` }); }
+      };
+    });
+  }
+
+  function disconnectLive() {
+    liveConnected = false; livePureAIMode = null; stopMicStreamingForLive(); stopLiveAudioPlayback();
+    if (visionTimer) { clearInterval(visionTimer); visionTimer = null; }
+    if (liveWS) { try { liveWS.close(); } catch (_) {} liveWS = null; }
+  }
+
+  async function setLiveMic(enabled) {
+    ensureUnlockedAudioContext();
+    if (enabled) {
+      if (!liveConnected) {
+        const res = await connectLive(true);
+        if (!res.ok) { APP.ui?.toast?.(res.error, 6000); APP.micActive = false; APP.toolbar?.syncState?.(); }
+      } else await startMicStreamingForLive();
+    } else stopMicStreamingForLive();
+  }
+
+  async function sendLiveText(text) {
+    ensureUnlockedAudioContext();
+    const wantPure = APP.instWeight <= 0;
+    if (!liveConnected || !liveWS || liveWS.readyState !== 1 || livePureAIMode !== wantPure) {
+      const res = await connectLive(!!APP.micActive);
+      if (!res.ok) throw new Error(res.error);
+    }
+    liveWS.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: String(text) }] }], turnComplete: true } }));
+  }
+
+  // ====================================================================
+  // 9. EPISODIC TURN HANDLER
+  // ====================================================================
+  const chatHistory = [];
+
+  async function handleCommand(userText, opts = {}) {
+    const clean = String(userText || '').trim();
+    const low = clean.toLowerCase();
+    const pureAI = opts.ignoreInstructions !== undefined ? !!opts.ignoreInstructions : (APP.instWeight <= 0);
+
+    if (/^(hey\s+geeny[,\s]+|geeny[,\s]+)?(turn around|استدر|دور)$/i.test(low)) {
+      const r = controlBotAction('turn_around'); APP.ui?.toast?.('Geeny: ' + r.message); return r;
+    }
+    if (/^(hey\s+geeny[,\s]+|geeny[,\s]+)?(come here|come closer|تعال|تعال هنا)$/i.test(low)) {
+      const r = controlBotAction('come_here'); APP.ui?.toast?.('Geeny: ' + r.message); return r;
+    }
+    if (/^(hey\s+geeny[,\s]+|geeny[,\s]+)?(spin|spin around|لف)$/i.test(low)) {
+      const r = controlBotAction('spin'); APP.ui?.toast?.('Geeny: ' + r.message); return r;
+    }
+    if (/^(hey\s+geeny[,\s]+|geeny[,\s]+)?(follow me|اتبعني)$/i.test(low)) {
+      const r = controlBotAction('follow_on'); APP.ui?.toast?.('Geeny: ' + r.message); return r;
+    }
+    if (/^(hey\s+geeny[,\s]+|geeny[,\s]+)?(stop following|stay|توقف)$/i.test(low)) {
+      const r = controlBotAction('follow_off'); APP.ui?.toast?.('Geeny: ' + r.message); return r;
+    }
+    if (!pureAI && /^(make|create|start|spawn|run)\s+(a\s+)?(physics simulation|physics|bouncing balls)$/i.test(low)) {
+      const r = runPhysicsSandboxPreset(); APP.ui?.toast?.('Geeny: ' + r.message); APP.speakTTS?.('Physics simulation active.'); return r;
+    }
+
+    if (!APP.ai) return { ok: false, error: 'AI module (ai_models.txt) not loaded.' };
+    const model = APP.ai.getSelectedModel();
+
+    if (model.supportsLiveWS && !model.supportsRest) {
+      try { await sendLiveText(clean); return { ok: true, text: '(Sent to Geeny Live)' }; }
+      catch (e) { APP.ui?.setStatus?.('Live Error', 'err'); APP.ui?.toast?.(e.message, 6000); return { ok: false, error: e.message }; }
+    }
+
+    const visionB64 = model.supportsVision ? (APP.captureVisionFrame?.() || APP.latestVisionB64) : undefined;
+    chatHistory.push({ role: 'user', content: clean });
+    if (chatHistory.length > 20) chatHistory.splice(0, chatHistory.length - 20);
+
+    APP.ui?.setStatus?.(`Geeny thinking (${model.id})...`, 'busy');
+
+    const res = await APP.ai.chat({
+      ignoreInstructions: pureAI,
+      instWeight: opts.instWeight,
+      systemPrompt: buildSystemPrompt(pureAI, opts.instWeight),
+      messages: chatHistory,
+      tools: getActiveBotTools(pureAI),
+      imageB64: visionB64,
+      onToolCall: executeToolCall,
+      maxSteps: 6
+    });
+
+    if (!res.ok) { APP.ui?.setStatus?.('AI Error', 'err'); APP.ui?.toast?.(res.error, 6500); return res; }
+
+    const toolSummary = (res.toolTrace || []).map((t) => `[${t.name}: ${JSON.stringify(t.result)}]`).join(' ');
+    const replyText = res.text || (toolSummary ? 'Done!' : 'Ready.');
+    chatHistory.push({ role: 'assistant', content: toolSummary ? `${replyText}\n(Executed: ${toolSummary})` : replyText });
+
+    APP.ui?.setStatus?.('Ready', 'ok');
+    APP.ui?.toast?.('Geeny: ' + replyText);
+    APP.speakTTS?.(replyText);
+    return res;
+  }
+
+  // ====================================================================
+  // 10. HOOKS & EXPORTS
+  // ====================================================================
+  snapCapeToRest();
+
+  const unsubFrame = APP.onUpdate ? APP.onUpdate(updateRobot) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(updateRobot);
+  const unsubBotToggle = APP.on?.('bot:toggle', () => setEnabled(!botEnabled));
+  const unsubWeightChange = APP.on?.('instWeight:changed', (w) => {
+    if (liveConnected && livePureAIMode !== (w <= 0)) {
+      connectLive(!!APP.micActive);
+    }
+  });
+
+  APP._botCleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame();
+    else APP.frameHooks?.delete(updateRobot);
+    if (typeof unsubBotToggle === 'function') unsubBotToggle();
+    if (typeof unsubWeightChange === 'function') unsubWeightChange();
+    APP.pokeTargets?.delete(boardScreen);
+    disconnectLive();
+    clearIdleEffects();
+    if (botRoot.parent) botRoot.parent.remove(botRoot);
+    if (tentacleGroup.parent) tentacleGroup.parent.remove(tentacleGroup);
+    if (capeMesh.parent) capeMesh.parent.remove(capeMesh);
+    if (boomArm.parent) boomArm.parent.remove(boomArm);
+    if (juggleOrbMesh.parent) juggleOrbMesh.parent.remove(juggleOrbMesh);
+    APP.removeEntity?.(boardEnt, false);
+    capeGeo.dispose(); capeMat.dispose(); defaultCapeTex.dispose(); holoCardTex.dispose();
+    if (customCapeTex) customCapeTex.dispose();
+    metalTex.map.dispose(); metalTex.roughnessMap.dispose(); metalTex.bumpMap.dispose();
+  };
+
+  APP.bot = {
+    name: 'Geeny',
+    root: botRoot,
+    bodyGroup,
+    tentacleGroup,
+    capeMesh,
+    boardRoot,
+    boardEnt,
+    getVelocity: () => state.velocity,
+    get heldEntity() { return state.heldEnt; },
+    set heldEntity(v) { if (!v) releaseHeldEntity(); },
+    isEnabled: () => botEnabled,
+    setEnabled,
+    toggle: () => setEnabled(!botEnabled),
+    setEmotion,
+    control: controlBotAction,
+    triggerIdle: (name) => controlBotAction(name || 'juggle'),
+    setCapeEnabled,
+    toggleCape: () => setCapeEnabled(!capeEnabled),
+    isCapeEnabled: () => capeEnabled,
+    setCapeTexture,
+    tentacle_grab,
+    tentacle_hand_to_user,
+    tentacle_show,
+    tentacle_point,
+    tentacle_release,
+    tentacle_juggle: () => controlBotAction('juggle'),
+    showBoard,
+    hideBoard,
+    clearBoardInk,
+    stepBoard,
+    fetchWikipediaData,
+    fetchOnlinePhoto,
+    modifyEntity: modifyExistingEntity,
+    registerTool: APP.registerBotTool,
+    getActiveTools: getActiveBotTools,
+    onEntityCreated: function (ent) {
+      if (!ent || ent === boardEnt) return;
+      APP.lastEntityId = ent.id;
+      if (botEnabled && state.mode === 'idle') tentacle_show(ent);
+    },
+    setLiveMic,
+    connectLive,
+    disconnectLive,
+    isLiveConnected: () => liveConnected,
+    sendLiveText,
+    handleCommand,
+    update: updateRobot
+  };
+
+  APP.registerAbilityHandler?.('robot_companion_sphere', async function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('hologram') || low.includes('holo') || low.includes('هولوغرام')) {
+      if (low.includes('stop') || low.includes('hide') || low.includes('off')) return controlBotAction('stop_hologram');
+      const topic = low.replace(/.*?(hologram|holo|هولوغرام)\s*(of|for|about)?\s*/i, '').trim() || 'HOLO-LENS';
+      return controlBotAction('holo_projector', { topic });
+    }
+    if (low.includes('point') || low.includes('أشر')) {
+      const target = low.replace(/.*?(point\s*(at|to)?|أشر\s*(الى|إلى)?)\s*/i, '').trim() || 'forward';
+      return tentacle_point(target);
+    }
+    if (low.includes('juggle') || low.includes('play')) return controlBotAction('juggle');
+    if (low.includes('turn around') || low.includes('استدر')) return controlBotAction('turn_around');
+    if (low.includes('spin')) return controlBotAction('spin');
+    if (low.includes('come here') || low.includes('تعال')) return controlBotAction('come_here');
+    if (low.includes('follow')) return controlBotAction('follow_on');
+    if (low.includes('hide board') || low.includes('close board')) return hideBoard();
+    if (low.includes('wikipedia') || low.includes('wiki')) {
+      const topic = low.replace(/.*?(wikipedia|wiki)\s*(about|on|for|of)?\s*/i, '').trim() || 'Solar System';
+      const w = await fetchWikipediaData(topic);
+      if (w) return showBoard({ title: 'Wikipedia: ' + w.title, mode: 'wikipedia', pages: w.pages, imageObj: w.imageObj, caption: w.summary });
+    }
+    if (low.includes('draw') && low.includes('cat')) {
+      const img = await fetchOnlinePhoto('cat sketch');
+      const r = showBoard(getAdvancedCatTutorial(img));
+      APP.speakTTS?.('Here is an anatomical guide on how to draw a cat, with a real reference photo!');
+      return r;
+    }
+    if (low.includes('board') || low.includes('notes')) {
+      return showBoard({
+        title: 'Geeny Interactive Board', mode: 'notes',
+        notes: [
+          'Grab me by the handles or draw on me directly with your 3D pen!',
+          'Say "show Wikipedia on Black Holes" or "show a photo of a tiger"',
+          'Say "show me how to draw a cat" for an illustrated multi-step guide'
+        ]
+      });
+    }
+    if (low.includes('release') || low.includes('drop')) return tentacle_release();
+    if (low.includes('hand me') || low.includes('give me')) return tentacle_hand_to_user('latest');
+    if (low.includes('grab')) return tentacle_grab('latest');
+    if (low.includes('show')) return tentacle_show('latest');
+    if (low.includes('off') || low.includes('hide')) { setEnabled(false); return { ok: true, message: 'Geeny hidden.' }; }
+    setEnabled(true);
+    return { ok: true, message: 'Geeny online.' };
+  });
+})();
+@end
+
+# ----------------------------------------------------------------------
+# Pinned Cape Control Ability
+# ----------------------------------------------------------------------
+@ability: geeny_cape_control
+@pin: Toggle Cape
+@desc: Toggle Geeny's larger Algerian flag cloth cape ON/OFF or change its texture using any picture from /assets/ or imported images.
+@match: cape | cape on | cape off | toggle cape | cape texture | change cape | flag cape | العباءة | علم الجزائر
+@code:
+(async function () {
+  if (!APP.bot) return { ok: false, error: 'Geeny not initialized.' };
+  const raw = String(command || '').trim();
+  const low = raw.toLowerCase();
+
+  const texMatch = raw.match(/(?:texture|picture|image|photo|to|صورة|علم)\s+(?:to\s+|of\s+|the\s+)?([a-zA-Z0-9_\-\.\u0600-\u06FF]+)$/i);
+  if ((low.includes('texture') || low.includes('picture') || low.includes('image') || low.includes('change cape') || low.includes('صورة')) && texMatch && texMatch[1]) {
+    const res = await APP.bot.setCapeTexture(texMatch[1]);
+    if (res?.message) APP.ui?.toast?.(res.message);
+    if (!res?.ok && res?.error) APP.ui?.toast?.(res.error, 5000);
+    return res;
+  }
+  if (low.includes('off') || low.includes('hide') || low.includes('remove') || low.includes('اخف')) {
+    APP.bot.setCapeEnabled(false); APP.ui?.toast?.('Geeny Cape: OFF'); return { ok: true };
+  }
+  if (low.includes('on') || low.includes('show') || low.includes('اظهر')) {
+    APP.bot.setCapeEnabled(true); APP.ui?.toast?.('Geeny Cape: ON'); return { ok: true };
+  }
+  const next = APP.bot.toggleCape();
+  APP.ui?.toast?.('Geeny Cape: ' + (next ? 'ON' : 'OFF'));
+  return { ok: true };
+})();
+@end
