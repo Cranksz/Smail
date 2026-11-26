@@ -1,0 +1,749 @@
+# ======================================================================
+# ai_models.txt — AI Model Registry & Client (Gemini 3.8 Live/Flash, Groq, OpenRouter)
+# ======================================================================
+
+@ability: ai_models_manager
+@autorun
+@desc: Free-tier Gemini (3.8 Live, 3.8 Flash, 3.6 Flash, 3.5 Flash-Lite, 4 Hydrogen), Groq Free, OpenRouter :free + Claude Haiku via OpenRouter.
+@match: ai models | select model | api keys | switch model
+@code:
+(function () {
+  const LS_PREFIX = 'wxrmr_ai_v2_';
+  const STORAGE_KEYS = {
+    selectedModel: LS_PREFIX + 'selected_model',
+    geminiKey: LS_PREFIX + 'key_gemini',
+    groqKey: LS_PREFIX + 'key_groq',
+    openrouterKey: LS_PREFIX + 'key_openrouter',
+    orCache: LS_PREFIX + 'openrouter_free_cache'
+  };
+
+  const STATIC_MODELS = [
+    // --- Google Gemini Free Tier (AIza...) ---
+    {
+      id: 'gemini-3.8-flash',
+      label: 'Gemini 3.8 Flash (Fast & Reliable Free Tier)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      thinkingLevel: 'LOW',
+      notes: 'Recommended default: fast multimodal + reliable 3D tool calling.'
+    },
+    {
+      id: 'gemini-3.8-live',
+      label: 'Gemini 3.8 Live (Realtime Voice & Vision WS)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: true,
+      supportsRest: false,
+      notes: 'Low-latency bidirectional 16kHz/24kHz PCM voice + vision over WebSocket.'
+    },
+    {
+      id: 'gemini-3.6-flash',
+      label: 'Gemini 3.6 Flash (Free Tier)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      thinkingLevel: 'LOW',
+      notes: 'Fast Gemini 3.6 Flash for coding & multimodal tool calls.'
+    },
+    {
+      id: 'gemini-3.5-flash-lite',
+      label: 'Gemini 3.5 Flash-Lite (Ultra-Fast Free Tier)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      thinkingLevel: 'MINIMAL',
+      notes: 'Lowest-latency REST model for rapid responses.'
+    },
+    {
+      id: 'gemini-4-hydrogen',
+      label: 'Gemini 4 Hydrogen (Free Tier - may hit high demand)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      thinkingLevel: 'LOW',
+      notes: 'Flagship Gemini 4 Hydrogen (if 503 high-demand occurs, switch to 3.8 Flash).'
+    },
+    {
+      id: 'gemini-3.1-flash-live-preview',
+      label: 'Gemini 3.1 Flash Live Preview (Legacy WS)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: true,
+      supportsRest: false,
+      notes: 'Legacy Gemini Live WebSocket preview.'
+    },
+
+    // --- Groq Free Tier (gsk_..., 1,000 req/day + Whisper) ---
+    {
+      id: 'openai/gpt-oss-120b',
+      label: 'GPT-OSS 120B (Groq Free Tier)',
+      provider: 'groq',
+      supportsVision: false,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Fast OpenAI open-weight 120B model on Groq free tier.'
+    },
+    {
+      id: 'llama-3.3-70b-versatile',
+      label: 'Llama 3.3 70B Versatile (Groq Free Tier)',
+      provider: 'groq',
+      supportsVision: false,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Fast Meta Llama 3.3 70B on Groq free tier.'
+    },
+
+    // --- OpenRouter (:free Endpoints + Claude Haiku via OpenRouter) ---
+    {
+      id: 'openrouter/free',
+      label: 'OpenRouter Free Models Router ($0 :free)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Routes automatically to currently active $0 OpenRouter free models.'
+    },
+    {
+      id: 'anthropic/claude-haiku-5.5',
+      label: 'Claude Haiku 5.5 (OpenRouter - requires OR credits)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Fast Anthropic Claude Haiku 5.5 via OpenRouter ($0.10/M input).'
+    },
+    {
+      id: 'anthropic/claude-haiku-4.5',
+      label: 'Claude Haiku 4.5 (OpenRouter - requires OR credits)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Anthropic Claude Haiku 4.5 via OpenRouter.'
+    }
+  ];
+
+  const PROVIDERS = {
+    gemini: {
+      name: 'Google AI Studio (Gemini Free)',
+      signupUrl: 'https://aistudio.google.com/apikey'
+    },
+    groq: {
+      name: 'Groq Cloud (Free Tier)',
+      signupUrl: 'https://console.groq.com/keys'
+    },
+    openrouter: {
+      name: 'OpenRouter (:free + Claude Haiku)',
+      signupUrl: 'https://openrouter.ai/keys'
+    }
+  };
+
+  function safeLSGet(k, fb) {
+    try { const v = localStorage.getItem(k); return v !== null ? v : fb; } catch (_) { return fb; }
+  }
+  function safeLSSet(k, v) {
+    try {
+      if (v === null || v === undefined || v === '') localStorage.removeItem(k);
+      else localStorage.setItem(k, String(v));
+    } catch (_) {}
+  }
+
+  let dynamicOpenRouterModels = [];
+  let selectedModelId = safeLSGet(STORAGE_KEYS.selectedModel, 'gemini-3.8-flash');
+  const orStatus = { loading: false, count: 0, lastFetched: 0, error: '' };
+
+  try {
+    const cached = JSON.parse(safeLSGet(STORAGE_KEYS.orCache, '{}'));
+    if (cached && Array.isArray(cached.models)) {
+      dynamicOpenRouterModels = cached.models;
+      orStatus.count = cached.models.length;
+      orStatus.lastFetched = cached.ts || 0;
+    }
+  } catch (_) {}
+
+  const keysObj = {
+    get gemini() { return safeLSGet(STORAGE_KEYS.geminiKey, '').trim(); },
+    set gemini(v) { safeLSSet(STORAGE_KEYS.geminiKey, (v || '').trim()); },
+    get groq() { return safeLSGet(STORAGE_KEYS.groqKey, '').trim(); },
+    set groq(v) { safeLSSet(STORAGE_KEYS.groqKey, (v || '').trim()); },
+    get openrouter() { return safeLSGet(STORAGE_KEYS.openrouterKey, '').trim(); },
+    set openrouter(v) {
+      const clean = (v || '').trim();
+      safeLSSet(STORAGE_KEYS.openrouterKey, clean);
+      if (clean) refreshOpenRouterFree(true);
+    }
+  };
+
+  function getAllModels() {
+    const list = [...STATIC_MODELS];
+    const seen = new Set(list.map((m) => m.id));
+    for (const m of dynamicOpenRouterModels) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        list.push(m);
+      }
+    }
+    return list;
+  }
+
+  function getSelectedModel() {
+    const all = getAllModels();
+    const found = all.find((m) => m.id === selectedModelId);
+    if (found) return found;
+    selectedModelId = 'gemini-3.8-flash';
+    safeLSSet(STORAGE_KEYS.selectedModel, selectedModelId);
+    return all.find((m) => m.id === selectedModelId) || all[0];
+  }
+
+  function selectModel(id) {
+    const found = getAllModels().find((m) => m.id === id);
+    if (!found) return { ok: false, error: 'Model not in registry: ' + id };
+    selectedModelId = found.id;
+    safeLSSet(STORAGE_KEYS.selectedModel, selectedModelId);
+    renderUI();
+    APP.emit?.('ai:changed', found);
+    APP.toolbar?.syncState?.();
+    return { ok: true, model: found };
+  }
+
+  function getKey(provider) {
+    return keysObj[provider] || '';
+  }
+
+  function setKey(provider, val) {
+    if (provider in keysObj) keysObj[provider] = val;
+    renderUI();
+  }
+
+  async function refreshOpenRouterFree(force) {
+    if (orStatus.loading) return;
+    if (!force && orStatus.lastFetched && Date.now() - orStatus.lastFetched < 5 * 60 * 1000 && dynamicOpenRouterModels.length) {
+      return;
+    }
+    orStatus.loading = true;
+    orStatus.error = '';
+    renderUI();
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/models');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const rows = Array.isArray(data.data) ? data.data : [];
+      const freeList = [];
+
+      for (const item of rows) {
+        if (!item || !item.id || item.id === 'openrouter/free') continue;
+        const p = item.pricing || {};
+        const isZero = String(p.prompt ?? '') === '0' && String(p.completion ?? '') === '0' &&
+          Number(p.request || 0) === 0 && Number(p.image || 0) === 0;
+        if (!isZero || !item.id.endsWith(':free')) continue;
+
+        const outMods = item.architecture?.output_modalities || ['text'];
+        if (!outMods.includes('text')) continue;
+        const inMods = item.architecture?.input_modalities || ['text'];
+
+        freeList.push({
+          id: item.id,
+          label: (item.name || item.id) + ' (OpenRouter :free)',
+          provider: 'openrouter',
+          supportsVision: inMods.includes('image'),
+          supportsTools: true,
+          supportsLiveWS: false,
+          supportsRest: true,
+          notes: 'Live verified $0 :free OpenRouter endpoint.'
+        });
+      }
+
+      freeList.sort((a, b) => a.label.localeCompare(b.label));
+      dynamicOpenRouterModels = freeList;
+      orStatus.count = freeList.length;
+      orStatus.lastFetched = Date.now();
+      safeLSSet(STORAGE_KEYS.orCache, JSON.stringify({ ts: orStatus.lastFetched, models: freeList }));
+    } catch (e) {
+      orStatus.error = e.message || 'Failed to fetch OpenRouter :free models';
+    } finally {
+      orStatus.loading = false;
+      renderUI();
+    }
+  }
+
+  function formatApiError(status, rawText, provider, modelId) {
+    let detail = '';
+    try {
+      const p = JSON.parse(rawText || '{}');
+      detail = p.error?.message || p.message || rawText || '';
+    } catch (_) {
+      detail = String(rawText || '').slice(0, 240);
+    }
+    const pInfo = PROVIDERS[provider] || { name: provider, signupUrl: '' };
+    if (status === 401 || status === 403) {
+      return `Invalid or missing API key (${status}) for ${pInfo.name}. Check your key (${pInfo.signupUrl}). ${detail}`;
+    }
+    if (status === 402) {
+      return `Insufficient credits (402) on ${pInfo.name} for "${modelId}". Select a $0 :free model or add OpenRouter credits.`;
+    }
+    if (status === 404) {
+      return `Model "${modelId}" unavailable (404) on ${pInfo.name}. Pick another model or refresh OpenRouter :free. ${detail}`;
+    }
+    if (status === 429) {
+      return `Rate limit reached (429) on ${pInfo.name} for "${modelId}". Wait a few seconds or switch to another model (e.g. gemini-3.8-flash or Groq). ${detail}`;
+    }
+    if (status === 503 || /high demand|overloaded|unavailable/i.test(detail)) {
+      return `${pInfo.name} "${modelId}" is experiencing high demand (${status || 503}). Switch to "gemini-3.8-flash", Groq "openai/gpt-oss-120b", or OpenRouter in AI & Keys. ${detail}`;
+    }
+    if (status === 400) {
+      return `Bad request/schema (400) on ${pInfo.name} ("${modelId}"): ${detail}`;
+    }
+    return `${pInfo.name} error (${status || 'network'}) for "${modelId}": ${detail}`;
+  }
+
+  function sanitizeSchema(schema) {
+    if (!schema || typeof schema !== 'object') {
+      return { type: 'object', properties: { note: { type: 'string', description: 'Optional note' } } };
+    }
+    const copy = JSON.parse(JSON.stringify(schema));
+    if (!copy.type) copy.type = 'object';
+    if (copy.type === 'object') {
+      if (!copy.properties || typeof copy.properties !== 'object' || Object.keys(copy.properties).length === 0) {
+        copy.properties = { note: { type: 'string', description: 'Optional note' } };
+      } else {
+        for (const k of Object.keys(copy.properties)) {
+          if (copy.properties[k]?.type === 'object') {
+            copy.properties[k] = sanitizeSchema(copy.properties[k]);
+          }
+        }
+      }
+    }
+    return copy;
+  }
+
+  function normalizeTools(tools) {
+    if (!Array.isArray(tools) || !tools.length) return [];
+    return tools.filter((t) => t && t.name).map((t) => ({
+      name: String(t.name),
+      description: String(t.description || t.name),
+      parameters: sanitizeSchema(t.parameters)
+    }));
+  }
+
+  async function runGeminiRestChat(model, apiKey, opts) {
+    const cleanTools = normalizeTools(opts.tools);
+    const contents = [];
+    const msgs = Array.isArray(opts.messages) ? opts.messages : [];
+
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (!m) continue;
+      if (m._geminiParts) {
+        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: JSON.parse(JSON.stringify(m._geminiParts)) });
+        continue;
+      }
+      const role = m.role === 'assistant' ? 'model' : 'user';
+      const parts = [];
+      if (m.content) parts.push({ text: String(m.content) });
+      if (i === msgs.length - 1 && role === 'user' && opts.imageB64) {
+        parts.push({
+          inlineData: {
+            mimeType: opts.imageMime || 'image/jpeg',
+            data: String(opts.imageB64).replace(/^data:image\/\w+;base64,/, '')
+          }
+        });
+      }
+      if (parts.length) contents.push({ role, parts });
+    }
+
+    if (contents.length === 0) {
+      const parts = [{ text: String(opts.prompt || 'Hello') }];
+      if (opts.imageB64) {
+        parts.push({
+          inlineData: {
+            mimeType: opts.imageMime || 'image/jpeg',
+            data: String(opts.imageB64).replace(/^data:image\/\w+;base64,/, '')
+          }
+        });
+      }
+      contents.push({ role: 'user', parts });
+    }
+
+    const maxSteps = Math.max(1, Math.min(8, opts.maxSteps || 5));
+    const toolTrace = [];
+    let finalText = '';
+
+    for (let step = 0; step < maxSteps; step++) {
+      const body = { contents };
+      if (opts.systemPrompt) body.systemInstruction = { parts: [{ text: String(opts.systemPrompt) }] };
+      if (cleanTools.length) body.tools = [{ functionDeclarations: cleanTools }];
+      if (model.thinkingLevel) {
+        body.generationConfig = {
+          thinkingConfig: { thinkingLevel: model.thinkingLevel }
+        };
+      }
+
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+        encodeURIComponent(model.id) + ':generateContent?key=' + encodeURIComponent(apiKey);
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const rawTxt = await res.text();
+      if (!res.ok) throw new Error(formatApiError(res.status, rawTxt, 'gemini', model.id));
+
+      const data = JSON.parse(rawTxt);
+      const cand = data.candidates?.[0];
+      if (!cand?.content?.parts) {
+        throw new Error('Gemini returned empty output (' + (cand?.finishReason || 'unknown') + ').');
+      }
+
+      // Preserve exact rawParts including thoughtSignature & thought parts
+      const rawParts = JSON.parse(JSON.stringify(cand.content.parts));
+      contents.push({ role: 'model', parts: rawParts });
+
+      const textChunks = [];
+      const fnCalls = [];
+      for (const p of rawParts) {
+        if (p.text && !p.thought) textChunks.push(p.text);
+        if (p.functionCall?.name) fnCalls.push(p.functionCall);
+      }
+      if (textChunks.length) finalText = textChunks.join('\n').trim();
+
+      if (!fnCalls.length || typeof opts.onToolCall !== 'function') break;
+
+      const responseParts = [];
+      for (const call of fnCalls) {
+        let resultObj;
+        try {
+          const out = await opts.onToolCall(call.name, call.args || {});
+          resultObj = (out && typeof out === 'object') ? out : { result: out === undefined ? 'ok' : out };
+        } catch (err) {
+          resultObj = { ok: false, error: err.message || String(err) };
+        }
+        toolTrace.push({ name: call.name, args: call.args || {}, result: resultObj });
+        const fnResp = { name: call.name, response: resultObj };
+        if (call.id) fnResp.id = call.id;
+        responseParts.push({ functionResponse: fnResp });
+      }
+      contents.push({ role: 'user', parts: responseParts });
+    }
+
+    return { ok: true, modelId: model.id, provider: 'gemini', text: finalText, toolTrace };
+  }
+
+  async function runOpenAICompatChat(model, apiKey, opts) {
+    const endpoint = model.provider === 'groq'
+      ? 'https://api.groq.com/openai/v1/chat/completions'
+      : 'https://openrouter.ai/api/v1/chat/completions';
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + apiKey
+    };
+    if (model.provider === 'openrouter') {
+      headers['HTTP-Referer'] = window.location.origin || 'https://github.io';
+      headers['X-Title'] = 'NexusXR Mixed Reality Studio';
+    }
+
+    const cleanTools = normalizeTools(opts.tools).map((t) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.parameters }
+    }));
+
+    const messages = [];
+    if (opts.systemPrompt) messages.push({ role: 'system', content: String(opts.systemPrompt) });
+
+    const inputMsgs = Array.isArray(opts.messages) ? opts.messages : [];
+    for (let i = 0; i < inputMsgs.length; i++) {
+      const m = inputMsgs[i];
+      if (!m) continue;
+      const role = m.role === 'assistant' ? 'assistant' : 'user';
+      if (i === inputMsgs.length - 1 && role === 'user' && opts.imageB64 && model.supportsVision) {
+        const url = String(opts.imageB64).startsWith('data:')
+          ? opts.imageB64
+          : 'data:image/jpeg;base64,' + opts.imageB64;
+        messages.push({
+          role: 'user',
+          content: [{ type: 'text', text: String(m.content || '') }, { type: 'image_url', image_url: { url } }]
+        });
+      } else {
+        messages.push({ role, content: String(m.content || '') });
+      }
+    }
+
+    if (messages.length === (opts.systemPrompt ? 1 : 0)) {
+      messages.push({ role: 'user', content: String(opts.prompt || 'Hello') });
+    }
+
+    const maxSteps = Math.max(1, Math.min(8, opts.maxSteps || 5));
+    const toolTrace = [];
+    let finalText = '';
+
+    for (let step = 0; step < maxSteps; step++) {
+      const payload = { model: model.id, messages };
+      if (cleanTools.length && model.supportsTools !== false) {
+        payload.tools = cleanTools;
+        payload.tool_choice = 'auto';
+      }
+
+      const res = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload) });
+      const rawTxt = await res.text();
+      if (!res.ok) throw new Error(formatApiError(res.status, rawTxt, model.provider, model.id));
+
+      const data = JSON.parse(rawTxt);
+      const msg = data.choices?.[0]?.message;
+      if (!msg) throw new Error('Empty response from ' + model.provider);
+
+      const entry = { role: 'assistant', content: msg.content || '' };
+      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) entry.tool_calls = msg.tool_calls;
+      messages.push(entry);
+
+      if (msg.content) finalText = String(msg.content).trim();
+      const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      if (!toolCalls.length || typeof opts.onToolCall !== 'function') break;
+
+      for (const tc of toolCalls) {
+        const fnName = tc.function?.name;
+        let args = {};
+        try { args = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}; } catch (_) {}
+        let resultObj;
+        try {
+          const out = await opts.onToolCall(fnName, args);
+          resultObj = (out && typeof out === 'object') ? out : { result: out === undefined ? 'ok' : out };
+        } catch (err) {
+          resultObj = { ok: false, error: err.message || String(err) };
+        }
+        toolTrace.push({ name: fnName, args, result: resultObj });
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id || ('call_' + fnName + '_' + step),
+          name: fnName,
+          content: JSON.stringify(resultObj)
+        });
+      }
+    }
+
+    return { ok: true, modelId: model.id, provider: model.provider, text: finalText, toolTrace };
+  }
+
+  async function chat(opts = {}) {
+    const model = getSelectedModel();
+    const apiKey = getKey(model.provider);
+    const pInfo = PROVIDERS[model.provider];
+
+    if (!apiKey) {
+      return {
+        ok: false,
+        error: `Missing ${pInfo.name} key for "${model.id}". Click "AI & Keys" to paste your key (${pInfo.signupUrl}).`
+      };
+    }
+
+    if (model.supportsLiveWS && !model.supportsRest) {
+      if (APP.bot?.sendLiveText) {
+        try {
+          await APP.bot.sendLiveText(opts.prompt || opts.messages?.[opts.messages.length - 1]?.content || '');
+          return { ok: true, modelId: model.id, provider: 'gemini', text: '(Sent to Gemini Live)', toolTrace: [] };
+        } catch (e) {
+          return { ok: false, error: e.message || String(e) };
+        }
+      }
+      return {
+        ok: false,
+        error: `Model "${model.id}" is a Gemini Live WebSocket model. Turn Mic ON or pick "gemini-3.8-flash" for text.`
+      };
+    }
+
+    try {
+      if (model.provider === 'gemini') return await runGeminiRestChat(model, apiKey, opts);
+      return await runOpenAICompatChat(model, apiKey, opts);
+    } catch (err) {
+      return { ok: false, modelId: model.id, provider: model.provider, error: err.message || String(err) };
+    }
+  }
+
+  const standaloneHistory = [];
+  async function runTurn(userText, opts = {}) {
+    if (APP.bot && typeof APP.bot.handleCommand === 'function') {
+      return await APP.bot.handleCommand(userText, opts);
+    }
+
+    const model = getSelectedModel();
+    APP.ui.setStatus(`Thinking (${model.id})...`, 'busy');
+
+    const instSummary = !opts.ignoreInstructions && typeof APP.getInstructionSummaryForAI === 'function'
+      ? APP.getInstructionSummaryForAI()
+      : '';
+
+    const systemPrompt = [
+      'You are NexusXR AI inside a WebXR Mixed Reality studio.',
+      'ALWAYS use create_procedural_object to build any requested 3D object with Three.js (APP, group, THREE, V3) and APP.craft.',
+      'Build detailed multi-part geometry (never single plain cubes), use realistic PBR materials, and add meshes directly to `group`.',
+      'NEVER refuse a creation request. If create_procedural_object returns an error, fix the code and retry.',
+      instSummary ? ('\nACTIVE INSTRUCTIONS (rules & inspiration — be creative when sculpting):\n' + instSummary) : ''
+    ].join('\n');
+
+    const tools = [
+      {
+        name: 'create_procedural_object',
+        description: 'Sculpt and materialize a 3D Three.js object in the scene.',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Object name' },
+            js_code: { type: 'string', description: 'JS body using (APP, group, THREE, V3) adding meshes to group.' },
+            holdable: { type: 'boolean', description: 'Whether user can hold it.' }
+          },
+          required: ['name', 'js_code']
+        }
+      },
+      {
+        name: 'spawn_repo_asset',
+        description: 'Spawn a .glb, image, or video asset by name.',
+        parameters: {
+          type: 'object',
+          properties: { name: { type: 'string', description: 'Asset name' } },
+          required: ['name']
+        }
+      }
+    ];
+
+    standaloneHistory.push({ role: 'user', content: userText });
+    if (standaloneHistory.length > 8) standaloneHistory.splice(0, standaloneHistory.length - 8);
+
+    const res = await chat({
+      systemPrompt,
+      messages: standaloneHistory,
+      tools,
+      imageB64: model.supportsVision ? (APP.captureVisionFrame?.() || APP.latestVisionB64) : undefined,
+      onToolCall: async (name, args) => {
+        if (name === 'create_procedural_object') {
+          return APP.createProcedural(args.js_code, { name: args.name, holdable: args.holdable !== false });
+        }
+        if (name === 'spawn_repo_asset') {
+          return await APP.spawnAsset(args.name);
+        }
+        return { ok: false, error: 'Unknown tool: ' + name };
+      }
+    });
+
+    if (!res.ok) {
+      APP.ui.setStatus('AI Error', 'err');
+      APP.ui.toast(res.error, 6500);
+      return res;
+    }
+
+    const reply = res.text || 'Done.';
+    standaloneHistory.push({ role: 'assistant', content: reply });
+    APP.ui.setStatus('Ready', 'ok');
+    APP.ui.toast(reply);
+    APP.speakTTS?.(reply);
+    return res;
+  }
+
+  function renderUI() {
+    const mount = document.getElementById('modal-ai-body');
+    if (!mount) return;
+    const all = getAllModels();
+    const cur = getSelectedModel();
+
+    if (!mount.dataset.built) {
+      mount.dataset.built = '1';
+      mount.innerHTML = [
+        '<div style="font-size:12px;color:#94a3b8;line-height:1.5;background:rgba(255,255,255,0.04);padding:10px;border-radius:10px;">',
+        '  <strong style="color:#00f0b4;">Free API Keys + OpenRouter :free & Claude Haiku.</strong> Zero hidden model switching.<br>',
+        '  • Gemini Free (<code>AIza...</code>): <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#38bdf8;">aistudio.google.com</a><br>',
+        '  • Groq Free (<code>gsk_...</code>, 1,000 req/day + Whisper): <a href="https://console.groq.com/keys" target="_blank" style="color:#38bdf8;">console.groq.com</a><br>',
+        '  • OpenRouter (<code>sk-or-...</code>, $0 <code>:free</code> + Claude Haiku): <a href="https://openrouter.ai/keys" target="_blank" style="color:#38bdf8;">openrouter.ai</a>',
+        '</div>',
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">',
+        '  <label style="font-size:12px;font-weight:600;">Active Model</label>',
+        '  <button type="button" class="btn" id="aim-refresh-or">Refresh OpenRouter :free</button>',
+        '</div>',
+        '<select id="aim-select" style="width:100%;margin-top:4px;"></select>',
+        '<div id="aim-meta" style="font-size:11px;color:#94a3b8;margin-top:4px;"></div>',
+        '<div style="display:grid;gap:8px;margin-top:10px;">',
+        '  <label style="font-size:12px;">Google AI Studio Key (Gemini 3.8 Live/Flash, 4 Hydrogen)<input id="aim-k-gemini" type="password" placeholder="AIza..." style="width:100%;margin-top:3px;"></label>',
+        '  <label style="font-size:12px;">Groq API Key (GPT-OSS-120B, Llama 3.3, Whisper)<input id="aim-k-groq" type="password" placeholder="gsk_..." style="width:100%;margin-top:3px;"></label>',
+        '  <label style="font-size:12px;">OpenRouter API Key (:free + Claude Haiku)<input id="aim-k-or" type="password" placeholder="sk-or-..." style="width:100%;margin-top:3px;"></label>',
+        '</div>',
+        '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">',
+        '  <button type="button" class="btn active" id="aim-save">Save Keys & Apply</button>',
+        '</div>'
+      ].join('');
+
+      mount.querySelector('#aim-refresh-or').onclick = () => refreshOpenRouterFree(true);
+      mount.querySelector('#aim-select').onchange = (e) => selectModel(e.target.value);
+      mount.querySelector('#aim-save').onclick = () => {
+        setKey('gemini', mount.querySelector('#aim-k-gemini').value);
+        setKey('groq', mount.querySelector('#aim-k-groq').value);
+        setKey('openrouter', mount.querySelector('#aim-k-or').value);
+        APP.ui.closeModals();
+        APP.ui.toast(`AI configured: ${getSelectedModel().id}`);
+      };
+    }
+
+    const sel = mount.querySelector('#aim-select');
+    sel.innerHTML = '';
+    const groups = {
+      gemini: document.createElement('optgroup'),
+      groq: document.createElement('optgroup'),
+      openrouter: document.createElement('optgroup')
+    };
+    groups.gemini.label = 'Google Gemini Free Tier (3.8 Live / 3.8 Flash / 4 Hydrogen)';
+    groups.groq.label = 'Groq Free Tier';
+    groups.openrouter.label = 'OpenRouter ($0 :free + Claude Haiku)';
+
+    for (const m of all) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label;
+      if (m.id === cur.id) opt.selected = true;
+      (groups[m.provider] || groups.openrouter).appendChild(opt);
+    }
+    sel.appendChild(groups.gemini);
+    sel.appendChild(groups.groq);
+    sel.appendChild(groups.openrouter);
+
+    mount.querySelector('#aim-meta').textContent =
+      `${cur.notes || ''} | Vision: ${cur.supportsVision ? 'Yes' : 'No'} | Tools: ${cur.supportsTools ? 'Yes' : 'No'} | ` +
+      (orStatus.loading ? 'Refreshing OpenRouter :free...' : `OpenRouter :free loaded: ${orStatus.count}`);
+
+    mount.querySelector('#aim-k-gemini').value = keysObj.gemini;
+    mount.querySelector('#aim-k-groq').value = keysObj.groq;
+    mount.querySelector('#aim-k-or').value = keysObj.openrouter;
+  }
+
+  APP.ai = {
+    PROVIDERS,
+    keys: keysObj,
+    getModels: getAllModels,
+    getSelectedModel,
+    selectModel,
+    isLiveModelSelected: () => !!getSelectedModel().supportsLiveWS,
+    getKey,
+    setKey,
+    refreshOpenRouterFree,
+    formatApiError,
+    chat,
+    runTurn,
+    openPanel: () => { renderUI(); APP.ui.openModal('modal-ai'); }
+  };
+
+  renderUI();
+  refreshOpenRouterFree(false);
+})();
+@end

@@ -1,0 +1,669 @@
+# ======================================================================
+# instruction1.txt — Core Test Module (Pen, Static/Dynamic 3D Drawing, Spawner, Torch)
+# ======================================================================
+
+# ----------------------------------------------------------------------
+# 1. Holdable Ergonomic Pen
+# ----------------------------------------------------------------------
+@ability: make_ergonomic_pen
+@pin: Make Pen
+@desc: Spawns a detailed ergonomic 3D stylus pen aligned cleanly in your active hand/controller ready to draw.
+@match: make & pen | give & pen | create & pen | spawn & pen | hold & pen | stylus | قلم | اصنع & قلم | اعطني & قلم
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  // Remove previous pen entity cleanly if re-invoked
+  if (APP._activePen && APP.entities.includes(APP._activePen)) {
+    APP.removeEntity?.(APP._activePen, false);
+  }
+  APP._activePen = null;
+
+  const penGroup = new THREE.Group();
+  penGroup.name = 'Ergonomic_3D_Pen';
+
+  // Sleek anodized barrel (oriented along -Z so nib points forward naturally)
+  const barrelMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    metalness: 0.80,
+    roughness: 0.26
+  });
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.0085, 0.0105, 0.145, 20), barrelMat);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.z = 0.015;
+  penGroup.add(barrel);
+
+  // Soft ergonomic grip collar near the nib
+  const gripMat = new THREE.MeshStandardMaterial({
+    color: 0x0f766e,
+    roughness: 0.72,
+    metalness: 0.1
+  });
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.0108, 0.0112, 0.045, 20), gripMat);
+  grip.rotation.x = Math.PI / 2;
+  grip.position.z = -0.042;
+  penGroup.add(grip);
+
+  // Metallic pocket clip
+  const clipMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.9, roughness: 0.2 });
+  const clip = new THREE.Mesh(new THREE.BoxGeometry(0.0035, 0.005, 0.048), clipMat);
+  clip.position.set(0, 0.0115, 0.048);
+  penGroup.add(clip);
+
+  // Tapered nose cone
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.009, 0.026, 20), clipMat);
+  cone.rotation.x = -Math.PI / 2;
+  cone.position.z = -0.076;
+  penGroup.add(cone);
+
+  // Glowing ink nib tip
+  const nibMat = new THREE.MeshStandardMaterial({
+    color: 0x00f0b4,
+    emissive: 0x00ff88,
+    emissiveIntensity: 2.0,
+    roughness: 0.15
+  });
+  const nibMesh = new THREE.Mesh(new THREE.SphereGeometry(0.0048, 16, 14), nibMat);
+  nibMesh.position.z = -0.092;
+  nibMesh.name = 'pen_nib_tip';
+  penGroup.add(nibMesh);
+
+  const entity = APP.registerEntity(penGroup, {
+    name: 'Ergonomic 3D Pen',
+    category: 'tool_pen',
+    holdable: true,
+    isPen: true,
+    nibMesh: nibMesh,
+    physics: { gravity: false, enabled: true },
+    onRelease: function () {
+      if (APP._activePen === entity) {
+        APP.desktopDrawActive = false;
+      }
+    }
+  });
+
+  APP._activePen = entity;
+  APP.drawingEnabled = true;
+
+  if (typeof APP.attachToActiveHand === 'function') {
+    APP.attachToActiveHand(entity, {
+      localPosition: new THREE.Vector3(0.0, -0.015, -0.055),
+      localEuler: new THREE.Euler(-0.52, 0.0, 0.0)
+    });
+  } else {
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    penGroup.position.copy(hp).addScaledVector(hf, 0.52);
+    APP.scene.add(penGroup);
+  }
+
+  APP.visual?.applyDissolveShader?.(penGroup, 'materialize');
+
+  return {
+    ok: true,
+    message: 'Equipped ergonomic 3D pen in your hand. Hold trigger, pinch, or drag to draw.'
+  };
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 2. 3D Spatial Drawing + Next-Only Gravity + Dynamic-vs-Static Collisions
+# ----------------------------------------------------------------------
+@ability: spatial_drawing_gravity
+@autorun
+@pin: Drawing Gravity
+@desc: Draw smooth 3D tube strokes. Toggling Drawing Gravity affects ONLY newly drawn strokes so dynamic drawings collide and bounce off static drawings.
+@match: drawing & gravity | draw & gravity | toggle & gravity | gravity & on | gravity & off | start drawing | stop drawing | جاذبية & الرسم
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return;
+
+  if (typeof APP._inst1DrawCleanup === 'function') {
+    try { APP._inst1DrawCleanup(); } catch (_) {}
+  }
+
+  // Override APP.setDrawingGravity so toggling ONLY affects FUTURE drawings
+  // (existing static strokes remain frozen as collision surfaces!)
+  APP.setDrawingGravity = function setDrawingGravityOnlyNext(val) {
+    APP.drawingGravity = !!val;
+    APP.toolbar?.syncState?.();
+    const coreGravBtn = document.getElementById('core-grav-btn');
+    if (coreGravBtn) {
+      coreGravBtn.textContent = 'Draw Gravity: ' + (APP.drawingGravity ? 'ON' : 'OFF');
+      coreGravBtn.classList.toggle('active', !!APP.drawingGravity);
+    }
+    APP.emit?.('drawing:gravity_changed', APP.drawingGravity);
+    return APP.drawingGravity;
+  };
+
+  const STROKE_RADIUS = 0.009;
+  const COLLISION_DIST = STROKE_RADIUS * 2.25;
+  const PALETTE = [0x00f0b4, 0x38bdf8, 0xf472b6, 0xfbbf24, 0xa78bfa];
+
+  let isDrawing = false;
+  let currentPoints = [];
+  let previewMesh = null;
+  let drawColorIndex = 0;
+
+  const tmpNibPos = new THREE.Vector3();
+  const tmpClosest = new THREE.Vector3();
+  const tmpSegA = new THREE.Vector3();
+  const tmpSegB = new THREE.Vector3();
+  const tmpPtW = new THREE.Vector3();
+  const tmpDiff = new THREE.Vector3();
+  const tmpNormal = new THREE.Vector3();
+  const tmpBoxDyn = new THREE.Box3();
+  const tmpBoxStat = new THREE.Box3();
+
+  function cancelActiveStroke() {
+    isDrawing = false;
+    currentPoints = [];
+    if (previewMesh) {
+      APP.scene.remove(previewMesh);
+      if (previewMesh.geometry) previewMesh.geometry.dispose();
+      if (previewMesh.material) previewMesh.material.dispose();
+      previewMesh = null;
+    }
+  }
+
+  function isPenAliveAndHeld() {
+    const pen = APP._activePen;
+    if (!pen) return false;
+    const stillExists = Array.isArray(APP.entities) && APP.entities.includes(pen);
+    const inScene = !!(pen.group && pen.group.parent);
+    if (!stillExists || !inScene) {
+      // Pen was cleared or removed — immediately stop all drawing
+      APP._activePen = null;
+      APP.drawingEnabled = false;
+      APP.desktopDrawActive = false;
+      cancelActiveStroke();
+      return false;
+    }
+    return !!pen.isHeld;
+  }
+
+  function getStrokeDrawPoint() {
+    const hands = APP.hands || {};
+
+    // Check if pen was cleared
+    if (APP._activePen && !isPenAliveAndHeld()) {
+      return null;
+    }
+
+    // 1. Draw from pen nib ONLY while pen is alive and held
+    if (APP._activePen && APP._activePen.nibMesh && APP._activePen.isHeld) {
+      const pen = APP._activePen;
+      const h = pen.attachedHandKey ? hands[pen.attachedHandKey] : pen.heldBy;
+      const activeDown = h
+        ? !!(h.trigger || h.pinching)
+        : Object.values(hands).some((x) => x && x.active && (x.trigger || x.pinching));
+
+      if (activeDown) {
+        pen.nibMesh.getWorldPosition(tmpNibPos);
+        return tmpNibPos.clone();
+      }
+      return null;
+    }
+
+    // 2. Fallback only if explicit freehand draw mode enabled (never after Clear All)
+    if (!APP.drawingEnabled) return null;
+    for (const k of Object.keys(hands)) {
+      const h = hands[k];
+      if (!h || !h.active) continue;
+      if (k !== 'dhand' && (h.pinching || h.trigger)) {
+        if (h.isHand && h.fingerTips?.index) return h.fingerTips.index.clone();
+        if (h.rayOrigin && h.rayDir) return h.rayOrigin.clone().addScaledVector(h.rayDir, 0.45);
+      }
+      if (k === 'dhand' && h.trigger && h.rayOrigin && h.rayDir) {
+        return h.rayOrigin.clone().addScaledVector(h.rayDir, 0.72);
+      }
+    }
+    return null;
+  }
+
+  function buildTubeMesh(pts, colorHex) {
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const tubularSegs = Math.min(220, Math.max(8, pts.length * 3));
+    const geo = new THREE.TubeGeometry(curve, tubularSegs, STROKE_RADIUS, 8, false);
+    const mat = new THREE.MeshStandardMaterial({
+      color: colorHex,
+      emissive: colorHex,
+      emissiveIntensity: 0.40,
+      roughness: 0.25,
+      metalness: 0.22
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    return mesh;
+  }
+
+  function rebuildPreview(colorHex) {
+    if (previewMesh) {
+      APP.scene.remove(previewMesh);
+      if (previewMesh.geometry) previewMesh.geometry.dispose();
+      if (previewMesh.material) previewMesh.material.dispose();
+      previewMesh = null;
+    }
+    if (currentPoints.length < 2) return;
+    previewMesh = buildTubeMesh(currentPoints, colorHex);
+    APP.scene.add(previewMesh);
+  }
+
+  function downsamplePoints(pts, minStep) {
+    if (pts.length <= 2) return pts.map((p) => p.clone());
+    const out = [pts[0].clone()];
+    for (let i = 1; i < pts.length - 1; i++) {
+      if (pts[i].distanceTo(out[out.length - 1]) >= minStep) {
+        out.push(pts[i].clone());
+      }
+    }
+    out.push(pts[pts.length - 1].clone());
+    return out;
+  }
+
+  function finalizeStroke(colorHex) {
+    if (previewMesh) {
+      APP.scene.remove(previewMesh);
+      if (previewMesh.geometry) previewMesh.geometry.dispose();
+      if (previewMesh.material) previewMesh.material.dispose();
+      previewMesh = null;
+    }
+    if (currentPoints.length < 2) {
+      currentPoints = [];
+      return;
+    }
+
+    const rawMesh = buildTubeMesh(currentPoints, colorHex);
+    rawMesh.geometry.computeBoundingBox();
+    const box = rawMesh.geometry.boundingBox;
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    rawMesh.geometry.translate(-center.x, -center.y, -center.z);
+
+    // Store local downsampled collision polyline relative to strokeGroup center
+    const localPts = downsamplePoints(currentPoints, 0.022).map((p) => p.sub(center));
+
+    const strokeGroup = new THREE.Group();
+    strokeGroup.name = '3D_Stroke';
+    strokeGroup.position.copy(center);
+    strokeGroup.add(rawMesh);
+    APP.scene.add(strokeGroup);
+
+    // Capture Drawing Gravity setting AT THE MOMENT THIS STROKE WAS DRAWN
+    const isDynamic = !!APP.drawingGravity;
+
+    const ent = APP.registerEntity(strokeGroup, {
+      name: isDynamic ? 'Dynamic 3D Drawing' : 'Static 3D Drawing',
+      category: 'stroke',
+      isStroke: true,
+      hasGravity: isDynamic,
+      restitution: 0.42,
+      velocity: new THREE.Vector3(0, 0, 0),
+      meta: {
+        isDynamicStroke: isDynamic,
+        isStaticStroke: !isDynamic,
+        localPoints: localPts,
+        tubeRadius: STROKE_RADIUS
+      }
+    });
+
+    currentPoints = [];
+    drawColorIndex = (drawColorIndex + 1) % PALETTE.length;
+    return ent;
+  }
+
+  // Closest point on segment AB to point P
+  function closestPointOnSegment(p, a, b, out) {
+    const abX = b.x - a.x, abY = b.y - a.y, abZ = b.z - a.z;
+    const lenSq = abX * abX + abY * abY + abZ * abZ;
+    if (lenSq < 1e-8) return out.copy(a);
+    let t = ((p.x - a.x) * abX + (p.y - a.y) * abY + (p.z - a.z) * abZ) / lenSq;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    return out.set(a.x + abX * t, a.y + abY * t, a.z + abZ * t);
+  }
+
+  // Collide all dynamic strokes against static strokes (and ground floor min.y)
+  function stepStrokeCollisions(dt) {
+    const entities = APP.entities || [];
+    const dynStrokes = [];
+    const statStrokes = [];
+
+    for (let i = 0; i < entities.length; i++) {
+      const e = entities[i];
+      if (!e || !e.isStroke || !e.group || !e.group.parent) continue;
+      if (e.physics && e.physics.gravity && !e.isHeld && !e.heldByBot) {
+        dynStrokes.push(e);
+      } else if (e.physics && !e.physics.gravity) {
+        statStrokes.push(e);
+      }
+    }
+
+    if (!dynStrokes.length) return;
+
+    for (let d = 0; d < dynStrokes.length; d++) {
+      const dyn = dynStrokes[d];
+      dyn.group.updateMatrixWorld(true);
+      tmpBoxDyn.setFromObject(dyn.group);
+
+      // Ensure full dynamic stroke geometry stays above floor y = 0 (not just its center!)
+      if (!tmpBoxDyn.isEmpty() && tmpBoxDyn.min.y < 0) {
+        dyn.group.position.y += -tmpBoxDyn.min.y;
+        if (dyn.physics.vel.y < 0) {
+          dyn.physics.vel.y = Math.abs(dyn.physics.vel.y) > 0.25 ? -dyn.physics.vel.y * dyn.physics.bounce : 0;
+        }
+        dyn.physics.vel.x *= dyn.physics.friction;
+        dyn.physics.vel.z *= dyn.physics.friction;
+        dyn.group.updateMatrixWorld(true);
+        tmpBoxDyn.setFromObject(dyn.group);
+      }
+
+      if (!statStrokes.length) continue;
+      tmpBoxDyn.expandByScalar(COLLISION_DIST);
+      const dynPts = dyn.meta?.localPoints;
+      if (!dynPts || !dynPts.length) continue;
+
+      for (let s = 0; s < statStrokes.length; s++) {
+        const stat = statStrokes[s];
+        const statPts = stat.meta?.localPoints;
+        if (!statPts || statPts.length < 2) continue;
+
+        stat.group.updateMatrixWorld(true);
+        tmpBoxStat.setFromObject(stat.group).expandByScalar(COLLISION_DIST);
+        if (!tmpBoxDyn.intersectsBox(tmpBoxStat)) continue;
+
+        const dynMat = dyn.group.matrixWorld;
+        const statMat = stat.group.matrixWorld;
+
+        let deepestPen = 0;
+        let hitNormalX = 0, hitNormalY = 0, hitNormalZ = 0;
+
+        for (let pi = 0; pi < dynPts.length; pi++) {
+          tmpPtW.copy(dynPts[pi]).applyMatrix4(dynMat);
+
+          for (let si = 0; si < statPts.length - 1; si++) {
+            tmpSegA.copy(statPts[si]).applyMatrix4(statMat);
+            tmpSegB.copy(statPts[si + 1]).applyMatrix4(statMat);
+            closestPointOnSegment(tmpPtW, tmpSegA, tmpSegB, tmpClosest);
+
+            tmpDiff.subVectors(tmpPtW, tmpClosest);
+            const distSq = tmpDiff.lengthSq();
+            if (distSq < COLLISION_DIST * COLLISION_DIST) {
+              const dist = Math.sqrt(distSq);
+              const pen = COLLISION_DIST - dist;
+              if (pen > deepestPen) {
+                deepestPen = pen;
+                if (dist > 1e-5) {
+                  tmpNormal.copy(tmpDiff).multiplyScalar(1 / dist);
+                } else {
+                  tmpNormal.set(0, 1, 0);
+                }
+                hitNormalX = tmpNormal.x;
+                hitNormalY = tmpNormal.y;
+                hitNormalZ = tmpNormal.z;
+              }
+            }
+          }
+        }
+
+        if (deepestPen > 0) {
+          // Push dynamic stroke cleanly out of static stroke
+          dyn.group.position.x += hitNormalX * deepestPen;
+          dyn.group.position.y += hitNormalY * deepestPen;
+          dyn.group.position.z += hitNormalZ * deepestPen;
+
+          // Velocity reflection + tangential sliding friction
+          const v = dyn.physics.vel;
+          const vn = v.x * hitNormalX + v.y * hitNormalY + v.z * hitNormalZ;
+          if (vn < 0) {
+            const bounce = Math.abs(vn) > 0.30 ? dyn.physics.bounce : 0.0;
+            const impulse = -(1 + bounce) * vn;
+            v.x += hitNormalX * impulse;
+            v.y += hitNormalY * impulse;
+            v.z += hitNormalZ * impulse;
+
+            // Tangential damping along surface so strokes slide realistically
+            v.x *= 0.94;
+            v.z *= 0.94;
+            if (hitNormalY > 0.65 && Math.abs(v.y) < 0.06) {
+              v.y = 0;
+            }
+          }
+
+          dyn.group.updateMatrixWorld(true);
+          tmpBoxDyn.setFromObject(dyn.group).expandByScalar(COLLISION_DIST);
+        }
+      }
+    }
+  }
+
+  function update(dt) {
+    // If Clear All wiped entities while we weren't looking, cancel active drawing immediately
+    if ((isDrawing || APP._activePen) && APP.entities.length === 0) {
+      APP._activePen = null;
+      APP.drawingEnabled = false;
+      APP.desktopDrawActive = false;
+      cancelActiveStroke();
+    }
+
+    const pt = getStrokeDrawPoint();
+    if (pt) {
+      if (!isDrawing) {
+        isDrawing = true;
+        currentPoints = [pt];
+      } else {
+        const last = currentPoints[currentPoints.length - 1];
+        if (last.distanceTo(pt) >= 0.015) {
+          currentPoints.push(pt);
+          rebuildPreview(PALETTE[drawColorIndex]);
+        }
+      }
+    } else if (isDrawing) {
+      isDrawing = false;
+      finalizeStroke(PALETTE[drawColorIndex]);
+    }
+
+    stepStrokeCollisions(dt || 0.016);
+  }
+
+  const unsubFrame = APP.onUpdate ? APP.onUpdate(update) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(update);
+
+  APP._inst1DrawCleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame();
+    else APP.frameHooks?.delete(update);
+    cancelActiveStroke();
+  };
+
+  APP.registerAbilityHandler?.('spatial_drawing_gravity', function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('start drawing')) {
+      APP.drawingEnabled = true;
+      return { ok: true, message: '3D drawing enabled.' };
+    }
+    if (low.includes('stop drawing')) {
+      APP.drawingEnabled = false;
+      cancelActiveStroke();
+      return { ok: true, message: '3D drawing paused.' };
+    }
+    let next = !APP.drawingGravity;
+    if (low.includes('on') || low.includes('تشغيل')) next = true;
+    else if (low.includes('off') || low.includes('ايقاف') || low.includes('إيقاف')) next = false;
+
+    APP.setDrawingGravity(next);
+    return {
+      ok: true,
+      message: 'Drawing Gravity is now ' + (next ? 'ON (applies to next drawings)' : 'OFF (next drawings stay static)') + '.'
+    };
+  });
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 3. Repo Asset Spawner (Arabic + English Dictionary -> /assets/ or Tray)
+# ----------------------------------------------------------------------
+@ability: spawn_repo_asset
+@pin: Spawn Asset
+@desc: Spawns matching .glb/.gltf, image, or video assets from repo /assets/ or local imports (supports English and Arabic keywords).
+@match: spawn | احضر | جيبلي | هات | load & model
+@code:
+(async function () {
+  const raw = String(command || '').trim();
+
+  const AR_DICT = {
+    'قطة': 'cat', 'قطه': 'cat', 'قط': 'cat', 'بسة': 'cat',
+    'كلب': 'dog', 'جرو': 'dog',
+    'حصان': 'horse', 'فرس': 'horse',
+    'سيارة': 'car', 'عربية': 'car',
+    'طائر': 'bird', 'عصفور': 'bird',
+    'شجرة': 'tree',
+    'منزل': 'house', 'بيت': 'house',
+    'روبوت': 'robot', 'آلي': 'robot',
+    'كرة': 'ball',
+    'سمكة': 'fish',
+    'سيف': 'sword',
+    'كرسي': 'chair',
+    'طاولة': 'table',
+    'تنين': 'dragon',
+    'قمر': 'moon',
+    'شمس': 'sun'
+  };
+
+  let query = raw
+    .replace(/^(please\s+)?(spawn|load|bring|fetch|get|show\s+me|احضر|جيبلي|هات)\s+(a|an|the|model|of)?\s*/i, '')
+    .trim();
+
+  for (const [ar, en] of Object.entries(AR_DICT)) {
+    if (query.includes(ar)) {
+      query = en;
+      break;
+    }
+  }
+  if (!query) query = 'cat';
+
+  const spawner = APP.spawnAsset || APP.spawnAssetByName;
+  if (typeof spawner !== 'function') {
+    return { ok: false, error: 'Asset spawner not available in core.' };
+  }
+  const res = await spawner(query);
+  if (!res?.ok && res?.error) {
+    APP.ui?.toast?.(res.error, 5000);
+  }
+  return res;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 4. Prescripted Classic Fire Torch (Deterministic in `instructions` mode;
+#    Creative reference/inspiration in `ai_instructions` mode)
+# ----------------------------------------------------------------------
+@ability: make_fire_torch
+@pin: Fire Torch
+@desc: Builds a classic carved wood & forged iron fire torch with animated flames, sparks, and warm light. In AI+Instructions mode, AI creates an original enhanced version.
+@match: make & fire & torch | fire & torch | torch | اصنع & شعلة | شعلة & نار | مشعل
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  const torchGroup = new THREE.Group();
+  torchGroup.name = 'Classic_Fire_Torch';
+
+  const woodMat = new THREE.MeshStandardMaterial({ color: 0x5c3a21, roughness: 0.85, metalness: 0.05 });
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.017, 0.44, 16), woodMat);
+  handle.position.y = 0.22;
+  torchGroup.add(handle);
+
+  const ironMat = new THREE.MeshStandardMaterial({ color: 0x262b33, roughness: 0.42, metalness: 0.82 });
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.026, 0.075, 16), ironMat);
+  collar.position.y = 0.45;
+  torchGroup.add(collar);
+
+  const emberMat = new THREE.MeshStandardMaterial({
+    color: 0xff4500,
+    emissive: 0xff5500,
+    emissiveIntensity: 2.2,
+    roughness: 0.5
+  });
+  const embers = new THREE.Mesh(new THREE.SphereGeometry(0.036, 14, 12), emberMat);
+  embers.scale.set(1, 0.65, 1);
+  embers.position.y = 0.49;
+  torchGroup.add(embers);
+
+  const outerFlame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.052, 0.165, 16),
+    new THREE.MeshBasicMaterial({ color: 0xff6b1a, transparent: true, opacity: 0.86, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  outerFlame.position.y = 0.575;
+  torchGroup.add(outerFlame);
+
+  const innerFlame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.028, 0.11, 14),
+    new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  innerFlame.position.y = 0.545;
+  torchGroup.add(innerFlame);
+
+  const fireLight = new THREE.PointLight(0xff7b29, 2.0, 4.5);
+  fireLight.position.set(0, 0.59, 0);
+  torchGroup.add(fireLight);
+
+  const sparkCount = 24;
+  const sparkPos = new Float32Array(sparkCount * 3);
+  const sparkSpeeds = new Float32Array(sparkCount);
+  for (let i = 0; i < sparkCount; i++) {
+    sparkPos[i * 3] = (Math.random() - 0.5) * 0.05;
+    sparkPos[i * 3 + 1] = 0.50 + Math.random() * 0.25;
+    sparkPos[i * 3 + 2] = (Math.random() - 0.5) * 0.05;
+    sparkSpeeds[i] = 0.18 + Math.random() * 0.25;
+  }
+  const sparkGeo = new THREE.BufferGeometry();
+  sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+  const sparks = new THREE.Points(
+    sparkGeo,
+    new THREE.PointsMaterial({ color: 0xffb347, size: 0.014, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  torchGroup.add(sparks);
+
+  const spawnPos = APP.getSpawnPosition ? APP.getSpawnPosition(0.95, true) : new THREE.Vector3(0, 0, -1);
+  torchGroup.position.copy(spawnPos);
+  APP.scene.add(torchGroup);
+
+  const entity = APP.registerEntity(torchGroup, {
+    name: 'Classic Fire Torch',
+    category: 'torch',
+    holdable: true,
+    hasGravity: true,
+    restitution: 0.15,
+    onUpdate: function (dt) {
+      const t = performance.now() * 0.001;
+      const flicker = 0.88 + Math.sin(t * 17.0) * 0.1 + Math.cos(t * 29.0) * 0.08;
+      outerFlame.scale.set(0.95 + Math.sin(t * 14) * 0.1, flicker * 1.08, 0.95 + Math.cos(t * 13) * 0.1);
+      outerFlame.rotation.z = Math.sin(t * 9.0) * 0.08;
+      innerFlame.scale.set(1, flicker * 1.15, 1);
+      fireLight.intensity = 1.6 + flicker * 0.8;
+
+      const arr = sparkGeo.attributes.position.array;
+      for (let i = 0; i < sparkCount; i++) {
+        arr[i * 3 + 1] += sparkSpeeds[i] * dt;
+        arr[i * 3] += Math.sin(t * 6 + i) * 0.0008;
+        if (arr[i * 3 + 1] > 0.85) {
+          arr[i * 3] = (Math.random() - 0.5) * 0.045;
+          arr[i * 3 + 1] = 0.50;
+          arr[i * 3 + 2] = (Math.random() - 0.5) * 0.045;
+        }
+      }
+      sparkGeo.attributes.position.needsUpdate = true;
+    }
+  });
+
+  APP.visual?.applyDissolveShader?.(torchGroup, 'materialize');
+  APP.emit?.('entity:created', entity);
+  APP.bot?.onEntityCreated?.(entity);
+
+  return { ok: true, message: 'Created prescripted Classic Fire Torch.' };
+})();
+@end
