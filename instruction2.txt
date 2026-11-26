@@ -1,0 +1,1584 @@
+# ======================================================================
+# instruction2.txt — Master Realism Engine v2
+#   Auto SDF Smooth-Union Blending + Beveled Hard-Surface + PBR Shaders
+#   Weathered Metal, Blurred/Distorted Glass, Corner/Contact Occlusion,
+#   SSS, Caustics, Volumetric Fog, Micro-Particles, Surface Wetness,
+#   Heat Distortion, Motion Blur Ghosting, Steep Parallax & Edge Wear
+# ======================================================================
+
+@ability: realism_master_engine
+@autorun
+@pin: Realism FX
+@desc: Automatically blends primitive creations into sculpted organic/beveled geometry and upgrades every creation with realistic PBR shaders, reflections, refraction, occlusion, SSS, caustics, fog, micro-particles, wetness, heat distortion, motion blur, parallax depth, and edge wear.
+@match: realism | realistic | wet surfaces | dry surfaces | surface wetness | volumetric fog | fog on | fog off | heat distortion | caustics | micro particles | realistic glass | realistic metal | الواقعية | واقعي | ضباب | زجاج | معدن
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene || !APP.renderer) return;
+
+  if (typeof APP._inst2RealismCleanup === 'function') {
+    try { APP._inst2RealismCleanup(); } catch (_) {}
+  }
+
+  const scene = APP.scene;
+  const renderer = APP.renderer;
+
+  // ====================================================================
+  // 1. REALISM CONFIG & STUDIO HDR ENVIRONMENT (FIXES BLACK REFLECTIONS)
+  // ====================================================================
+  const cfg = {
+    enabled: true,
+    autoBlendOrganic: true,
+    calibrateColors: true,
+    wetness: 0.18,
+    fogEnabled: true,
+    particlesEnabled: true,
+    heatDistortion: true,
+    motionBlur: true,
+    parallaxScale: 0.030,
+    edgeWear: 0.72,
+    causticsStrength: 1.05
+  };
+
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.12;
+
+  if (APP.dirLight) {
+    APP.dirLight.castShadow = true;
+    if (APP.dirLight.shadow) {
+      APP.dirLight.shadow.mapSize.set(2048, 2048);
+      APP.dirLight.shadow.camera.near = 0.15;
+      APP.dirLight.shadow.camera.far = 14;
+      APP.dirLight.shadow.camera.left = -3.6;
+      APP.dirLight.shadow.camera.right = 3.6;
+      APP.dirLight.shadow.camera.top = 3.6;
+      APP.dirLight.shadow.camera.bottom = -3.6;
+      APP.dirLight.shadow.bias = -0.0003;
+      APP.dirLight.shadow.normalBias = 0.016;
+      APP.dirLight.shadow.radius = 4.0;
+    }
+  }
+
+  // Build rich high-contrast studio/sky reflection environment for metal & glass
+  let studioEnvTex = null;
+  try {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envScene = new THREE.Scene();
+    envScene.background = new THREE.Color(0x0b1524);
+
+    const skyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(20, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0x1e334d, side: THREE.BackSide })
+    );
+    envScene.add(skyDome);
+
+    const panelA = new THREE.Mesh(new THREE.PlaneGeometry(10, 6), new THREE.MeshBasicMaterial({ color: 0xfff5e4, side: THREE.DoubleSide }));
+    panelA.position.set(6, 7, 5);
+    panelA.lookAt(0, 0, 0);
+    envScene.add(panelA);
+
+    const panelB = new THREE.Mesh(new THREE.PlaneGeometry(12, 5), new THREE.MeshBasicMaterial({ color: 0x7dd3fc, side: THREE.DoubleSide }));
+    panelB.position.set(-7, 5, -4);
+    panelB.lookAt(0, 0, 0);
+    envScene.add(panelB);
+
+    const panelC = new THREE.Mesh(new THREE.PlaneGeometry(8, 3), new THREE.MeshBasicMaterial({ color: 0xfdba74, side: THREE.DoubleSide }));
+    panelC.position.set(0, 2, -8);
+    panelC.lookAt(0, 0, 0);
+    envScene.add(panelC);
+
+    const floorBounce = new THREE.Mesh(new THREE.CircleGeometry(14, 24), new THREE.MeshBasicMaterial({ color: 0x1e293b, side: THREE.DoubleSide }));
+    floorBounce.rotation.x = -Math.PI / 2;
+    floorBounce.position.y = -4;
+    envScene.add(floorBounce);
+
+    studioEnvTex = pmrem.fromScene(envScene, 0.035).texture;
+    pmrem.dispose();
+    if (!APP.isAR || !scene.environment) scene.environment = studioEnvTex;
+    APP.studioEnvTexture = studioEnvTex;
+  } catch (_) {}
+
+  const bounceLight = new THREE.DirectionalLight(0x8ac4ff, 0.38);
+  bounceLight.position.set(-2.5, -1.0, -2.2);
+  scene.add(bounceLight);
+
+  function createContactShadowTex() {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(64, 64, 4, 64, 64, 62);
+    g.addColorStop(0, 'rgba(0, 0, 0, 0.62)');
+    g.addColorStop(0.45, 'rgba(0, 0, 0, 0.28)');
+    g.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    tex.needsUpdate = true;
+    return tex;
+  }
+  const contactShadowTex = createContactShadowTex();
+
+  const sharedUniforms = {
+    uNxrTime: { value: 0 },
+    uNxrWetness: { value: cfg.wetness },
+    uNxrParallax: { value: cfg.parallaxScale },
+    uNxrEdgeWear: { value: cfg.edgeWear },
+    uNxrCausticsGlobal: { value: cfg.causticsStrength },
+    uNxrLightDir: { value: new THREE.Vector3(0.45, 0.82, 0.35).normalize() }
+  };
+
+  // ====================================================================
+  // 2. CARTOON COLOR CALIBRATOR (KILLS PLASTIC PRIMARY COLORS)
+  // ====================================================================
+  function calibrateNaturalColor(col, archetype) {
+    if (!cfg.calibrateColors || !col) return col;
+    if (archetype === 'glass') return col;
+    const hsl = {};
+    col.getHSL(hsl);
+    // Keep grayscale / already muted colors as-is; tone down neon primary saturation
+    if (hsl.s > 0.56) hsl.s = 0.56 + (hsl.s - 0.56) * 0.25;
+    if (hsl.l > 0.84) hsl.l = 0.84;
+    if (hsl.l < 0.06 && hsl.s > 0.1) hsl.l = 0.07;
+    const out = new THREE.Color().setHSL(hsl.h, hsl.s, hsl.l);
+    return out;
+  }
+
+  // ====================================================================
+  // 3. DUAL SURFACE NETS SDF SMOOTH-UNION BLENDER (NO STICK-FIGURE TOYS!)
+  // ====================================================================
+  function sminPoly(a, b, k) {
+    const h = Math.max(k - Math.abs(a - b), 0.0) / k;
+    return {
+      d: Math.min(a, b) - h * h * k * 0.25,
+      w: a < b ? (1.0 - h * 0.5) : (h * 0.5)
+    };
+  }
+
+  function hashNoise3(x, y, z) {
+    const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453;
+    return s - Math.floor(s);
+  }
+
+  function smoothNoise3(x, y, z) {
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    const fx = x - ix, fy = y - iy, fz = z - iz;
+    const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy), uz = fz * fz * (3 - 2 * fz);
+    const n000 = hashNoise3(ix, iy, iz), n100 = hashNoise3(ix + 1, iy, iz);
+    const n010 = hashNoise3(ix, iy + 1, iz), n110 = hashNoise3(ix + 1, iy + 1, iz);
+    const n001 = hashNoise3(ix, iy, iz + 1), n101 = hashNoise3(ix + 1, iy, iz + 1);
+    const n011 = hashNoise3(ix, iy + 1, iz + 1), n111 = hashNoise3(ix + 1, iy + 1, iz + 1);
+    const nx00 = n000 + (n100 - n000) * ux, nx10 = n010 + (n110 - n010) * ux;
+    const nx01 = n001 + (n101 - n001) * ux, nx11 = n011 + (n111 - n011) * ux;
+    const nxy0 = nx00 + (nx10 - nx00) * uy, nxy1 = nx01 + (nx11 - nx01) * uy;
+    return nxy0 + (nxy1 - nxy0) * uz;
+  }
+
+  function evalPrimitiveSDF(prim, px, py, pz) {
+    // Transform query point into primitive local space
+    const dx = px - prim.pos.x, dy = py - prim.pos.y, dz = pz - prim.pos.z;
+    const qx = prim.invRot[0] * dx + prim.invRot[3] * dy + prim.invRot[6] * dz;
+    const qy = prim.invRot[1] * dx + prim.invRot[4] * dy + prim.invRot[7] * dz;
+    const qz = prim.invRot[2] * dx + prim.invRot[5] * dy + prim.invRot[8] * dz;
+
+    const lx = qx / prim.scale.x;
+    const ly = qy / prim.scale.y;
+    const lz = qz / prim.scale.z;
+    const ms = prim.minScale;
+
+    if (prim.kind === 'sphere') {
+      return (Math.sqrt(lx * lx + ly * ly + lz * lz) - prim.r) * ms;
+    }
+    if (prim.kind === 'box') {
+      const bx = Math.abs(lx) - prim.hx;
+      const by = Math.abs(ly) - prim.hy;
+      const bz = Math.abs(lz) - prim.hz;
+      const ox = Math.max(bx, 0), oy = Math.max(by, 0), oz = Math.max(bz, 0);
+      const outD = Math.sqrt(ox * ox + oy * oy + oz * oz);
+      const inD = Math.min(Math.max(bx, by, bz), 0);
+      return (outD + inD - prim.bevel) * ms;
+    }
+    if (prim.kind === 'capsule') {
+      const cy = THREE.MathUtils.clamp(ly, -prim.hh, prim.hh);
+      const ry = ly - cy;
+      return (Math.sqrt(lx * lx + ry * ry + lz * lz) - prim.r) * ms;
+    }
+    if (prim.kind === 'cylinder') {
+      const r1 = prim.rb, r2 = prim.rt, h = prim.hh;
+      const q2x = Math.sqrt(lx * lx + lz * lz);
+      const q2y = ly;
+      const k1x = r2, k1y = h;
+      const k2x = r2 - r1, k2y = 2.0 * h;
+      const cax = q2x - Math.min(q2x, q2y < 0 ? r1 : r2);
+      const cay = Math.abs(q2y) - h;
+      const k2Dot = k2x * k2x + k2y * k2y;
+      const t = k2Dot > 1e-6 ? THREE.MathUtils.clamp(((k1x - q2x) * k2x + (k1y - q2y) * k2y) / k2Dot, 0, 1) : 0;
+      const cbx = q2x - k1x + k2x * t;
+      const cby = q2y - k1y + k2y * t;
+      const s = (cbx < 0 && cay < 0) ? -1 : 1;
+      return s * Math.sqrt(Math.min(cax * cax + cay * cay, cbx * cbx + cby * cby)) * ms;
+    }
+    if (prim.kind === 'torus') {
+      const qx2 = Math.sqrt(lx * lx + lz * lz) - prim.r;
+      return (Math.sqrt(qx2 * qx2 + ly * ly) - prim.tube) * ms;
+    }
+    return 10.0;
+  }
+
+  function buildSurfaceNetsGeometry(primitives, opts = {}) {
+    if (!primitives || !primitives.length) return null;
+    const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+    const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+
+    for (const pr of primitives) {
+      const ext = pr.boundRadius || 0.5;
+      min.x = Math.min(min.x, pr.pos.x - ext);
+      min.y = Math.min(min.y, pr.pos.y - ext);
+      min.z = Math.min(min.z, pr.pos.z - ext);
+      max.x = Math.max(max.x, pr.pos.x + ext);
+      max.y = Math.max(max.y, pr.pos.y + ext);
+      max.z = Math.max(max.z, pr.pos.z + ext);
+    }
+
+    const span = new THREE.Vector3().subVectors(max, min);
+    const maxSpan = Math.max(span.x, span.y, span.z, 0.15);
+    const pad = maxSpan * 0.16;
+    min.addScalar(-pad);
+    max.addScalar(pad);
+    span.subVectors(max, min);
+
+    const N = opts.resolution || 28;
+    const dx = span.x / (N - 1), dy = span.y / (N - 1), dz = span.z / (N - 1);
+    const smoothK = opts.smoothness !== undefined ? opts.smoothness : (maxSpan * 0.082);
+    const organicAmp = opts.organicNoise !== undefined ? opts.organicNoise : (maxSpan * 0.0085);
+
+    const total = N * N * N;
+    const vals = new Float32Array(total);
+    const colR = new Float32Array(total);
+    const colG = new Float32Array(total);
+    const colB = new Float32Array(total);
+
+    function sampleField(wx, wy, wz) {
+      let curD = evalPrimitiveSDF(primitives[0], wx, wy, wz);
+      let r = primitives[0].col.r, g = primitives[0].col.g, b = primitives[0].col.b;
+
+      for (let i = 1; i < primitives.length; i++) {
+        const pr = primitives[i];
+        const nd = evalPrimitiveSDF(pr, wx, wy, wz);
+        const k = Math.max(0.004, pr.smooth !== undefined ? pr.smooth : smoothK);
+        if (pr.subtract) {
+          // Smooth subtraction for sculpted cavities/eye sockets
+          const h = Math.max(k - Math.abs(-nd - curD), 0.0) / k;
+          curD = Math.max(curD, -nd) + h * h * k * 0.25;
+        } else {
+          const res = sminPoly(curD, nd, k);
+          curD = res.d;
+          const w = res.w;
+          r = r * w + pr.col.r * (1 - w);
+          g = g * w + pr.col.g * (1 - w);
+          b = b * w + pr.col.b * (1 - w);
+        }
+      }
+
+      if (organicAmp > 0) {
+        const nf = 6.5 / maxSpan;
+        const nVal = smoothNoise3(wx * nf, wy * nf, wz * nf) - 0.5;
+        curD += nVal * organicAmp;
+      }
+      return { d: curD, r, g, b };
+    }
+
+    let idx = 0;
+    for (let z = 0; z < N; z++) {
+      const wz = min.z + z * dz;
+      for (let y = 0; y < N; y++) {
+        const wy = min.y + y * dy;
+        for (let x = 0; x < N; x++) {
+          const wx = min.x + x * dx;
+          const s = sampleField(wx, wy, wz);
+          vals[idx] = s.d;
+          colR[idx] = s.r;
+          colG[idx] = s.g;
+          colB[idx] = s.b;
+          idx++;
+        }
+      }
+    }
+
+    const cellVert = new Int32Array(total).fill(-1);
+    const positions = [];
+    const normals = [];
+    const colors = [];
+    const uvs = [];
+    const indices = [];
+
+    const edgeCorners = [
+      [0, 1], [2, 3], [4, 5], [6, 7],
+      [0, 2], [1, 3], [4, 6], [5, 7],
+      [0, 4], [1, 5], [2, 6], [3, 7]
+    ];
+    const cornerOff = [
+      [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
+      [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]
+    ];
+
+    const eps = Math.max(dx, dy, dz) * 0.45;
+    const N2 = N * N;
+
+    for (let z = 0; z < N - 1; z++) {
+      for (let y = 0; y < N - 1; y++) {
+        for (let x = 0; x < N - 1; x++) {
+          let mask = 0;
+          const cv = new Float32Array(8);
+          const cIdx = new Int32Array(8);
+          for (let c = 0; c < 8; c++) {
+            const gi = (z + cornerOff[c][2]) * N2 + (y + cornerOff[c][1]) * N + (x + cornerOff[c][0]);
+            cIdx[c] = gi;
+            cv[c] = vals[gi];
+            if (cv[c] < 0) mask |= (1 << c);
+          }
+          if (mask === 0 || mask === 255) continue;
+
+          let px = 0, py = 0, pz = 0, cr = 0, cg = 0, cb = 0, crossCount = 0;
+          for (let e = 0; e < 12; e++) {
+            const a = edgeCorners[e][0], b = edgeCorners[e][1];
+            const va = cv[a], vb = cv[b];
+            if ((va < 0) === (vb < 0)) continue;
+            const t = va / (va - vb);
+            px += (cornerOff[a][0] + (cornerOff[b][0] - cornerOff[a][0]) * t);
+            py += (cornerOff[a][1] + (cornerOff[b][1] - cornerOff[a][1]) * t);
+            pz += (cornerOff[a][2] + (cornerOff[b][2] - cornerOff[a][2]) * t);
+            const ia = cIdx[a], ib = cIdx[b];
+            cr += colR[ia] + (colR[ib] - colR[ia]) * t;
+            cg += colG[ia] + (colG[ib] - colG[ia]) * t;
+            cb += colB[ia] + (colB[ib] - colB[ia]) * t;
+            crossCount++;
+          }
+          if (!crossCount) continue;
+
+          const vx = min.x + (x + px / crossCount) * dx;
+          const vy = min.y + (y + py / crossCount) * dy;
+          const vz = min.z + (z + pz / crossCount) * dz;
+
+          const gx = sampleField(vx + eps, vy, vz).d - sampleField(vx - eps, vy, vz).d;
+          const gy = sampleField(vx, vy + eps, vz).d - sampleField(vx, vy - eps, vz).d;
+          const gz = sampleField(vx, vy, vz + eps).d - sampleField(vx, vy, vz - eps).d;
+          const gLen = Math.sqrt(gx * gx + gy * gy + gz * gz) || 1;
+
+          const vId = positions.length / 3;
+          cellVert[z * N2 + y * N + x] = vId;
+          positions.push(vx, vy, vz);
+          normals.push(gx / gLen, gy / gLen, gz / gLen);
+          colors.push(cr / crossCount, cg / crossCount, cb / crossCount);
+          uvs.push((vx - min.x) / span.x, (vy - min.y) / span.y);
+        }
+      }
+    }
+
+    const getCV = (cx, cy, cz) => cellVert[cz * N2 + cy * N + cx];
+
+    for (let z = 0; z < N - 1; z++) {
+      for (let y = 0; y < N - 1; y++) {
+        for (let x = 0; x < N - 1; x++) {
+          const i0 = z * N2 + y * N + x;
+          const v0 = vals[i0];
+
+          // Edge along +X
+          if (y > 0 && z > 0 && x < N - 1) {
+            const v1 = vals[i0 + 1];
+            if ((v0 < 0) !== (v1 < 0)) {
+              const c0 = getCV(x, y - 1, z - 1), c1 = getCV(x, y, z - 1), c2 = getCV(x, y, z), c3 = getCV(x, y - 1, z);
+              if (c0 >= 0 && c1 >= 0 && c2 >= 0 && c3 >= 0) {
+                if (v0 < 0) indices.push(c0, c1, c2, c0, c2, c3);
+                else indices.push(c0, c2, c1, c0, c3, c2);
+              }
+            }
+          }
+          // Edge along +Y
+          if (x > 0 && z > 0 && y < N - 1) {
+            const v1 = vals[i0 + N];
+            if ((v0 < 0) !== (v1 < 0)) {
+              const c0 = getCV(x - 1, y, z - 1), c1 = getCV(x - 1, y, z), c2 = getCV(x, y, z), c3 = getCV(x, y, z - 1);
+              if (c0 >= 0 && c1 >= 0 && c2 >= 0 && c3 >= 0) {
+                if (v0 < 0) indices.push(c0, c1, c2, c0, c2, c3);
+                else indices.push(c0, c2, c1, c0, c3, c2);
+              }
+            }
+          }
+          // Edge along +Z
+          if (x > 0 && y > 0 && z < N - 1) {
+            const v1 = vals[i0 + N2];
+            if ((v0 < 0) !== (v1 < 0)) {
+              const c0 = getCV(x - 1, y - 1, z), c1 = getCV(x, y - 1, z), c2 = getCV(x, y, z), c3 = getCV(x - 1, y, z);
+              if (c0 >= 0 && c1 >= 0 && c2 >= 0 && c3 >= 0) {
+                if (v0 < 0) indices.push(c0, c1, c2, c0, c2, c3);
+                else indices.push(c0, c2, c1, c0, c3, c2);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (positions.length < 12 || indices.length < 12) return null;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    return geo;
+  }
+
+  function extractPrimitiveDesc(mesh, invGroupMatrix, entitySize) {
+    const g = mesh.geometry;
+    if (!g || !g.parameters) return null;
+    const t = g.type || '';
+    const p = g.parameters;
+    const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    if (!mat || mat.transparent || (mat.transmission && mat.transmission > 0.2) || (mat.metalness && mat.metalness > 0.65)) return null;
+
+    const label = `${mesh.name || ''} ${mat.name || ''}`.toLowerCase();
+    if (/\b(eye|pupil|iris|tooth|teeth|claw|button|lens|glass|visor|blade|screen|flame|fire|glow|fur_tuft)\b/i.test(label)) return null;
+
+    mesh.updateMatrixWorld(true);
+    const relM = invGroupMatrix.clone().multiply(mesh.matrixWorld);
+    const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scale = new THREE.Vector3();
+    relM.decompose(pos, quat, scale);
+
+    const rotM = new THREE.Matrix4().makeRotationFromQuaternion(quat);
+    const invRot = [
+      rotM.elements[0], rotM.elements[1], rotM.elements[2],
+      rotM.elements[4], rotM.elements[5], rotM.elements[6],
+      rotM.elements[8], rotM.elements[9], rotM.elements[10]
+    ];
+
+    const col = mat.color ? calibrateNaturalColor(mat.color.clone(), 'organic') : new THREE.Color(0x94a3b8);
+    const sx = Math.abs(scale.x) || 1, sy = Math.abs(scale.y) || 1, sz = Math.abs(scale.z) || 1;
+    const minScale = Math.min(sx, sy, sz);
+    const maxScale = Math.max(sx, sy, sz);
+
+    let desc = null;
+    if (t.includes('Sphere') || t.includes('Icosahedron') || t.includes('Dodecahedron')) {
+      const r = p.radius || 0.5;
+      desc = { kind: 'sphere', r, boundRadius: r * maxScale * 1.15 };
+    } else if (t.includes('Capsule')) {
+      const r = p.radius || 0.2, hh = (p.length || 0.5) * 0.5;
+      desc = { kind: 'capsule', r, hh, boundRadius: (hh + r) * maxScale * 1.15 };
+    } else if (t.includes('Cylinder') || t.includes('Cone')) {
+      const rt = t.includes('Cone') ? 0.005 : (p.radiusTop ?? 0.5);
+      const rb = p.radiusBottom ?? p.radius ?? 0.5;
+      const hh = (p.height ?? 1.0) * 0.5;
+      desc = { kind: 'cylinder', rt, rb, hh, boundRadius: Math.hypot(Math.max(rt, rb), hh) * maxScale * 1.15 };
+    } else if (t.includes('Box')) {
+      const w = (p.width ?? 1) * 0.5, h = (p.height ?? 1) * 0.5, d = (p.depth ?? 1) * 0.5;
+      const bevel = Math.min(w, h, d) * 0.14;
+      desc = { kind: 'box', hx: w - bevel, hy: h - bevel, hz: d - bevel, bevel, boundRadius: Math.hypot(w, h, d) * maxScale * 1.15 };
+    } else if (t.includes('Torus')) {
+      const r = p.radius || 0.4, tube = p.tube || 0.12;
+      desc = { kind: 'torus', r, tube, boundRadius: (r + tube) * maxScale * 1.15 };
+    }
+    if (!desc) return null;
+
+    // Skip tiny micro-details (< 12% of entity size) so small eyes/nails stay crisp
+    if (desc.boundRadius < entitySize * 0.10) return null;
+
+    return Object.assign(desc, { mesh, pos, invRot, scale: new THREE.Vector3(sx, sy, sz), minScale, col });
+  }
+
+  function autoBlendAndBevelGroup(ent) {
+    if (!ent || !ent.group || ent.meta?.nxrGeomUpgraded) return;
+    ent.meta = ent.meta || {};
+    ent.meta.nxrGeomUpgraded = true;
+
+    const group = ent.group;
+    const label = `${ent.name || ''} ${ent.category || ''}`.toLowerCase();
+    const isHardSurface = /\b(pen|torch|sword|knife|gun|rifle|car|truck|ship|robot|mech|chair|table|desk|house|building|tower|wall|box|cube|lamp|door|window|portal|board|glass|bottle|vase|cup|mug)\b/i.test(label);
+
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return;
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const entitySpan = Math.max(size.x, size.y, size.z, 0.1);
+    const invGroup = group.matrixWorld.clone().invert();
+
+    // 1. Always replace sharp BoxGeometry with chamfered RoundedBoxGeometry (no razor edges!)
+    if (APP.RoundedBoxGeometry) {
+      group.traverse((c) => {
+        if (c.isMesh && c.geometry?.type === 'BoxGeometry' && c.geometry.parameters) {
+          const p = c.geometry.parameters;
+          const w = p.width || 1, h = p.height || 1, d = p.depth || 1;
+          const r = Math.min(w, h, d) * 0.085;
+          if (r > 0.0005) {
+            const oldGeo = c.geometry;
+            c.geometry = new APP.RoundedBoxGeometry(w, h, d, 3, r);
+            oldGeo.dispose();
+          }
+        }
+      });
+    }
+
+    // 2. For organic primitive assemblies (spheres + cylinders + cones stuck together),
+    //    blend structural primitives into a seamless sculpted SDF Surface Nets mesh!
+    if (cfg.autoBlendOrganic && !isHardSurface && ent.category === 'procedural') {
+      const prims = [];
+      group.traverse((c) => {
+        if (c.isMesh && !c.userData?.nxrDecal) {
+          const desc = extractPrimitiveDesc(c, invGroup, entitySpan);
+          if (desc) prims.push(desc);
+        }
+      });
+
+      const hasMixedOrMulti = prims.length >= 3 || (prims.length >= 2 && prims.some(p => p.kind === 'cylinder' || p.kind === 'capsule') && prims.some(p => p.kind === 'sphere'));
+      if (hasMixedOrMulti) {
+        const sdfGeo = buildSurfaceNetsGeometry(prims, { resolution: 28, smoothness: entitySpan * 0.082 });
+        if (sdfGeo) {
+          const blendedMat = new THREE.MeshPhysicalMaterial({
+            color: 0xffffff,
+            vertexColors: true,
+            roughness: 0.56,
+            metalness: 0.04,
+            sheen: 0.25,
+            sheenRoughness: 0.65
+          });
+          const sculptedMesh = new THREE.Mesh(sdfGeo, blendedMat);
+          sculptedMesh.name = 'organic_blended_body';
+          sculptedMesh.castShadow = true;
+          sculptedMesh.receiveShadow = true;
+          sculptedMesh.userData.entity = ent;
+
+          for (const pr of prims) {
+            if (pr.mesh.parent) pr.mesh.parent.remove(pr.mesh);
+            if (pr.mesh.geometry) pr.mesh.geometry.dispose();
+          }
+          group.add(sculptedMesh);
+        }
+      }
+    }
+  }
+
+  // Expose explicit smooth-union builder for AI creations (`APP.craft.smoothModel`)
+  APP.craft.smoothModel = function smoothModel(parts, opts = {}) {
+    if (!Array.isArray(parts) || !parts.length) return new THREE.Group();
+    const prims = [];
+    for (const part of parts) {
+      if (!part) continue;
+      const p = part.pos || [0, 0, 0];
+      const pos = p.isVector3 ? p.clone() : new THREE.Vector3(p[0] || 0, p[1] || 0, p[2] || 0);
+      const rot = part.rot || [0, 0, 0];
+      const euler = rot.isEuler ? rot : new THREE.Euler(rot[0] || 0, rot[1] || 0, rot[2] || 0);
+      const rotM = new THREE.Matrix4().makeRotationFromEuler(euler);
+      const invRot = [
+        rotM.elements[0], rotM.elements[1], rotM.elements[2],
+        rotM.elements[4], rotM.elements[5], rotM.elements[6],
+        rotM.elements[8], rotM.elements[9], rotM.elements[10]
+      ];
+      const s = part.scale || [1, 1, 1];
+      const scale = s.isVector3 ? s.clone() : new THREE.Vector3(s[0] || 1, s[1] || 1, s[2] || 1);
+      const ms = Math.min(scale.x, scale.y, scale.z);
+      const mxs = Math.max(scale.x, scale.y, scale.z);
+      const col = calibrateNaturalColor(new THREE.Color(part.color !== undefined ? part.color : 0x94a3b8), 'organic');
+      const kind = String(part.type || 'sphere').toLowerCase();
+
+      if (kind === 'capsule') {
+        const r = part.r || 0.08, hh = (part.len || 0.3) * 0.5;
+        prims.push({ kind: 'capsule', r, hh, pos, invRot, scale, minScale: ms, boundRadius: (hh + r) * mxs * 1.15, col, smooth: part.smooth, subtract: !!part.subtract });
+      } else if (kind === 'cylinder' || kind === 'cone') {
+        const rt = part.rt ?? (kind === 'cone' ? 0.01 : (part.r || 0.1));
+        const rb = part.rb ?? (part.r || 0.1);
+        const hh = (part.h || 0.3) * 0.5;
+        prims.push({ kind: 'cylinder', rt, rb, hh, pos, invRot, scale, minScale: ms, boundRadius: Math.hypot(Math.max(rt, rb), hh) * mxs * 1.15, col, smooth: part.smooth, subtract: !!part.subtract });
+      } else if (kind === 'box') {
+        const hx = (part.w || 0.2) * 0.5, hy = (part.h || 0.2) * 0.5, hz = (part.d || 0.2) * 0.5;
+        const bev = Math.min(hx, hy, hz) * 0.15;
+        prims.push({ kind: 'box', hx: hx - bev, hy: hy - bev, hz: hz - bev, bevel: bev, pos, invRot, scale, minScale: ms, boundRadius: Math.hypot(hx, hy, hz) * mxs * 1.15, col, smooth: part.smooth, subtract: !!part.subtract });
+      } else if (kind === 'torus') {
+        const r = part.r || 0.2, tube = part.tube || 0.06;
+        prims.push({ kind: 'torus', r, tube, pos, invRot, scale, minScale: ms, boundRadius: (r + tube) * mxs * 1.15, col, smooth: part.smooth, subtract: !!part.subtract });
+      } else {
+        const r = part.r || 0.15;
+        prims.push({ kind: 'sphere', r, pos, invRot, scale, minScale: ms, boundRadius: r * mxs * 1.15, col, smooth: part.smooth, subtract: !!part.subtract });
+      }
+    }
+    const geo = buildSurfaceNetsGeometry(prims, { resolution: opts.resolution || 30, smoothness: opts.smoothness, organicNoise: opts.organicNoise });
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness: opts.roughness ?? 0.52,
+      metalness: opts.metalness ?? 0.04
+    });
+    return new THREE.Mesh(geo || new THREE.SphereGeometry(0.15, 20, 16), mat);
+  };
+
+  // ====================================================================
+  // 4. ARCHETYPE DETECTION + MASTER REALISTIC PBR SHADER INJECTION
+  // ====================================================================
+  function detectMaterialArchetype(mat, meshName, entityName) {
+    const label = `${meshName || ''} ${entityName || ''} ${mat.name || ''}`.toLowerCase();
+    const col = mat.color ? mat.color : new THREE.Color(0xffffff);
+    const hsl = {};
+    col.getHSL(hsl);
+
+    if (/\b(glass|crystal|ice|lens|window|bottle|diamond|gem|water|transparent|visor)\b/i.test(label) ||
+        (mat.transparent && mat.opacity < 0.88 && mat.opacity > 0.08) ||
+        (mat.transmission && mat.transmission > 0.2)) {
+      return 'glass';
+    }
+    if (/\b(metal|steel|iron|gold|silver|chrome|brass|copper|bronze|armor|blade|sword|gun|robot|chassis|mech|coin|pen|clip)\b/i.test(label) ||
+        (mat.metalness !== undefined && mat.metalness >= 0.55)) {
+      return 'metal';
+    }
+    if (/\b(skin|flesh|face|hand|ear|leaf|leaves|foliage|plant|flower|petal|wax|candle|jade|fruit|apple|grape|coral|jelly|organic|mushroom|cat|dog|horse|animal|dragon|fish|bird)\b/i.test(label)) {
+      return 'sss';
+    }
+    if (/\b(stone|rock|wood|bark|brick|wall|ground|sand|fur|cloth|leather|fabric|ceramic|trunk)\b/i.test(label)) {
+      return 'rough_organic';
+    }
+    if (hsl.s > 0.26 && (hsl.h < 0.14 || (hsl.h > 0.22 && hsl.h < 0.44)) && (mat.metalness || 0) < 0.25) {
+      return 'sss';
+    }
+    return 'standard_real';
+  }
+
+  function inferSSSColor(mat, meshName, entityName) {
+    const label = `${meshName || ''} ${entityName || ''}`.toLowerCase();
+    if (/\b(leaf|leaves|foliage|plant|moss|jade|fern|grass|tree)\b/i.test(label)) return new THREE.Color(0x4ade80);
+    if (/\b(wax|candle|amber|honey)\b/i.test(label)) return new THREE.Color(0xfbbf24);
+    if (/\b(ice|crystal|snow)\b/i.test(label)) return new THREE.Color(0x7dd3fc);
+    if (mat.color && !mat.vertexColors) {
+      const c = mat.color.clone();
+      c.lerp(new THREE.Color(0xff4d2e), 0.52);
+      return c;
+    }
+    return new THREE.Color(0xff6b4a);
+  }
+
+  const NXR_GLSL_HELPERS = [
+    'float nxrHash(vec3 p) {',
+    '  p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));',
+    '  p *= 17.0;',
+    '  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));',
+    '}',
+    'float nxrNoise(vec3 x) {',
+    '  vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);',
+    '  return mix(',
+    '    mix(mix(nxrHash(i + vec3(0,0,0)), nxrHash(i + vec3(1,0,0)), f.x),',
+    '        mix(nxrHash(i + vec3(0,1,0)), nxrHash(i + vec3(1,1,0)), f.x), f.y),',
+    '    mix(mix(nxrHash(i + vec3(0,0,1)), nxrHash(i + vec3(1,0,1)), f.x),',
+    '        mix(nxrHash(i + vec3(0,1,1)), nxrHash(i + vec3(1,1,1)), f.x), f.y), f.z);',
+    '}',
+    'float nxrFbm(vec3 p) {',
+    '  float v = 0.0; float a = 0.5;',
+    '  for (int i = 0; i < 3; i++) { v += a * nxrNoise(p); p *= 2.11; a *= 0.5; }',
+    '  return v;',
+    '}',
+    'float nxrCausticPattern(vec2 uv, float t) {',
+    '  vec2 p = mod(uv * 6.28318, 6.28318) - 250.0;',
+    '  vec2 i = p; float c = 1.0; float inten = 0.005;',
+    '  for (int n = 0; n < 3; n++) {',
+    '    float tn = t * (1.0 - (3.2 / float(n + 1)));',
+    '    i = p + vec2(cos(tn - i.x) + sin(tn + i.y), sin(tn - i.y) + cos(tn + i.x));',
+    '    c += 1.0 / length(vec2(p.x / (sin(i.x + tn) / inten), p.y / (cos(i.y + tn) / inten)));',
+    '  }',
+    '  c /= 3.0; c = 1.17 - pow(c, 1.4);',
+    '  return pow(abs(c), 7.5);',
+    '}'
+  ].join('\n');
+
+  function upgradeMaterialRealistic(mat, archetype, meshName, entityName) {
+    if (!mat || mat.isShaderMaterial || mat.userData?.nxrSkip) return mat;
+    if (mat.userData?.nxrRealUpgraded && mat.userData?.nxrArchetype === archetype) return mat;
+
+    let targetMat = mat;
+    if (!mat.isMeshStandardMaterial) {
+      targetMat = new THREE.MeshPhysicalMaterial({
+        color: mat.color ? mat.color.clone() : new THREE.Color(0xcbd5e1),
+        map: mat.map || null,
+        vertexColors: !!mat.vertexColors,
+        transparent: !!mat.transparent,
+        opacity: mat.opacity !== undefined ? mat.opacity : 1.0,
+        side: mat.side !== undefined ? mat.side : THREE.FrontSide,
+        roughness: 0.45,
+        metalness: 0.08
+      });
+    } else if (!(targetMat instanceof THREE.MeshPhysicalMaterial)) {
+      const pm = new THREE.MeshPhysicalMaterial();
+      THREE.MeshStandardMaterial.prototype.copy.call(pm, targetMat);
+      targetMat = pm;
+    }
+
+    if (targetMat.color && !targetMat.vertexColors) {
+      targetMat.color.copy(calibrateNaturalColor(targetMat.color, archetype));
+    }
+
+    // Use rich studio/XR environment instead of empty black cubemap
+    targetMat.envMap = (APP.isAR ? scene.environment : (studioEnvTex || APP.roomEnvTexture || scene.environment)) || null;
+    targetMat.envMapIntensity = archetype === 'metal' ? 2.15 : archetype === 'glass' ? 2.45 : 1.25;
+
+    let modeId = 0; // 0:standard, 1:metal, 2:glass, 3:sss, 4:rough_organic
+    let sssStrength = 0.0;
+    let sssCol = new THREE.Color(0xff5533);
+
+    if (archetype === 'metal') {
+      modeId = 1;
+      targetMat.metalness = Math.max(0.88, targetMat.metalness || 0.92);
+      targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.26, 0.14, 0.42);
+      targetMat.clearcoat = 0.22;
+      targetMat.clearcoatRoughness = 0.22;
+    } else if (archetype === 'glass') {
+      modeId = 2;
+      // CRITICAL: transmission requires transparent=false, opacity=1.0 in Three.js!
+      targetMat.transparent = false;
+      targetMat.opacity = 1.0;
+      targetMat.transmission = 0.96;
+      targetMat.ior = 1.52;
+      targetMat.thickness = 0.34;
+      targetMat.roughness = 0.15; // Frosted distortion + blur behind glass!
+      targetMat.metalness = 0.0;
+      targetMat.reflectivity = 1.0;
+      targetMat.clearcoat = 1.0;
+      targetMat.clearcoatRoughness = 0.04;
+      targetMat.attenuationDistance = 1.1;
+      if (targetMat.color) targetMat.attenuationColor = targetMat.color.clone().lerp(new THREE.Color(0xdcf6ff), 0.72);
+    } else if (archetype === 'sss') {
+      modeId = 3;
+      sssStrength = 1.15;
+      sssCol = inferSSSColor(targetMat, meshName, entityName);
+      targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.48, 0.30, 0.74);
+      targetMat.metalness = 0.04;
+      targetMat.sheen = 0.42;
+      targetMat.sheenRoughness = 0.52;
+      targetMat.sheenColor = sssCol.clone();
+    } else if (archetype === 'rough_organic') {
+      modeId = 4;
+      targetMat.roughness = Math.max(0.56, targetMat.roughness || 0.74);
+      targetMat.metalness = Math.min(0.10, targetMat.metalness || 0.02);
+    } else {
+      targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.46, 0.20, 0.82);
+    }
+
+    const localVelUniform = { value: new THREE.Vector3(0, 0, 0) };
+    const modeUniform = { value: modeId };
+    const sssUniform = { value: sssStrength };
+    const sssColUniform = { value: sssCol };
+
+    targetMat.userData = targetMat.userData || {};
+    targetMat.userData.nxrRealUpgraded = true;
+    targetMat.userData.nxrArchetype = archetype;
+    targetMat.userData.nxrLocalVel = localVelUniform;
+
+    targetMat.customProgramCacheKey = () => `nxr_realism_v3_${modeId}`;
+    targetMat.onBeforeCompile = function (shader) {
+      shader.uniforms.uNxrTime = sharedUniforms.uNxrTime;
+      shader.uniforms.uNxrWetness = sharedUniforms.uNxrWetness;
+      shader.uniforms.uNxrParallax = sharedUniforms.uNxrParallax;
+      shader.uniforms.uNxrEdgeWear = sharedUniforms.uNxrEdgeWear;
+      shader.uniforms.uNxrCausticsGlobal = sharedUniforms.uNxrCausticsGlobal;
+      shader.uniforms.uNxrLightDir = sharedUniforms.uNxrLightDir;
+      shader.uniforms.uNxrLocalVel = localVelUniform;
+      shader.uniforms.uNxrMode = modeUniform;
+      shader.uniforms.uNxrSSSStrength = sssUniform;
+      shader.uniforms.uNxrSSSColor = sssColUniform;
+
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', [
+          '#include <common>',
+          'uniform vec3 uNxrLocalVel;',
+          'attribute float aNxrCrevice;',
+          'attribute float aNxrEdge;',
+          'varying vec3 vNxrLPos;',
+          'varying vec3 vNxrLNorm;',
+          'varying vec3 vNxrWPos;',
+          'varying vec3 vNxrWNorm;',
+          'varying float vNxrCrevice;',
+          'varying float vNxrEdge;',
+          'varying float vNxrMotionTrail;'
+        ].join('\n'))
+        .replace('#include <begin_vertex>', [
+          '#include <begin_vertex>',
+          'vNxrLPos = position;',
+          'vNxrLNorm = objectNormal;',
+          'vNxrCrevice = aNxrCrevice;',
+          'vNxrEdge = aNxrEdge;',
+          'vNxrMotionTrail = 0.0;',
+          'float nxrVLen = length(uNxrLocalVel);',
+          'if (nxrVLen > 0.30) {',
+          '  vec3 nxrVDir = uNxrLocalVel / nxrVLen;',
+          '  float nxrBack = max(0.0, -dot(normalize(objectNormal), nxrVDir));',
+          '  float nxrStretch = min(0.24, (nxrVLen - 0.30) * 0.065) * nxrBack;',
+          '  transformed -= nxrVDir * nxrStretch;',
+          '  vNxrMotionTrail = nxrBack * clamp((nxrVLen - 0.30) * 0.45, 0.0, 0.95);',
+          '}'
+        ].join('\n'))
+        .replace('#include <project_vertex>', [
+          '#include <project_vertex>',
+          'vec4 nxrWp = modelMatrix * vec4( transformed, 1.0 );',
+          'vNxrWPos = nxrWp.xyz;',
+          'vNxrWNorm = normalize( mat3( modelMatrix ) * objectNormal );'
+        ].join('\n'));
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', [
+          '#include <common>',
+          'uniform float uNxrTime;',
+          'uniform float uNxrWetness;',
+          'uniform float uNxrParallax;',
+          'uniform float uNxrEdgeWear;',
+          'uniform float uNxrCausticsGlobal;',
+          'uniform vec3 uNxrLightDir;',
+          'uniform float uNxrMode;',
+          'uniform float uNxrSSSStrength;',
+          'uniform vec3 uNxrSSSColor;',
+          'varying vec3 vNxrLPos;',
+          'varying vec3 vNxrLNorm;',
+          'varying vec3 vNxrWPos;',
+          'varying vec3 vNxrWNorm;',
+          'varying float vNxrCrevice;',
+          'varying float vNxrEdge;',
+          'varying float vNxrMotionTrail;',
+          NXR_GLSL_HELPERS
+        ].join('\n'))
+        .replace('#include <color_fragment>', [
+          '#include <color_fragment>',
+          'vec3 nxrVDirW = normalize(cameraPosition - vNxrWPos);',
+          'vec3 nxrNW = normalize(vNxrWNorm);',
+          'vec3 nxrPLoc = vNxrLPos;',
+          // 5-step Steep Parallax Depth (POM) with micro self-shadowing
+          'vec3 nxrViewTan = nxrVDirW - nxrNW * dot(nxrVDirW, nxrNW);',
+          'float nxrH = nxrFbm(nxrPLoc * 20.0);',
+          'for (int pi = 0; pi < 4; pi++) {',
+          '  nxrPLoc -= nxrViewTan * (1.0 - nxrH) * (uNxrParallax * 0.34);',
+          '  nxrH = nxrFbm(nxrPLoc * 20.0);',
+          '}',
+          'float nxrHeight = nxrH;',
+          'float nxrPShadow = clamp(1.0 - (nxrFbm(nxrPLoc * 20.0 + uNxrLightDir * 0.14) - nxrHeight) * 2.8, 0.55, 1.0);',
+          // Fine anisotropic metal scratches & deep rust
+          'float nxrScratchA = smoothstep(0.72, 0.92, nxrNoise(vec3(nxrPLoc.x * 54.0 + nxrPLoc.y * 8.0, nxrPLoc.y * 10.0, nxrPLoc.z * 54.0)));',
+          'float nxrScratchB = smoothstep(0.75, 0.94, nxrNoise(vec3(nxrPLoc.z * 48.0, nxrPLoc.x * 14.0 - nxrPLoc.y * 32.0, nxrPLoc.y * 11.0)));',
+          'float nxrScratches = max(nxrScratchA, nxrScratchB);',
+          'float nxrRustNoise = nxrFbm(nxrPLoc * 9.0 + vec3(3.1, 1.7, 5.4));',
+          'float nxrRustMask = (uNxrMode > 0.5 && uNxrMode < 1.5) ? smoothstep(0.50, 0.75, nxrRustNoise + vNxrCrevice * 0.42) : 0.0;',
+          // Edge Wear (chipped paint & exposed bright metallic core on outer ridges)
+          'float nxrCurv = clamp(vNxrEdge + length(fwidth(nxrNW)) * 2.6, 0.0, 1.0);',
+          'float nxrWearNoise = nxrFbm(nxrPLoc * 15.0);',
+          'float nxrEdgeMask = (uNxrMode < 1.5 || uNxrMode > 3.5) ? smoothstep(0.48, 0.78, nxrCurv * 0.90 + nxrWearNoise * 0.45) * uNxrEdgeWear : 0.0;',
+          // Surface Wetness: rain droplets, darkened wet porosity & mirror puddles
+          'float nxrUp = clamp(nxrNW.y * 0.5 + 0.5, 0.0, 1.0);',
+          'float nxrDropNoise = nxrNoise(vNxrWPos * 62.0 + vec3(0.0, uNxrTime * 0.55, 0.0));',
+          'float nxrDroplet = smoothstep(0.70, 0.88, nxrDropNoise) * clamp(uNxrWetness * 1.5, 0.0, 1.0);',
+          'float nxrPuddleNoise = nxrFbm(vNxrWPos * 3.5);',
+          'float nxrWetPatch = clamp(uNxrWetness * (0.48 + 0.90 * nxrUp * nxrPuddleNoise), 0.0, 1.0);',
+          // Natural Corner & Contact Occlusion
+          'float nxrCrev = clamp(vNxrCrevice, 0.0, 1.0);',
+          'float nxrAO = 1.0 - nxrCrev * 0.74;',
+          'if (uNxrMode > 0.5 && uNxrMode < 1.5) {',
+          '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.38, 0.14, 0.045), nxrRustMask * 0.84);',
+          '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88, 0.92, 0.97), nxrScratches * 0.55);',
+          '} else if (uNxrMode < 0.5 || uNxrMode > 3.5) {',
+          '  diffuseColor.rgb *= mix(0.78, 1.15, nxrHeight) * nxrPShadow;',
+          '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.78, 0.82, 0.88), nxrEdgeMask * 0.68);',
+          '} else if (uNxrMode > 2.5 && uNxrMode < 3.5) {',
+          '  diffuseColor.rgb *= mix(0.86, 1.10, nxrHeight) * nxrPShadow;',
+          '}',
+          'diffuseColor.rgb *= mix(1.0, 0.52, nxrWetPatch * 0.72);',
+          'diffuseColor.rgb *= nxrAO;'
+        ].join('\n'))
+        .replace('#include <roughnessmap_fragment>', [
+          '#include <roughnessmap_fragment>',
+          'if (uNxrMode > 0.5 && uNxrMode < 1.5) {',
+          '  roughnessFactor = mix(roughnessFactor, 0.90, nxrRustMask * 0.88);',
+          '  roughnessFactor = mix(roughnessFactor, 0.10, nxrScratches * 0.72);',
+          '} else if (uNxrMode > 1.5 && uNxrMode < 2.5) {',
+          '  roughnessFactor = clamp(0.11 + (nxrHeight - 0.5) * 0.12, 0.05, 0.24);',
+          '} else {',
+          '  roughnessFactor = clamp(roughnessFactor + (nxrHeight - 0.5) * 0.28, 0.06, 0.96);',
+          '  roughnessFactor = mix(roughnessFactor, 0.16, nxrEdgeMask * 0.72);',
+          '}',
+          'roughnessFactor = mix(roughnessFactor, 0.04, max(nxrWetPatch * 0.78, nxrDroplet * 0.95));'
+        ].join('\n'))
+        .replace('#include <metalnessmap_fragment>', [
+          '#include <metalnessmap_fragment>',
+          'if (uNxrMode > 0.5 && uNxrMode < 1.5) {',
+          '  metalnessFactor = mix(metalnessFactor, 0.14, nxrRustMask * 0.86);',
+          '} else if (uNxrMode < 0.5 || uNxrMode > 3.5) {',
+          '  metalnessFactor = mix(metalnessFactor, 0.90, nxrEdgeMask * 0.78);',
+          '}'
+        ].join('\n'))
+        .replace('#include <normal_fragment_maps>', [
+          '#include <normal_fragment_maps>',
+          'float nxrBumpE = nxrFbm(nxrPLoc * 20.0 + vec3(0.08, 0.0, 0.0)) - nxrHeight;',
+          'float nxrBumpN = nxrFbm(nxrPLoc * 20.0 + vec3(0.0, 0.08, 0.0)) - nxrHeight;',
+          'float nxrBumpZ = nxrFbm(nxrPLoc * 20.0 + vec3(0.0, 0.0, 0.08)) - nxrHeight;',
+          'vec3 nxrMicroW = vec3(nxrBumpE, nxrBumpN, nxrBumpZ) * (uNxrMode > 1.5 && uNxrMode < 2.5 ? 1.15 : 2.6);',
+          'if (nxrDroplet > 0.08) {',
+          '  nxrMicroW += vec3(sin(vNxrWPos.x * 90.0), 0.0, cos(vNxrWPos.z * 90.0)) * nxrDroplet * 0.65;',
+          '}',
+          'normal = normalize(normal + (viewMatrix * vec4(nxrMicroW, 0.0)).xyz);'
+        ].join('\n'))
+        .replace('#include <lights_fragment_end>', [
+          '#include <lights_fragment_end>',
+          'reflectedLight.indirectDiffuse *= nxrAO;',
+          'reflectedLight.indirectSpecular *= mix(0.28, 1.0, nxrAO);',
+          // Subsurface Scattering (SSS)
+          'if (uNxrSSSStrength > 0.01) {',
+          '  vec3 nxrHBack = normalize(uNxrLightDir + nxrNW * 0.45);',
+          '  float nxrBackScatter = pow(clamp(dot(nxrVDirW, -nxrHBack), 0.0, 1.0), 2.4);',
+          '  float nxrWrap = max(0.0, (dot(nxrNW, uNxrLightDir) + 0.60) / 1.60);',
+          '  reflectedLight.directDiffuse += uNxrSSSColor * (nxrBackScatter * 0.90 + nxrWrap * 0.28) * uNxrSSSStrength;',
+          '}',
+          // Glass Fresnel reflection rim + optical warp tint
+          'if (uNxrMode > 1.5 && uNxrMode < 2.5) {',
+          '  float nxrFres = pow(1.0 - max(0.0, dot(nxrVDirW, nxrNW)), 3.2);',
+          '  reflectedLight.indirectSpecular += vec3(0.78, 0.92, 1.0) * nxrFres * 0.85;',
+          '}',
+          // Caustics on glass, water, and wet surfaces
+          'float nxrCausticsVis = (uNxrMode > 1.5 && uNxrMode < 2.5) ? 0.85 : (nxrWetPatch * nxrUp * 0.82);',
+          'if (nxrCausticsVis > 0.02 && uNxrCausticsGlobal > 0.01) {',
+          '  float nxrCVal = nxrCausticPattern(vNxrWPos.xz * 0.48 + vNxrWPos.y * 0.14, uNxrTime * 0.95);',
+          '  reflectedLight.directDiffuse += vec3(0.45, 0.90, 1.0) * nxrCVal * nxrCausticsVis * uNxrCausticsGlobal * 1.15;',
+          '}',
+          // Motion Blur streak highlight
+          'if (vNxrMotionTrail > 0.02) {',
+          '  reflectedLight.directSpecular += diffuseColor.rgb * vNxrMotionTrail * 0.65;',
+          '}'
+        ].join('\n'));
+    };
+
+    targetMat.needsUpdate = true;
+    return targetMat;
+  }
+
+  // ====================================================================
+  // 5. TOPOLOGICAL DIHEDRAL CORNER OCCLUSION & EDGE WEAR BAKER
+  // ====================================================================
+  function bakeCreviceAndEdgeAttributes(group) {
+    group.updateMatrixWorld(true);
+    const invGroup = group.matrixWorld.clone().invert();
+    const meshes = [];
+    const meshBoxes = [];
+
+    group.traverse((c) => {
+      if (c.isMesh && c.geometry && !c.userData?.nxrDecal) {
+        if (!c.geometry.attributes.normal) c.geometry.computeVertexNormals();
+        c.geometry.computeBoundingBox();
+        const boxG = c.geometry.boundingBox.clone();
+        const relM = invGroup.clone().multiply(c.matrixWorld);
+        boxG.applyMatrix4(relM);
+        meshes.push({ mesh: c, relM, boxG });
+        meshBoxes.push(boxG);
+      }
+    });
+
+    const vPos = new THREE.Vector3();
+    const vNorm = new THREE.Vector3();
+    const closest = new THREE.Vector3();
+    const pA = new THREE.Vector3(), pB = new THREE.Vector3(), pC = new THREE.Vector3();
+    const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), fNorm = new THREE.Vector3();
+
+    for (let mi = 0; mi < meshes.length; mi++) {
+      const { mesh, relM, boxG } = meshes[mi];
+      const geo = mesh.geometry;
+      const posAttr = geo.attributes.position;
+      const normAttr = geo.attributes.normal;
+      if (!posAttr) continue;
+
+      const count = posAttr.count;
+      const crevArr = new Float32Array(count);
+      const edgeArr = new Float32Array(count);
+      const boxCenter = new THREE.Vector3(); boxG.getCenter(boxCenter);
+      const boxSize = new THREE.Vector3(); boxG.getSize(boxSize);
+      const minYGroup = meshes.reduce((m, x) => Math.min(m, x.boxG.min.y), Infinity);
+
+      // Fast dihedral concavity/convexity scan on triangle faces
+      const idxAttr = geo.index;
+      const triCount = idxAttr ? Math.floor(idxAttr.count / 3) : Math.floor(count / 3);
+      if (triCount > 0 && triCount <= 12000 && normAttr) {
+        for (let t = 0; t < triCount; t++) {
+          const i0 = idxAttr ? idxAttr.getX(t * 3) : t * 3;
+          const i1 = idxAttr ? idxAttr.getX(t * 3 + 1) : t * 3 + 1;
+          const i2 = idxAttr ? idxAttr.getX(t * 3 + 2) : t * 3 + 2;
+          pA.fromBufferAttribute(posAttr, i0);
+          pB.fromBufferAttribute(posAttr, i1);
+          pC.fromBufferAttribute(posAttr, i2);
+          e1.subVectors(pB, pA);
+          e2.subVectors(pC, pA);
+          fNorm.crossVectors(e1, e2);
+          if (fNorm.lengthSq() < 1e-12) continue;
+          fNorm.normalize();
+
+          const triIdx = [i0, i1, i2];
+          for (let k = 0; k < 3; k++) {
+            const vi = triIdx[k];
+            vNorm.fromBufferAttribute(normAttr, vi);
+            const angDiff = 1.0 - THREE.MathUtils.clamp(vNorm.dot(fNorm), -1, 1);
+            if (angDiff > 0.04) {
+              const other = triIdx[(k + 1) % 3];
+              e1.fromBufferAttribute(posAttr, other).sub(k === 0 ? pA : (k === 1 ? pB : pC));
+              const sign = e1.dot(vNorm);
+              if (sign < 0) edgeArr[vi] = Math.max(edgeArr[vi], Math.min(1, angDiff * 3.5));
+              else crevArr[vi] = Math.max(crevArr[vi], Math.min(1, angDiff * 3.2));
+            }
+          }
+        }
+      }
+
+      const stride = count > 9000 ? 3 : 1;
+      for (let i = 0; i < count; i++) {
+        if (stride > 1 && i % stride !== 0) {
+          crevArr[i] = Math.max(crevArr[i], crevArr[i - 1] || 0);
+          edgeArr[i] = Math.max(edgeArr[i], edgeArr[i - 1] || 0);
+          continue;
+        }
+        vPos.fromBufferAttribute(posAttr, i).applyMatrix4(relM);
+        if (normAttr) vNorm.fromBufferAttribute(normAttr, i).transformDirection(relM).normalize();
+        else vNorm.set(0, 1, 0);
+
+        let occ = crevArr[i];
+        for (let oi = 0; oi < meshBoxes.length; oi++) {
+          if (oi === mi) continue;
+          meshBoxes[oi].clampPoint(vPos, closest);
+          const d = vPos.distanceTo(closest);
+          if (d < 0.095) occ = Math.max(occ, (1.0 - d / 0.095) * 0.94);
+        }
+
+        const floorDist = vPos.y - minYGroup;
+        if (floorDist < 0.07) occ = Math.max(occ, (1.0 - Math.max(0, floorDist) / 0.07) * 0.58);
+
+        const outDir = vPos.clone().sub(boxCenter).normalize();
+        const align = vNorm.dot(outDir);
+        if (align < 0.15) occ = Math.max(occ, (0.15 - align) * 0.65);
+
+        const nx = Math.abs(vPos.x - boxCenter.x) / Math.max(0.01, boxSize.x * 0.5);
+        const ny = Math.abs(vPos.y - boxCenter.y) / Math.max(0.01, boxSize.y * 0.5);
+        const nz = Math.abs(vPos.z - boxCenter.z) / Math.max(0.01, boxSize.z * 0.5);
+        const cornerScore = THREE.MathUtils.clamp((nx + ny + nz - 1.42) * 0.78, 0, 1);
+
+        crevArr[i] = THREE.MathUtils.clamp(occ, 0, 1);
+        edgeArr[i] = Math.max(edgeArr[i], cornerScore);
+      }
+
+      geo.setAttribute('aNxrCrevice', new THREE.BufferAttribute(crevArr, 1));
+      geo.setAttribute('aNxrEdge', new THREE.BufferAttribute(edgeArr, 1));
+    }
+  }
+
+  // ====================================================================
+  // 6. HEAT DISTORTION, CAUSTICS FLOOR DECAL, CONTACT SHADOW & MOTION TRAIL
+  // ====================================================================
+  function createHeatNormalTex() {
+    const size = 128;
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    const ctx = c.getContext('2d');
+    const img = ctx.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const u = (x / size) * Math.PI * 2, v = (y / size) * Math.PI * 2;
+        const dx = Math.sin(u * 5 + Math.cos(v * 4)) * 0.5 + 0.5;
+        const dy = Math.cos(v * 6 + Math.sin(u * 4)) * 0.5 + 0.5;
+        const idx = (y * size + x) * 4;
+        img.data[idx] = Math.round(dx * 255);
+        img.data[idx + 1] = Math.round(dy * 255);
+        img.data[idx + 2] = 255; img.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.needsUpdate = true;
+    return tex;
+  }
+  const heatNormalTex = createHeatNormalTex();
+
+  const heatShells = [];
+  function attachHeatDistortionIfHot(ent) {
+    if (!cfg.heatDistortion || !ent || !ent.group) return;
+    if (ent.group.getObjectByName('NXR_HeatDistortion')) return;
+
+    const label = `${ent.name || ''} ${ent.category || ''}`.toLowerCase();
+    let isHot = ent.category === 'torch' || /\b(fire|flame|torch|lava|magma|furnace|forge|candle|burner|rocket|engine|thruster)\b/i.test(label);
+    let hotLocalPos = new THREE.Vector3(0, 0.58, 0);
+
+    if (!isHot) {
+      ent.group.traverse((c) => {
+        if (c.isMesh && c.material?.emissive) {
+          const eCol = c.material.emissive;
+          if ((c.material.emissiveIntensity || 0) > 1.2 && eCol.r > 0.55 && eCol.g < 0.75) {
+            isHot = true; hotLocalPos.copy(c.position);
+          }
+        }
+      });
+    }
+    if (!isHot) return;
+
+    const heatMat = new THREE.MeshPhysicalMaterial({
+      transmission: 1.0,
+      ior: 1.08,
+      thickness: 0.14,
+      roughness: 0.02,
+      metalness: 0.0,
+      transparent: false,
+      opacity: 1.0,
+      normalMap: heatNormalTex,
+      normalScale: new THREE.Vector2(0.55, 0.72),
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    heatMat.userData.nxrSkip = true;
+
+    const isFloorLava = /lava/i.test(label);
+    const geo = isFloorLava ? new THREE.PlaneGeometry(8, 8, 1, 1) : new THREE.CylinderGeometry(0.19, 0.13, 0.52, 18, 1, true);
+    const heatMesh = new THREE.Mesh(geo, heatMat);
+    heatMesh.name = 'NXR_HeatDistortion';
+    heatMesh.userData.nxrDecal = true;
+    if (isFloorLava) { heatMesh.rotation.x = -Math.PI / 2; heatMesh.position.set(0, 0.25, 0); }
+    else { heatMesh.position.copy(hotLocalPos).add(new THREE.Vector3(0, 0.16, 0)); }
+    ent.group.add(heatMesh);
+    heatShells.push({ mesh: heatMesh, mat: heatMat, ent });
+  }
+
+  const causticDecals = [];
+  function attachCausticsIfRefractive(ent, hasGlass) {
+    if (!hasGlass && !/\b(water|glass|crystal|pool|aquarium|ice)\b/i.test(ent.name || '')) return;
+    if (ent.group.getObjectByName('NXR_CausticsProjector')) return;
+
+    const cMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: { uTime: sharedUniforms.uNxrTime },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: [
+        'uniform float uTime; varying vec2 vUv;',
+        NXR_GLSL_HELPERS,
+        'void main() {',
+        '  float d = length(vUv - 0.5) * 2.0;',
+        '  float mask = pow(max(0.0, 1.0 - d), 1.6);',
+        '  float c = nxrCausticPattern(vUv * 1.6, uTime * 1.0);',
+        '  gl_FragColor = vec4(vec3(0.45, 0.92, 1.0) * c * 1.65, mask * clamp(c * 1.65, 0.0, 0.92));',
+        '}'
+      ].join('\n')
+    });
+    const cMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 1.05), cMat);
+    cMesh.name = 'NXR_CausticsProjector';
+    cMesh.userData.nxrDecal = true;
+    cMesh.rotation.x = -Math.PI / 2;
+    cMesh.position.set(0, 0.012, 0);
+    ent.group.add(cMesh);
+    causticDecals.push(cMesh);
+  }
+
+  function attachSoftContactShadow(ent) {
+    if (!ent || !ent.group || ent.category === 'world_fx' || ent.category === 'portal' || ent.category === 'board' || ent.isPen) return;
+    if (ent.group.getObjectByName('NXR_ContactShadow')) return;
+
+    ent.group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(ent.group);
+    if (box.isEmpty()) return;
+    const size = new THREE.Vector3(); box.getSize(size);
+    const span = Math.max(0.28, Math.min(2.4, Math.max(size.x, size.z) * 1.65));
+
+    const sMat = new THREE.MeshBasicMaterial({ map: contactShadowTex, transparent: true, opacity: 0.78, depthWrite: false });
+    sMat.userData.nxrSkip = true;
+    const sMesh = new THREE.Mesh(new THREE.PlaneGeometry(span, span), sMat);
+    sMesh.name = 'NXR_ContactShadow';
+    sMesh.userData.nxrDecal = true;
+    sMesh.rotation.x = -Math.PI / 2;
+    sMesh.position.set(0, 0.004, 0);
+    ent.group.add(sMesh);
+  }
+
+  // Velocity-aligned motion blur afterimages
+  const motionGhosts = [];
+  let lastGhostSpawn = 0;
+  function spawnMotionGhost(ent, speed) {
+    if (motionGhosts.length > 24) return;
+    const box = new THREE.Box3().setFromObject(ent.group);
+    if (box.isEmpty()) return;
+    const size = new THREE.Vector3(), center = new THREE.Vector3();
+    box.getSize(size); box.getCenter(center);
+    const r = Math.max(0.04, Math.min(0.32, Math.max(size.x, size.y, size.z) * 0.38));
+
+    const gMat = new THREE.MeshBasicMaterial({
+      color: 0xbae6fd,
+      transparent: true,
+      opacity: Math.min(0.28, (speed - 0.5) * 0.14),
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    const gMesh = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 10), gMat);
+    gMesh.position.copy(center);
+    scene.add(gMesh);
+    motionGhosts.push({ mesh: gMesh, mat: gMat, life: 0.22, maxLife: 0.22 });
+  }
+
+  // ====================================================================
+  // 7. ENTITY REALISM PROCESSOR (BLENDING + SHADERS + DECALS)
+  // ====================================================================
+  function enhanceEntityRealism(ent) {
+    if (!cfg.enabled || !ent || !ent.group) return;
+    if (ent.category === 'board' || ent.category === 'portal') return;
+
+    autoBlendAndBevelGroup(ent);
+
+    let hasGlass = false;
+    bakeCreviceAndEdgeAttributes(ent.group);
+
+    ent.group.traverse((c) => {
+      if (!c.isMesh || c.userData?.nxrDecal || !c.material) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      const nextMats = mats.map((m) => {
+        const arch = detectMaterialArchetype(m, c.name, ent.name);
+        if (arch === 'glass') hasGlass = true;
+        return upgradeMaterialRealistic(m, arch, c.name, ent.name);
+      });
+      c.material = Array.isArray(c.material) ? nextMats : nextMats[0];
+      c.castShadow = true;
+      c.receiveShadow = true;
+    });
+
+    attachHeatDistortionIfHot(ent);
+    attachCausticsIfRefractive(ent, hasGlass);
+    attachSoftContactShadow(ent);
+    ent.meta = ent.meta || {};
+    ent.meta.nxrPrevPos = ent.group.position.clone();
+  }
+
+  // ====================================================================
+  // 8. VOLUMETRIC FOG SHAFTS & MICRO-PARTICLES (DUST, POLLEN, ASH)
+  // ====================================================================
+  const atmosGroup = new THREE.Group();
+  atmosGroup.name = 'NXR_VolumetricAtmos';
+  scene.add(atmosGroup);
+
+  const fogShaftMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: sharedUniforms.uNxrTime },
+    vertexShader: [
+      'varying vec2 vUv; varying vec3 vNormV; varying vec3 vPosV;',
+      'void main() {',
+      '  vUv = uv;',
+      '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+      '  vPosV = -mv.xyz; vNormV = normalize(normalMatrix * normal);',
+      '  gl_Position = projectionMatrix * mv;',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'uniform float uTime; varying vec2 vUv; varying vec3 vNormV; varying vec3 vPosV;',
+      'void main() {',
+      '  float edgeFade = pow(abs(dot(normalize(vNormV), normalize(vPosV))), 1.7);',
+      '  float vFade = smoothstep(0.0, 0.25, vUv.y) * (1.0 - smoothstep(0.65, 1.0, vUv.y));',
+      '  float rays = 0.65 + 0.35 * sin(vUv.x * 31.415 + uTime * 0.45) * cos(vUv.x * 18.8 + uTime * 0.3);',
+      '  gl_FragColor = vec4(0.76, 0.89, 1.0, edgeFade * vFade * rays * 0.11);',
+      '}'
+    ].join('\n')
+  });
+  const fogCone = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 2.9, 4.8, 28, 1, true), fogShaftMat);
+  fogCone.position.set(0.4, 2.0, -0.8);
+  fogCone.rotation.set(0.28, 0, -0.24);
+  atmosGroup.add(fogCone);
+
+  const MP_COUNT = 440;
+  const mpPos = new Float32Array(MP_COUNT * 3);
+  const mpKind = new Float32Array(MP_COUNT);
+  const mpPhase = new Float32Array(MP_COUNT);
+  for (let i = 0; i < MP_COUNT; i++) {
+    mpPos[i * 3] = (Math.random() - 0.5) * 6.5;
+    mpPos[i * 3 + 1] = 0.08 + Math.random() * 2.9;
+    mpPos[i * 3 + 2] = (Math.random() - 0.5) * 6.5;
+    mpKind[i] = i % 5 === 0 ? 1.0 : (i % 7 === 0 ? 2.0 : 0.0);
+    mpPhase[i] = Math.random() * 6.283;
+  }
+  const mpGeo = new THREE.BufferGeometry();
+  mpGeo.setAttribute('position', new THREE.BufferAttribute(mpPos, 3));
+  mpGeo.setAttribute('aKind', new THREE.BufferAttribute(mpKind, 1));
+  mpGeo.setAttribute('aPhase', new THREE.BufferAttribute(mpPhase, 1));
+
+  const mpMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uTime: sharedUniforms.uNxrTime, uSize: { value: 22.0 * (window.devicePixelRatio || 1) } },
+    vertexShader: [
+      'attribute float aKind; attribute float aPhase; uniform float uTime; uniform float uSize;',
+      'varying float vKind; varying float vTwinkle;',
+      'void main() {',
+      '  vKind = aKind; vTwinkle = 0.5 + 0.5 * sin(uTime * 2.4 + aPhase);',
+      '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+      '  gl_PointSize = clamp((uSize / max(0.35, -mv.z)) * (aKind > 1.5 ? 1.2 : 0.9), 2.0, 12.0);',
+      '  gl_Position = projectionMatrix * mv;',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'varying float vKind; varying float vTwinkle;',
+      'void main() {',
+      '  float d = length(gl_PointCoord - 0.5) * 2.0; if (d > 1.0) discard;',
+      '  float a = pow(1.0 - d, 2.2) * (0.42 + 0.44 * vTwinkle);',
+      '  vec3 col = vKind > 1.5 ? vec3(1.0, 0.52, 0.22) : (vKind > 0.5 ? vec3(0.95, 0.88, 0.52) : vec3(0.84, 0.92, 1.0));',
+      '  gl_FragColor = vec4(col, a);',
+      '}'
+    ].join('\n')
+  });
+  const mpPoints = new THREE.Points(mpGeo, mpMat);
+  mpPoints.frustumCulled = false;
+  atmosGroup.add(mpPoints);
+
+  // ====================================================================
+  // 9. HOOK createProcedural, craft, visual.applyDissolveShader & AI Tools
+  // ====================================================================
+  const origCraftMat = APP.craft.mat;
+  APP.craft.mat = function realisticCraftMat(color = 0x38bdf8, opts = {}) {
+    const base = origCraftMat(color, opts);
+    const hint = opts.type || opts.material || '';
+    const arch = detectMaterialArchetype(base, hint, '');
+    return upgradeMaterialRealistic(base, arch, hint, '');
+  };
+
+  if (APP.visual && typeof APP.visual.applyDissolveShader === 'function' && !APP.visual._nxrWrappedDissolve) {
+    const origDissolve = APP.visual.applyDissolveShader;
+    APP.visual.applyDissolveShader = function (group, mode, ...rest) {
+      const r = origDissolve.call(this, group, mode, ...rest);
+      if (mode === 'materialize' && group) {
+        setTimeout(() => {
+          const ent = group.userData?.entity;
+          if (ent) enhanceEntityRealism(ent);
+        }, 1250);
+      }
+      return r;
+    };
+    APP.visual._nxrWrappedDissolve = true;
+  }
+
+  if (typeof APP.createProcedural === 'function' && !APP._nxrWrappedCreateProc) {
+    const origCreateProc = APP.createProcedural;
+    APP.createProcedural = function (codeString, opts = {}) {
+      const res = origCreateProc.call(this, codeString, opts);
+      if (res?.ok && res.entity) enhanceEntityRealism(res.entity);
+      return res;
+    };
+    APP._nxrWrappedCreateProc = true;
+  }
+
+  const REALISM_AI_PROMPT = [
+    '',
+    'CRITICAL REALISM & SCULPTING MANDATE (NEVER CREATE CARTOONY TOYS):',
+    '- NEVER build objects by just sticking unblended spheres, cones, and cylinders together with flat bright colors!',
+    '- For ANY organic character, animal, plant, or statue, build the body using `APP.craft.smoothModel([...], { resolution: 30 })`! Example:',
+    '  `group.add(APP.craft.smoothModel([',
+    '    { type: "sphere", pos: [0, 0.35, 0], r: 0.18, scale: [0.9, 0.85, 1.4], color: 0x8b6f56 },',
+    '    { type: "sphere", pos: [0, 0.50, 0.25], r: 0.13, color: 0x8b6f56 },',
+    '    { type: "capsule", pos: [-0.09, 0.16, 0.14], r: 0.045, len: 0.24, color: 0x735b46 }',
+    '  ]));`',
+    '- Use `APP.craft.lathe(points2D, 32)` for vases/bottles/cups, `APP.craft.bevelBox(w,h,d,r)` for mechanical parts, and name meshes semantically (`metal_`, `glass_`, `skin_`, `leaf_`, `wax_`, `stone_`, `wood_`).',
+    '- Use natural, realistic desaturated colors (never pure 0xff0000 or 0x00ff00!).'
+  ].join('\n');
+
+  function wrapAIChat() {
+    if (!APP.ai || typeof APP.ai.chat !== 'function' || APP.ai._nxrWrappedChat) return;
+    const origChat = APP.ai.chat;
+    APP.ai.chat = async function (opts = {}) {
+      const nextOpts = Object.assign({}, opts);
+      if (Array.isArray(nextOpts.tools)) {
+        nextOpts.tools = nextOpts.tools.map((t) => {
+          if (!t || t.name !== 'create_procedural_object') return t;
+          const clone = JSON.parse(JSON.stringify(t));
+          clone.description = 'Create a REALISTIC, SCULPTED 3D object (NO cartoony raw spheres+cylinders!). Use APP.craft.smoothModel([...]) for organic/animal/character shapes so limbs & torso blend seamlessly, APP.craft.lathe for curved vessels, APP.craft.bevelBox for hard-surface, and semantic mesh names (metal_, glass_, skin_, leaf_, stone_).';
+          if (clone.parameters?.properties?.js_code) {
+            clone.parameters.properties.js_code.description = 'JS body receiving (APP, group, THREE, V3). MUST use APP.craft.smoothModel([...]) or APP.craft.lathe/bevelBox with realistic natural colors and semantic mesh names.';
+          }
+          return clone;
+        });
+        if (nextOpts.tools.some((t) => t && t.name === 'create_procedural_object')) {
+          nextOpts.systemPrompt = String(nextOpts.systemPrompt || '') + REALISM_AI_PROMPT;
+        }
+      }
+      return await origChat(nextOpts);
+    };
+    APP.ai._nxrWrappedChat = true;
+  }
+  wrapAIChat();
+  const unsubMods = APP.on('modules:loaded', wrapAIChat);
+
+  const unsubCreate = APP.on('entity:created', (ent) => enhanceEntityRealism(ent));
+  if (Array.isArray(APP.entities)) {
+    for (const ent of APP.entities) enhanceEntityRealism(ent);
+  }
+
+  // ====================================================================
+  // 10. FRAME LOOP: WETNESS, FOG, PARTICLES, HEAT, MOTION BLUR & RECOVERY
+  // ====================================================================
+  const tmpDelta = new THREE.Vector3();
+  const tmpLocalVel = new THREE.Vector3();
+  const tmpInvQuat = new THREE.Quaternion();
+  let lastGhostTime = 0;
+
+  function updateRealism(dt, elapsed) {
+    const delta = Math.min(0.05, dt || 0.016);
+    const now = elapsed || (performance.now() * 0.001);
+    sharedUniforms.uNxrTime.value = now;
+
+    if (!APP.isAR && studioEnvTex && scene.environment !== studioEnvTex) {
+      scene.environment = studioEnvTex;
+    }
+
+    const hasRainOrWater = (APP.entities || []).some((e) => e && e.category === 'world_fx' && /rain|water/i.test(e.name || ''));
+    const targetWet = hasRainOrWater ? Math.max(cfg.wetness, 0.85) : cfg.wetness;
+    sharedUniforms.uNxrWetness.value += (targetWet - sharedUniforms.uNxrWetness.value) * Math.min(1, delta * 2.5);
+
+    if (APP.dirLight) sharedUniforms.uNxrLightDir.value.copy(APP.dirLight.position).normalize();
+
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    atmosGroup.visible = cfg.enabled;
+    fogCone.visible = cfg.fogEnabled;
+    mpPoints.visible = cfg.particlesEnabled;
+
+    if (cfg.fogEnabled && !APP.isAR) {
+      if (!scene.fog) scene.fog = new THREE.FogExp2(0x0a1626, 0.095);
+    } else if (APP.isAR && scene.fog) {
+      scene.fog = null;
+    }
+    if (cfg.fogEnabled) fogCone.position.set(hp.x + 0.5, hp.y + 0.5, hp.z - 0.9);
+
+    if (cfg.particlesEnabled) {
+      const arr = mpGeo.attributes.position.array;
+      for (let i = 0; i < MP_COUNT; i++) {
+        const i3 = i * 3, kind = mpKind[i], ph = mpPhase[i] + now * 0.7;
+        arr[i3] += Math.sin(ph) * 0.09 * delta;
+        arr[i3 + 1] += (kind > 1.5 ? 0.16 : Math.cos(ph * 0.7) * 0.045) * delta;
+        arr[i3 + 2] += Math.cos(ph * 0.8) * 0.09 * delta;
+        if (Math.abs(arr[i3] - hp.x) > 3.5 || Math.abs(arr[i3 + 2] - hp.z) > 3.5 || arr[i3 + 1] > 3.2 || arr[i3 + 1] < 0.04) {
+          arr[i3] = hp.x + (Math.random() - 0.5) * 5.8;
+          arr[i3 + 1] = kind > 1.5 ? 0.18 : (0.12 + Math.random() * 2.5);
+          arr[i3 + 2] = hp.z + (Math.random() - 0.5) * 5.8;
+        }
+      }
+      mpGeo.attributes.position.needsUpdate = true;
+    }
+
+    if (cfg.heatDistortion) {
+      heatNormalTex.offset.y -= delta * 1.1;
+      heatNormalTex.offset.x = Math.sin(now * 2.6) * 0.12;
+    }
+
+    // Update motion blur ghosts
+    for (let i = motionGhosts.length - 1; i >= 0; i--) {
+      const g = motionGhosts[i];
+      g.life -= delta;
+      if (g.life <= 0) {
+        if (g.mesh.parent) g.mesh.parent.remove(g.mesh);
+        g.mesh.geometry.dispose(); g.mat.dispose();
+        motionGhosts.splice(i, 1);
+      } else {
+        g.mat.opacity = (g.life / g.maxLife) * 0.22;
+        g.mesh.scale.multiplyScalar(1.0 + delta * 1.6);
+      }
+    }
+
+    const ents = APP.entities || [];
+    for (let i = 0; i < ents.length; i++) {
+      const e = ents[i];
+      if (!e || !e.group || !e.group.parent) continue;
+
+      if (cfg.motionBlur && e.meta?.nxrPrevPos) {
+        tmpDelta.subVectors(e.group.position, e.meta.nxrPrevPos).divideScalar(Math.max(0.004, delta));
+        e.meta.nxrPrevPos.copy(e.group.position);
+        const speed = tmpDelta.length();
+        tmpInvQuat.copy(e.group.quaternion).invert();
+        tmpLocalVel.copy(tmpDelta).applyQuaternion(tmpInvQuat);
+
+        e.group.traverse((c) => {
+          if (c.isMesh && !c.userData?.nxrDecal && c.material) {
+            // Auto-recover if materialize/visual replaced our upgraded material
+            if (!c.material.userData?.nxrRealUpgraded && !c.material.isShaderMaterial && !c.material.userData?.nxrSkip) {
+              const arch = detectMaterialArchetype(c.material, c.name, e.name);
+              c.material = upgradeMaterialRealistic(c.material, arch, c.name, e.name);
+            }
+            if (c.material.userData?.nxrLocalVel) {
+              c.material.userData.nxrLocalVel.value.lerp(tmpLocalVel, 0.4);
+            }
+          }
+        });
+
+        if (speed > 0.65 && now - lastGhostTime > 0.035) {
+          lastGhostTime = now;
+          spawnMotionGhost(e, speed);
+        }
+      }
+
+      const cs = e.group.getObjectByName('NXR_ContactShadow');
+      if (cs) {
+        const lift = Math.max(0, e.group.position.y);
+        cs.position.y = -lift + 0.004;
+        cs.material.opacity = Math.max(0, 0.78 - lift * 0.95);
+        cs.visible = cs.material.opacity > 0.03;
+      }
+    }
+  }
+
+  const unsubFrame = APP.onUpdate ? APP.onUpdate(updateRealism) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(updateRealism);
+
+  APP._inst2RealismCleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame();
+    else APP.frameHooks?.delete(updateRealism);
+    if (typeof unsubCreate === 'function') unsubCreate();
+    if (typeof unsubMods === 'function') unsubMods();
+    if (bounceLight.parent) bounceLight.parent.remove(bounceLight);
+    if (atmosGroup.parent) atmosGroup.parent.remove(atmosGroup);
+    for (const h of heatShells) { if (h.mesh.parent) h.mesh.parent.remove(h.mesh); h.mat.dispose(); h.mesh.geometry.dispose(); }
+    for (const c of causticDecals) { if (c.parent) c.parent.remove(c); c.material.dispose(); c.geometry.dispose(); }
+    for (const g of motionGhosts) { if (g.mesh.parent) g.mesh.parent.remove(g.mesh); g.mesh.geometry.dispose(); g.mat.dispose(); }
+    contactShadowTex.dispose();
+    heatNormalTex.dispose();
+    if (studioEnvTex) studioEnvTex.dispose();
+    scene.fog = null;
+  };
+
+  APP.realism = {
+    config: cfg,
+    enhanceEntity: enhanceEntityRealism,
+    setWetness(val) {
+      cfg.wetness = THREE.MathUtils.clamp(Number(val), 0, 1);
+      sharedUniforms.uNxrWetness.value = cfg.wetness;
+      return cfg.wetness;
+    },
+    setFog(val) {
+      cfg.fogEnabled = !!val;
+      if (!cfg.fogEnabled) scene.fog = null;
+      return cfg.fogEnabled;
+    },
+    setParticles(val) { cfg.particlesEnabled = !!val; return cfg.particlesEnabled; },
+    applyMaterialPreset(targetQuery, archetype) {
+      const ent = APP.findEntity ? APP.findEntity(targetQuery || 'latest') : null;
+      if (!ent || !ent.group) return { ok: false, error: 'Target entity not found.' };
+      ent.group.traverse((c) => {
+        if (c.isMesh && !c.userData?.nxrDecal && c.material) {
+          c.material = upgradeMaterialRealistic(c.material, archetype, c.name, ent.name);
+        }
+      });
+      if (archetype === 'glass') attachCausticsIfRefractive(ent, true);
+      return { ok: true, message: `Applied realistic ${archetype} shader to ${ent.name}.` };
+    }
+  };
+
+  APP.registerAbilityHandler?.('realism_master_engine', function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('wet') || low.includes('رطب')) { APP.realism.setWetness(0.90); APP.ui?.toast?.('Surface Wetness: HIGH'); return { ok: true }; }
+    if (low.includes('dry') || low.includes('جاف')) { APP.realism.setWetness(0.0); APP.ui?.toast?.('Surface Wetness: DRY'); return { ok: true }; }
+    if (low.includes('fog off')) { APP.realism.setFog(false); APP.ui?.toast?.('Volumetric Fog: OFF'); return { ok: true }; }
+    if (low.includes('fog')) { APP.realism.setFog(true); APP.ui?.toast?.('Volumetric Fog: ON'); return { ok: true }; }
+    if (low.includes('glass') || low.includes('زجاج')) { const r = APP.realism.applyMaterialPreset('latest', 'glass'); APP.ui?.toast?.(r.message || r.error); return r; }
+    if (low.includes('metal') || low.includes('معدن')) { const r = APP.realism.applyMaterialPreset('latest', 'metal'); APP.ui?.toast?.(r.message || r.error); return r; }
+    (APP.entities || []).forEach((e) => enhanceEntityRealism(e));
+    APP.ui?.toast?.('Realism Engine v2 active across all creations!');
+    return { ok: true };
+  });
+
+  APP.ui?.toast?.('Realism Engine v2 (instruction2.txt) loaded!', 3200);
+})();
+@end
