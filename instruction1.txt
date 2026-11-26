@@ -1,0 +1,2149 @@
+# ======================================================================
+# instruction1.txt — Ergonomic Pen, Multi-Brush Drawing & Sculpting
+#   Mini-Toolbar, Next-Only Gravity & Physics, Repo Asset Spawner,
+#   Multi-Form Hand-Reactive Fire Engine (Torch, Hand Fire, Object/Part
+#   Burning, Campfire) & Leak-Proof RenderTarget Dancy 3D Portal
+# ======================================================================
+
+# ----------------------------------------------------------------------
+# 1. Holdable Ergonomic Pen
+# ----------------------------------------------------------------------
+@ability: make_ergonomic_pen
+@pin: Make Pen
+@desc: Spawns a detailed ergonomic 3D stylus pen aligned cleanly in your active hand/controller and opens the Drawing & Sculpting Mini-Toolbar.
+@match: make & pen | give & pen | create & pen | spawn & pen | hold & pen | stylus | قلم | اصنع & قلم | اعطني & قلم
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  if (APP._activePen && APP.entities.includes(APP._activePen)) {
+    APP.removeEntity?.(APP._activePen, false);
+  }
+  APP._activePen = null;
+
+  const penGroup = new THREE.Group();
+  penGroup.name = 'Ergonomic_3D_Pen';
+
+  const barrelMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    metalness: 0.86,
+    roughness: 0.22
+  });
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.0085, 0.0105, 0.145, 20), barrelMat);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.z = 0.015;
+  penGroup.add(barrel);
+
+  const gripMat = new THREE.MeshStandardMaterial({
+    color: 0x0f766e,
+    roughness: 0.72,
+    metalness: 0.1
+  });
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.0108, 0.0112, 0.045, 20), gripMat);
+  grip.rotation.x = Math.PI / 2;
+  grip.position.z = -0.042;
+  penGroup.add(grip);
+
+  const clipMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, metalness: 0.94, roughness: 0.15 });
+  const clip = new THREE.Mesh(new THREE.BoxGeometry(0.0035, 0.005, 0.048), clipMat);
+  clip.position.set(0, 0.0115, 0.048);
+  penGroup.add(clip);
+
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.009, 0.026, 20), clipMat);
+  cone.rotation.x = -Math.PI / 2;
+  cone.position.z = -0.076;
+  penGroup.add(cone);
+
+  const nibMat = new THREE.MeshStandardMaterial({
+    color: 0x00f0b4,
+    emissive: 0x00ff88,
+    emissiveIntensity: 2.0,
+    roughness: 0.12
+  });
+  const nibMesh = new THREE.Mesh(new THREE.SphereGeometry(0.0048, 16, 14), nibMat);
+  nibMesh.position.z = -0.092;
+  nibMesh.name = 'pen_nib_tip';
+  penGroup.add(nibMesh);
+
+  const entity = APP.registerEntity(penGroup, {
+    name: 'Ergonomic 3D Pen',
+    category: 'tool_pen',
+    holdable: true,
+    isPen: true,
+    nibMesh: nibMesh,
+    physics: { gravity: false, enabled: true },
+    onRelease: function () {
+      if (APP._activePen === entity) APP.desktopDrawActive = false;
+    }
+  });
+
+  APP._activePen = entity;
+  APP.drawingEnabled = true;
+
+  if (typeof APP.attachToActiveHand === 'function') {
+    APP.attachToActiveHand(entity, {
+      localPosition: new THREE.Vector3(0.0, -0.015, -0.055),
+      localEuler: new THREE.Euler(-0.52, 0.0, 0.0)
+    });
+  } else {
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    penGroup.position.copy(hp).addScaledVector(hf, 0.52);
+    APP.scene.add(penGroup);
+  }
+
+  APP.drawTools?.showToolbar?.(true);
+  APP.visual?.applyDissolveShader?.(penGroup, 'materialize');
+  return { ok: true, message: 'Equipped ergonomic 3D pen & opened Drawing/Sculpting Mini-Toolbar.' };
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 2. Multi-Brush 3D Drawing, Sculpting, Mini-Toolbar & Stroke Physics
+# ----------------------------------------------------------------------
+@ability: spatial_drawing_gravity
+@autorun
+@pin: Draw Tools
+@desc: Interactive mini-toolbar with Brush Styles (Metallic, Ribbon, Plasma, Rope, Calligraphy), 3D Sculpting (Inflate, Carve, Grab, Smooth, Pinch + Clay Sphere), Next-Only Drawing Gravity, and Stroke Physics.
+@match: drawing & gravity | draw & gravity | toggle & gravity | gravity & on | gravity & off | start drawing | stop drawing | draw toolbar | sculpt | نحت | جاذبية & الرسم | ادوات الرسم
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return;
+
+  if (typeof APP._inst1DrawCleanup === 'function') {
+    try { APP._inst1DrawCleanup(); } catch (_) {}
+  }
+
+  const drawCfg = {
+    mode: 'draw',          // 'draw' | 'sculpt'
+    brush: 'metallic',     // 'metallic' | 'ribbon' | 'plasma' | 'rope' | 'calligraphy'
+    sculptBrush: 'inflate',// 'inflate' | 'carve' | 'grab' | 'smooth' | 'pinch'
+    sizeKey: 'M',          // 'S' | 'M' | 'L'
+    colorIndex: 0,
+    collisions: true,
+    physicsMode: 'normal', // 'normal' | 'bouncy' | 'heavy' | 'float'
+    sculptRadius: 0.14,
+    sculptStrength: 0.42
+  };
+
+  const SIZE_MAP = { S: 0.0052, M: 0.0095, L: 0.0175 };
+  const PALETTE = [0x6ef3d6, 0x38bdf8, 0xf472b6, 0xfacc15, 0xa78bfa, 0xf97316, 0xe2e8f0];
+  const PALETTE_CSS = ['#6ef3d6', '#38bdf8', '#f472b6', '#facc15', '#a78bfa', '#f97316', '#e2e8f0'];
+
+  // Next-Only Drawing Gravity override
+  APP.setDrawingGravity = function setDrawingGravityOnlyNext(val) {
+    APP.drawingGravity = !!val;
+    APP.toolbar?.syncState?.();
+    const coreGravBtn = document.getElementById('core-grav-btn');
+    if (coreGravBtn) {
+      coreGravBtn.textContent = 'Draw Gravity: ' + (APP.drawingGravity ? 'ON' : 'OFF');
+      coreGravBtn.classList.toggle('active', !!APP.drawingGravity);
+    }
+    syncMiniToolbarUI();
+    APP.emit?.('drawing:gravity_changed', APP.drawingGravity);
+    return APP.drawingGravity;
+  };
+
+  let isDrawing = false;
+  let currentPoints = [];
+  let currentSpeeds = [];
+  let previewMesh = null;
+  let strokeHistory = [];
+
+  const tmpNibPos = new THREE.Vector3();
+  const tmpClosest = new THREE.Vector3();
+  const tmpSegA = new THREE.Vector3();
+  const tmpSegB = new THREE.Vector3();
+  const tmpPtW = new THREE.Vector3();
+  const tmpDiff = new THREE.Vector3();
+  const tmpNormal = new THREE.Vector3();
+  const tmpBoxDyn = new THREE.Box3();
+  const tmpBoxStat = new THREE.Box3();
+  const tmpSculptLocal = new THREE.Vector3();
+  const tmpSculptDelta = new THREE.Vector3();
+  const tmpV = new THREE.Vector3();
+  const tmpN = new THREE.Vector3();
+  const tmpCentroid = new THREE.Vector3();
+  let prevStrokePt = null;
+  let lastStrokeTime = performance.now();
+  let prevSculptPos = null;
+
+  // Sculpt cursor ring
+  const sculptRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.025, 0.032, 24),
+    new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.72, depthWrite: false })
+  );
+  sculptRing.visible = false;
+  sculptRing.name = 'NXR_SculptCursor';
+  APP.scene.add(sculptRing);
+
+  function cancelActiveStroke() {
+    isDrawing = false;
+    currentPoints = [];
+    currentSpeeds = [];
+    prevStrokePt = null;
+    if (previewMesh) {
+      APP.scene.remove(previewMesh);
+      if (previewMesh.geometry) previewMesh.geometry.dispose();
+      if (previewMesh.material) previewMesh.material.dispose();
+      previewMesh = null;
+    }
+  }
+
+  function isPenAliveAndHeld() {
+    const pen = APP._activePen;
+    if (!pen) return false;
+    const stillExists = Array.isArray(APP.entities) && APP.entities.includes(pen);
+    const inScene = !!(pen.group && pen.group.parent);
+    if (!stillExists || !inScene) {
+      APP._activePen = null;
+      APP.drawingEnabled = false;
+      APP.desktopDrawActive = false;
+      cancelActiveStroke();
+      return false;
+    }
+    return !!pen.isHeld;
+  }
+
+  function getActivePointerPoint(requirePress = true) {
+    const hands = APP.hands || {};
+    if (APP._activePen && !isPenAliveAndHeld()) return null;
+
+    if (APP._activePen && APP._activePen.nibMesh && APP._activePen.isHeld) {
+      const pen = APP._activePen;
+      const h = pen.attachedHandKey ? hands[pen.attachedHandKey] : pen.heldBy;
+      const activeDown = h
+        ? !!(h.trigger || h.pinching)
+        : Object.values(hands).some((x) => x && x.active && (x.trigger || x.pinching));
+      if (!requirePress || activeDown) {
+        pen.nibMesh.getWorldPosition(tmpNibPos);
+        return { pos: tmpNibPos.clone(), down: activeDown };
+      }
+      return null;
+    }
+
+    if (!APP.drawingEnabled && drawCfg.mode !== 'sculpt') return null;
+    for (const k of Object.keys(hands)) {
+      const h = hands[k];
+      if (!h || !h.active) continue;
+      const down = !!(h.pinching || h.trigger);
+      if (!requirePress || down) {
+        if (k !== 'dhand') {
+          if (h.isHand && h.fingerTips?.index) return { pos: h.fingerTips.index.clone(), down };
+          if (h.rayOrigin && h.rayDir) return { pos: h.rayOrigin.clone().addScaledVector(h.rayDir, 0.45), down };
+        }
+        if (k === 'dhand' && h.rayOrigin && h.rayDir) {
+          return { pos: h.rayOrigin.clone().addScaledVector(h.rayDir, 0.72), down };
+        }
+      }
+    }
+    return null;
+  }
+
+  // --------------------------------------------------------------------
+  // Brush Geometry & Material Builders
+  // --------------------------------------------------------------------
+  function createBrushMaterial(brushType, colorHex) {
+    if (brushType === 'plasma') {
+      return new THREE.MeshStandardMaterial({
+        color: colorHex,
+        emissive: colorHex,
+        emissiveIntensity: 2.6,
+        roughness: 0.15,
+        metalness: 0.1,
+        transparent: true,
+        opacity: 0.92
+      });
+    }
+    if (brushType === 'rope') {
+      return new THREE.MeshStandardMaterial({
+        color: colorHex,
+        roughness: 0.88,
+        metalness: 0.04
+      });
+    }
+    if (brushType === 'ribbon') {
+      const MatCls = THREE.MeshPhysicalMaterial || THREE.MeshStandardMaterial;
+      return new MatCls({
+        color: colorHex,
+        metalness: 0.45,
+        roughness: 0.24,
+        side: THREE.DoubleSide,
+        emissive: colorHex,
+        emissiveIntensity: 0.12
+      });
+    }
+    const MatCls = THREE.MeshPhysicalMaterial || THREE.MeshStandardMaterial;
+    const mat = new MatCls({
+      color: colorHex,
+      metalness: 0.96,
+      roughness: 0.10,
+      envMap: APP.cubeRenderTarget?.texture || APP.roomEnvTexture || null,
+      envMapIntensity: 1.85,
+      emissive: colorHex,
+      emissiveIntensity: 0.08
+    });
+    if (THREE.MeshPhysicalMaterial && mat instanceof THREE.MeshPhysicalMaterial) {
+      mat.clearcoat = 1.0;
+      mat.clearcoatRoughness = 0.06;
+      mat.reflectivity = 1.0;
+    }
+    return mat;
+  }
+
+  function buildBrushGeometry(pts, speeds, brushType, baseR) {
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const segs = Math.min(240, Math.max(10, pts.length * 3));
+
+    if (brushType === 'ribbon') {
+      const samplePts = curve.getPoints(segs);
+      const pos = new Float32Array((segs + 1) * 2 * 3);
+      const uvs = new Float32Array((segs + 1) * 2 * 2);
+      const idx = [];
+      const tang = new THREE.Vector3(), side = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+      const halfW = baseR * 2.2;
+      for (let i = 0; i <= segs; i++) {
+        curve.getTangent(i / segs, tang).normalize();
+        side.crossVectors(tang, up);
+        if (side.lengthSq() < 0.001) side.set(1, 0, 0);
+        side.normalize().multiplyScalar(halfW);
+        const p = samplePts[i];
+        pos[i * 6] = p.x - side.x; pos[i * 6 + 1] = p.y - side.y; pos[i * 6 + 2] = p.z - side.z;
+        pos[i * 6 + 3] = p.x + side.x; pos[i * 6 + 4] = p.y + side.y; pos[i * 6 + 5] = p.z + side.z;
+        const u = i / segs;
+        uvs[i * 4] = u; uvs[i * 4 + 1] = 0;
+        uvs[i * 4 + 2] = u; uvs[i * 4 + 3] = 1;
+        if (i < segs) {
+          const a = i * 2, b = i * 2 + 1, c = (i + 1) * 2, d = (i + 1) * 2 + 1;
+          idx.push(a, b, c, b, d, c);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geo.setIndex(idx);
+      geo.computeVertexNormals();
+      return geo;
+    }
+
+    const radSegs = brushType === 'rope' ? 10 : 12;
+    const geo = new THREE.TubeGeometry(curve, segs, baseR, radSegs, false);
+
+    if (brushType === 'calligraphy' || brushType === 'rope') {
+      const posAttr = geo.attributes.position;
+      const cPt = new THREE.Vector3(), radial = new THREE.Vector3();
+      for (let i = 0; i < posAttr.count; i++) {
+        const ring = Math.floor(i / (radSegs + 1));
+        const seg = i % (radSegs + 1);
+        const t = Math.min(1, ring / segs);
+        curve.getPoint(t, cPt);
+        radial.fromBufferAttribute(posAttr, i).sub(cPt);
+
+        let scale = 1.0;
+        if (brushType === 'calligraphy') {
+          const spIdx = Math.min(speeds.length - 1, Math.floor(t * speeds.length));
+          const spd = speeds[spIdx] || 0.25;
+          scale = THREE.MathUtils.clamp(1.65 - spd * 0.9, 0.38, 1.75);
+        } else {
+          const ang = (seg / radSegs) * Math.PI * 2 + t * 42.0;
+          scale = 0.85 + 0.28 * Math.sin(ang * 3.0);
+        }
+        radial.multiplyScalar(scale).add(cPt);
+        posAttr.setXYZ(i, radial.x, radial.y, radial.z);
+      }
+      geo.computeVertexNormals();
+    }
+    return geo;
+  }
+
+  function buildStrokeMesh(pts, speeds, brushType, colorHex, baseR) {
+    const geo = buildBrushGeometry(pts, speeds, brushType, baseR);
+    const mat = createBrushMaterial(brushType, colorHex);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    return mesh;
+  }
+
+  function rebuildPreview() {
+    if (previewMesh) {
+      APP.scene.remove(previewMesh);
+      if (previewMesh.geometry) previewMesh.geometry.dispose();
+      if (previewMesh.material) previewMesh.material.dispose();
+      previewMesh = null;
+    }
+    if (currentPoints.length < 2) return;
+    const colHex = PALETTE[drawCfg.colorIndex % PALETTE.length];
+    const baseR = SIZE_MAP[drawCfg.sizeKey] || 0.0095;
+    previewMesh = buildStrokeMesh(currentPoints, currentSpeeds, drawCfg.brush, colHex, baseR);
+    APP.scene.add(previewMesh);
+  }
+
+  function downsamplePoints(pts, minStep) {
+    if (pts.length <= 2) return pts.map((p) => p.clone());
+    const out = [pts[0].clone()];
+    for (let i = 1; i < pts.length - 1; i++) {
+      if (pts[i].distanceTo(out[out.length - 1]) >= minStep) out.push(pts[i].clone());
+    }
+    out.push(pts[pts.length - 1].clone());
+    return out;
+  }
+
+  function getPhysicsValues() {
+    const p = drawCfg.physicsMode;
+    if (p === 'bouncy') return { bounce: 0.82, friction: 0.97, grav: !!APP.drawingGravity };
+    if (p === 'heavy') return { bounce: 0.14, friction: 0.78, grav: !!APP.drawingGravity };
+    if (p === 'float') return { bounce: 0.55, friction: 0.99, grav: false };
+    return { bounce: 0.44, friction: 0.92, grav: !!APP.drawingGravity };
+  }
+
+  function finalizeStroke() {
+    if (previewMesh) {
+      APP.scene.remove(previewMesh);
+      if (previewMesh.geometry) previewMesh.geometry.dispose();
+      if (previewMesh.material) previewMesh.material.dispose();
+      previewMesh = null;
+    }
+    if (currentPoints.length < 2) {
+      currentPoints = [];
+      currentSpeeds = [];
+      return;
+    }
+
+    const colHex = PALETTE[drawCfg.colorIndex % PALETTE.length];
+    const baseR = SIZE_MAP[drawCfg.sizeKey] || 0.0095;
+    const rawMesh = buildStrokeMesh(currentPoints, currentSpeeds, drawCfg.brush, colHex, baseR);
+    rawMesh.geometry.computeBoundingBox();
+    const box = rawMesh.geometry.boundingBox;
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    rawMesh.geometry.translate(-center.x, -center.y, -center.z);
+
+    const localPts = downsamplePoints(currentPoints, 0.022).map((p) => p.sub(center));
+
+    const strokeGroup = new THREE.Group();
+    strokeGroup.name = `${drawCfg.brush}_3D_Stroke`;
+    strokeGroup.position.copy(center);
+    strokeGroup.add(rawMesh);
+    APP.scene.add(strokeGroup);
+
+    const phys = getPhysicsValues();
+    const isDynamic = phys.grav;
+
+    const ent = APP.registerEntity(strokeGroup, {
+      name: `${isDynamic ? 'Dynamic' : 'Static'} ${drawCfg.brush} Stroke`,
+      category: 'stroke',
+      isStroke: true,
+      hasGravity: isDynamic,
+      restitution: phys.bounce,
+      velocity: new THREE.Vector3(0, 0, 0),
+      meta: {
+        isDynamicStroke: isDynamic,
+        isStaticStroke: !isDynamic,
+        localPoints: localPts,
+        tubeRadius: baseR
+      }
+    });
+    if (ent.physics) {
+      ent.physics.bounce = phys.bounce;
+      ent.physics.friction = phys.friction;
+      ent.physics.gravity = isDynamic;
+    }
+
+    strokeHistory.push(ent);
+    currentPoints = [];
+    currentSpeeds = [];
+    return ent;
+  }
+
+  // --------------------------------------------------------------------
+  // 3D Sculpting Engine (Inflate, Carve, Grab, Smooth, Pinch)
+  // --------------------------------------------------------------------
+  function spawnSculptClay() {
+    const geo = new THREE.IcosahedronGeometry(0.22, 4);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xc28f70,
+      roughness: 0.72,
+      metalness: 0.04
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    const g = new THREE.Group();
+    g.name = 'Sculpt_Clay';
+    g.add(mesh);
+    const sp = APP.getSpawnPosition ? APP.getSpawnPosition(0.95, true) : new THREE.Vector3(0, 0, -0.95);
+    g.position.set(sp.x, 1.05, sp.z);
+    APP.scene.add(g);
+    const ent = APP.registerEntity(g, {
+      name: 'Sculpting Clay',
+      category: 'sculpt',
+      holdable: true,
+      physics: { gravity: false, enabled: true }
+    });
+    APP.lastEntityId = ent.id;
+    APP.ui?.toast?.('Spawned Sculpting Clay! Switch to Sculpt mode & drag.');
+    return ent;
+  }
+
+  function stepSculpting(dt) {
+    const ptr = getActivePointerPoint(false);
+    if (!ptr || drawCfg.mode !== 'sculpt') {
+      sculptRing.visible = false;
+      prevSculptPos = null;
+      return;
+    }
+
+    sculptRing.visible = true;
+    sculptRing.position.copy(ptr.pos);
+    const s = drawCfg.sculptRadius / 0.032;
+    sculptRing.scale.setScalar(s * 0.35);
+    if (APP.camera) sculptRing.lookAt(APP.camera.position);
+
+    if (!ptr.down) {
+      prevSculptPos = null;
+      return;
+    }
+
+    const handDelta = prevSculptPos ? tmpSculptDelta.subVectors(ptr.pos, prevSculptPos) : tmpSculptDelta.set(0, 0, 0);
+    prevSculptPos = ptr.pos.clone();
+
+    const brushR = drawCfg.sculptRadius;
+    const rSq = brushR * brushR;
+    const str = drawCfg.sculptStrength * Math.min(0.05, dt || 0.016);
+    const mode = drawCfg.sculptBrush;
+
+    for (const ent of APP.entities || []) {
+      if (!ent || !ent.group?.parent || ent.isPen || ent.isStroke || ent.category === 'world_fx' || ent.category === 'portal' || ent.category === 'board' || ent.category === 'cloth') continue;
+      ent.group.traverse((mesh) => {
+        if (!mesh.isMesh || !mesh.geometry?.attributes?.position || mesh.userData?.nxrDecal) return;
+        const geo = mesh.geometry;
+        const posA = geo.attributes.position;
+        if (!geo.attributes.normal) geo.computeVertexNormals();
+        const normA = geo.attributes.normal;
+
+        mesh.updateMatrixWorld(true);
+        tmpBoxStat.setFromObject(mesh).expandByScalar(brushR);
+        if (!tmpBoxStat.containsPoint(ptr.pos)) return;
+
+        tmpSculptLocal.copy(ptr.pos);
+        mesh.worldToLocal(tmpSculptLocal);
+        const localScale = mesh.getWorldScale(tmpV).x || 1;
+        const localR = brushR / Math.max(0.05, localScale);
+        const localRSq = localR * localR;
+
+        let touched = false;
+        if (mode === 'smooth') {
+          tmpCentroid.set(0, 0, 0);
+          let cnt = 0;
+          for (let i = 0; i < posA.count; i++) {
+            tmpV.fromBufferAttribute(posA, i);
+            if (tmpV.distanceToSquared(tmpSculptLocal) < localRSq) { tmpCentroid.add(tmpV); cnt++; }
+          }
+          if (cnt > 2) {
+            tmpCentroid.divideScalar(cnt);
+            for (let i = 0; i < posA.count; i++) {
+              tmpV.fromBufferAttribute(posA, i);
+              const dSq = tmpV.distanceToSquared(tmpSculptLocal);
+              if (dSq < localRSq) {
+                const w = 0.5 * (1 + Math.cos(Math.PI * Math.sqrt(dSq) / localR));
+                tmpV.lerp(tmpCentroid, Math.min(0.35, w * str * 8.0));
+                posA.setXYZ(i, tmpV.x, tmpV.y, tmpV.z);
+                touched = true;
+              }
+            }
+          }
+        } else {
+          const invRot = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld).invert();
+          const localDrag = handDelta.clone().applyMatrix3(invRot);
+          for (let i = 0; i < posA.count; i++) {
+            tmpV.fromBufferAttribute(posA, i);
+            const dSq = tmpV.distanceToSquared(tmpSculptLocal);
+            if (dSq >= localRSq) continue;
+            const d = Math.sqrt(dSq);
+            const w = 0.5 * (1 + Math.cos(Math.PI * d / localR));
+            if (mode === 'grab') {
+              tmpV.addScaledVector(localDrag, w);
+            } else if (mode === 'pinch') {
+              tmpV.lerp(tmpSculptLocal, w * str * 1.6);
+            } else {
+              tmpN.fromBufferAttribute(normA, i);
+              const sign = mode === 'carve' ? -1 : 1;
+              tmpV.addScaledVector(tmpN, sign * w * str * 0.25);
+            }
+            posA.setXYZ(i, tmpV.x, tmpV.y, tmpV.z);
+            touched = true;
+          }
+        }
+
+        if (touched) {
+          posA.needsUpdate = true;
+          geo.computeVertexNormals();
+          geo.computeBoundingBox();
+          geo.computeBoundingSphere();
+        }
+      });
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // Stroke Collisions (Dynamic Strokes vs Static Strokes + Floor + Scene)
+  // --------------------------------------------------------------------
+  function closestPointOnSegment(p, a, b, out) {
+    const abX = b.x - a.x, abY = b.y - a.y, abZ = b.z - a.z;
+    const lenSq = abX * abX + abY * abY + abZ * abZ;
+    if (lenSq < 1e-8) return out.copy(a);
+    let t = ((p.x - a.x) * abX + (p.y - a.y) * abY + (p.z - a.z) * abZ) / lenSq;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    return out.set(a.x + abX * t, a.y + abY * t, a.z + abZ * t);
+  }
+
+  function stepStrokeCollisions() {
+    if (!drawCfg.collisions) return;
+    const entities = APP.entities || [];
+    const dynStrokes = [], statStrokes = [], solidBoxes = [];
+
+    for (let i = 0; i < entities.length; i++) {
+      const e = entities[i];
+      if (!e || !e.group?.parent) continue;
+      if (e.isStroke) {
+        if (e.physics?.gravity && !e.isHeld && !e.heldByBot) dynStrokes.push(e);
+        else if (e.physics && !e.physics.gravity) statStrokes.push(e);
+      } else if (!e.isPen && e.category !== 'world_fx' && e.category !== 'portal' && e.category !== 'board') {
+        solidBoxes.push(e);
+      }
+    }
+
+    if (!dynStrokes.length) return;
+
+    for (let d = 0; d < dynStrokes.length; d++) {
+      const dyn = dynStrokes[d];
+      const rad = dyn.meta?.tubeRadius || 0.0095;
+      const colDist = rad * 2.25;
+      dyn.group.updateMatrixWorld(true);
+      tmpBoxDyn.setFromObject(dyn.group);
+
+      if (!tmpBoxDyn.isEmpty() && tmpBoxDyn.min.y < 0) {
+        dyn.group.position.y += -tmpBoxDyn.min.y;
+        if (dyn.physics.vel.y < 0) {
+          dyn.physics.vel.y = Math.abs(dyn.physics.vel.y) > 0.25 ? -dyn.physics.vel.y * (dyn.physics.bounce ?? 0.44) : 0;
+        }
+        dyn.physics.vel.x *= dyn.physics.friction ?? 0.92;
+        dyn.physics.vel.z *= dyn.physics.friction ?? 0.92;
+        dyn.group.updateMatrixWorld(true);
+        tmpBoxDyn.setFromObject(dyn.group);
+      }
+
+      tmpBoxDyn.expandByScalar(colDist);
+      const dynPts = dyn.meta?.localPoints;
+      if (!dynPts || !dynPts.length) continue;
+
+      // Collide against static strokes
+      for (let s = 0; s < statStrokes.length; s++) {
+        const stat = statStrokes[s];
+        const statPts = stat.meta?.localPoints;
+        if (!statPts || statPts.length < 2) continue;
+
+        stat.group.updateMatrixWorld(true);
+        tmpBoxStat.setFromObject(stat.group).expandByScalar(colDist);
+        if (!tmpBoxDyn.intersectsBox(tmpBoxStat)) continue;
+
+        const dynMat = dyn.group.matrixWorld, statMat = stat.group.matrixWorld;
+        let deepestPen = 0, hitNX = 0, hitNY = 0, hitNZ = 0;
+
+        for (let pi = 0; pi < dynPts.length; pi++) {
+          tmpPtW.copy(dynPts[pi]).applyMatrix4(dynMat);
+          for (let si = 0; si < statPts.length - 1; si++) {
+            tmpSegA.copy(statPts[si]).applyMatrix4(statMat);
+            tmpSegB.copy(statPts[si + 1]).applyMatrix4(statMat);
+            closestPointOnSegment(tmpPtW, tmpSegA, tmpSegB, tmpClosest);
+            tmpDiff.subVectors(tmpPtW, tmpClosest);
+            const distSq = tmpDiff.lengthSq();
+            if (distSq < colDist * colDist) {
+              const dist = Math.sqrt(distSq);
+              const pen = colDist - dist;
+              if (pen > deepestPen) {
+                deepestPen = pen;
+                if (dist > 1e-5) tmpNormal.copy(tmpDiff).multiplyScalar(1 / dist);
+                else tmpNormal.set(0, 1, 0);
+                hitNX = tmpNormal.x; hitNY = tmpNormal.y; hitNZ = tmpNormal.z;
+              }
+            }
+          }
+        }
+
+        if (deepestPen > 0) {
+          dyn.group.position.x += hitNX * deepestPen;
+          dyn.group.position.y += hitNY * deepestPen;
+          dyn.group.position.z += hitNZ * deepestPen;
+          const v = dyn.physics.vel;
+          const vn = v.x * hitNX + v.y * hitNY + v.z * hitNZ;
+          if (vn < 0) {
+            const bounce = Math.abs(vn) > 0.28 ? (dyn.physics.bounce ?? 0.44) : 0.0;
+            const imp = -(1 + bounce) * vn;
+            v.x += hitNX * imp; v.y += hitNY * imp; v.z += hitNZ * imp;
+            v.x *= 0.94; v.z *= 0.94;
+            if (hitNY > 0.65 && Math.abs(v.y) < 0.06) v.y = 0;
+          }
+          dyn.group.updateMatrixWorld(true);
+          tmpBoxDyn.setFromObject(dyn.group).expandByScalar(colDist);
+        }
+      }
+
+      // Collide against solid 3D objects in scene
+      for (let oi = 0; oi < solidBoxes.length; oi++) {
+        const obj = solidBoxes[oi];
+        obj.group.updateMatrixWorld(true);
+        tmpBoxStat.setFromObject(obj.group);
+        if (!tmpBoxDyn.intersectsBox(tmpBoxStat)) continue;
+        const dynMat = dyn.group.matrixWorld;
+        let maxPen = 0, nx = 0, ny = 1, nz = 0;
+        for (let pi = 0; pi < dynPts.length; pi++) {
+          tmpPtW.copy(dynPts[pi]).applyMatrix4(dynMat);
+          tmpBoxStat.clampPoint(tmpPtW, tmpClosest);
+          tmpDiff.subVectors(tmpPtW, tmpClosest);
+          const distSq = tmpDiff.lengthSq();
+          if (distSq < rad * rad) {
+            const dist = Math.sqrt(distSq);
+            const pen = rad - dist;
+            if (pen > maxPen) {
+              maxPen = pen;
+              if (dist > 1e-5) tmpNormal.copy(tmpDiff).multiplyScalar(1 / dist);
+              else tmpNormal.set(0, 1, 0);
+              nx = tmpNormal.x; ny = tmpNormal.y; nz = tmpNormal.z;
+            }
+          }
+        }
+        if (maxPen > 0) {
+          dyn.group.position.x += nx * maxPen; dyn.group.position.y += ny * maxPen; dyn.group.position.z += nz * maxPen;
+          const v = dyn.physics.vel;
+          const vn = v.x * nx + v.y * ny + v.z * nz;
+          if (vn < 0) {
+            const imp = -(1 + (dyn.physics.bounce ?? 0.4)) * vn;
+            v.x += nx * imp; v.y += ny * imp; v.z += nz * imp;
+          }
+        }
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // Sleek Floating Mini-Toolbar (Brush, Sculpt, Gravity, Physics)
+  // --------------------------------------------------------------------
+  let toolbarEl = null;
+  function ensureMiniToolbar() {
+    if (toolbarEl && document.body.contains(toolbarEl)) return toolbarEl;
+    const old = document.getElementById('nxr-draw-toolbar');
+    if (old) old.remove();
+
+    const styleId = 'nxr-draw-toolbar-css';
+    if (!document.getElementById(styleId)) {
+      const st = document.createElement('style');
+      st.id = styleId;
+      st.textContent = `
+        #nxr-draw-toolbar {
+          position: fixed; left: 16px; bottom: 76px; z-index: 9998;
+          width: 274px; padding: 10px 12px; border-radius: 14px;
+          background: rgba(11, 18, 30, 0.88); backdrop-filter: blur(12px);
+          border: 1px solid rgba(110, 243, 214, 0.28); color: #e2e8f0;
+          font-family: system-ui, -apple-system, sans-serif; font-size: 11px;
+          box-shadow: 0 12px 32px rgba(0,0,0,0.45); user-select: none;
+        }
+        #nxr-draw-toolbar .row { display: flex; align-items: center; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
+        #nxr-draw-toolbar .hdr { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 12px; color: #6ef3d6; margin-bottom: 4px; }
+        #nxr-draw-toolbar button {
+          background: rgba(30, 41, 59, 0.9); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.22);
+          border-radius: 7px; padding: 4px 7px; font-size: 10.5px; cursor: pointer; transition: 0.14s;
+        }
+        #nxr-draw-toolbar button:hover { background: rgba(51, 65, 85, 0.95); color: #fff; }
+        #nxr-draw-toolbar button.active { background: #0f766e; color: #ffffff; border-color: #5eead4; font-weight: 600; }
+        #nxr-draw-toolbar .swatch { width: 16px; height: 16px; border-radius: 50%; padding: 0; border: 2px solid transparent; }
+        #nxr-draw-toolbar .swatch.active { border-color: #fff; transform: scale(1.14); }
+        #nxr-draw-toolbar .lbl { color: #94a3b8; font-size: 10px; min-width: 44px; }
+      `;
+      document.head.appendChild(st);
+    }
+
+    const el = document.createElement('div');
+    el.id = 'nxr-draw-toolbar';
+    el.style.display = 'none';
+    ['pointerdown', 'mousedown', 'touchstart', 'click'].forEach((ev) => {
+      el.addEventListener(ev, (e) => e.stopPropagation());
+    });
+
+    el.innerHTML = `
+      <div class="hdr">
+        <span>Draw &amp; Sculpt Studio</span>
+        <button data-act="close" title="Hide">✕</button>
+      </div>
+      <div class="row">
+        <button data-mode="draw" class="active">Draw</button>
+        <button data-mode="sculpt">Sculpt</button>
+        <button data-act="clay">+ Clay</button>
+        <button data-act="undo">Undo</button>
+        <button data-act="clear">Clear</button>
+      </div>
+      <div id="nxr-draw-sub">
+        <div class="row">
+          <span class="lbl">Brush:</span>
+          <button data-brush="metallic" class="active">Metal</button>
+          <button data-brush="ribbon">Ribbon</button>
+          <button data-brush="plasma">Plasma</button>
+          <button data-brush="rope">Rope</button>
+          <button data-brush="calligraphy">Callig</button>
+        </div>
+        <div class="row">
+          <span class="lbl">Size:</span>
+          <button data-size="S">S</button>
+          <button data-size="M" class="active">M</button>
+          <button data-size="L">L</button>
+          ${PALETTE_CSS.map((c, idx) => `<button class="swatch ${idx === 0 ? 'active' : ''}" data-col="${idx}" style="background:${c}"></button>`).join('')}
+        </div>
+      </div>
+      <div id="nxr-sculpt-sub" style="display:none">
+        <div class="row">
+          <span class="lbl">Sculpt:</span>
+          <button data-sculpt="inflate" class="active">Inflate</button>
+          <button data-sculpt="carve">Carve</button>
+          <button data-sculpt="grab">Grab</button>
+          <button data-sculpt="smooth">Smooth</button>
+          <button data-sculpt="pinch">Pinch</button>
+        </div>
+      </div>
+      <div class="row">
+        <button data-act="grav" id="nxr-tb-grav">Gravity: OFF</button>
+        <button data-act="col" id="nxr-tb-col" class="active">Collide: ON</button>
+        <button data-act="phys" id="nxr-tb-phys">Phys: Normal</button>
+      </div>
+    `;
+
+    el.addEventListener('click', (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      if (btn.dataset.act === 'close') { el.style.display = 'none'; return; }
+      if (btn.dataset.act === 'clay') { spawnSculptClay(); drawCfg.mode = 'sculpt'; }
+      if (btn.dataset.act === 'undo') {
+        const last = strokeHistory.pop();
+        if (last) APP.removeEntity?.(last, false);
+      }
+      if (btn.dataset.act === 'clear') {
+        while (strokeHistory.length) APP.removeEntity?.(strokeHistory.pop(), false);
+      }
+      if (btn.dataset.act === 'grav') APP.setDrawingGravity(!APP.drawingGravity);
+      if (btn.dataset.act === 'col') drawCfg.collisions = !drawCfg.collisions;
+      if (btn.dataset.act === 'phys') {
+        const order = ['normal', 'bouncy', 'heavy', 'float'];
+        drawCfg.physicsMode = order[(order.indexOf(drawCfg.physicsMode) + 1) % order.length];
+      }
+      if (btn.dataset.mode) {
+        drawCfg.mode = btn.dataset.mode;
+        APP.drawingEnabled = true;
+      }
+      if (btn.dataset.brush) drawCfg.brush = btn.dataset.brush;
+      if (btn.dataset.size) drawCfg.sizeKey = btn.dataset.size;
+      if (btn.dataset.col !== undefined) drawCfg.colorIndex = Number(btn.dataset.col) || 0;
+      if (btn.dataset.sculpt) drawCfg.sculptBrush = btn.dataset.sculpt;
+      syncMiniToolbarUI();
+    });
+
+    document.body.appendChild(el);
+    toolbarEl = el;
+    return el;
+  }
+
+  function syncMiniToolbarUI() {
+    if (!toolbarEl) return;
+    toolbarEl.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === drawCfg.mode));
+    toolbarEl.querySelectorAll('[data-brush]').forEach((b) => b.classList.toggle('active', b.dataset.brush === drawCfg.brush));
+    toolbarEl.querySelectorAll('[data-size]').forEach((b) => b.classList.toggle('active', b.dataset.size === drawCfg.sizeKey));
+    toolbarEl.querySelectorAll('[data-col]').forEach((b) => b.classList.toggle('active', Number(b.dataset.col) === drawCfg.colorIndex));
+    toolbarEl.querySelectorAll('[data-sculpt]').forEach((b) => b.classList.toggle('active', b.dataset.sculpt === drawCfg.sculptBrush));
+
+    const drawSub = toolbarEl.querySelector('#nxr-draw-sub');
+    const sculptSub = toolbarEl.querySelector('#nxr-sculpt-sub');
+    if (drawSub) drawSub.style.display = drawCfg.mode === 'draw' ? 'block' : 'none';
+    if (sculptSub) sculptSub.style.display = drawCfg.mode === 'sculpt' ? 'block' : 'none';
+
+    const gBtn = toolbarEl.querySelector('#nxr-tb-grav');
+    if (gBtn) {
+      gBtn.textContent = 'Gravity: ' + (APP.drawingGravity ? 'ON' : 'OFF');
+      gBtn.classList.toggle('active', !!APP.drawingGravity);
+    }
+    const cBtn = toolbarEl.querySelector('#nxr-tb-col');
+    if (cBtn) {
+      cBtn.textContent = 'Collide: ' + (drawCfg.collisions ? 'ON' : 'OFF');
+      cBtn.classList.toggle('active', drawCfg.collisions);
+    }
+    const pBtn = toolbarEl.querySelector('#nxr-tb-phys');
+    if (pBtn) pBtn.textContent = 'Phys: ' + drawCfg.physicsMode.charAt(0).toUpperCase() + drawCfg.physicsMode.slice(1);
+  }
+
+  function showMiniToolbar(show = true) {
+    const el = ensureMiniToolbar();
+    el.style.display = show ? 'block' : 'none';
+    syncMiniToolbarUI();
+  }
+
+  APP.drawTools = {
+    config: drawCfg,
+    showToolbar: showMiniToolbar,
+    spawnClay: spawnSculptClay,
+    setBrush: (b) => { drawCfg.brush = b; syncMiniToolbarUI(); },
+    setMode: (m) => { drawCfg.mode = m; syncMiniToolbarUI(); }
+  };
+
+  // --------------------------------------------------------------------
+  // Frame Update
+  // --------------------------------------------------------------------
+  function update(dt) {
+    if ((isDrawing || APP._activePen) && APP.entities.length === 0) {
+      APP._activePen = null;
+      APP.drawingEnabled = false;
+      APP.desktopDrawActive = false;
+      cancelActiveStroke();
+    }
+
+    if (drawCfg.mode === 'sculpt') {
+      if (isDrawing) cancelActiveStroke();
+      stepSculpting(dt);
+    } else {
+      sculptRing.visible = false;
+      const ptr = getActivePointerPoint(true);
+      if (ptr && ptr.down) {
+        const now = performance.now();
+        const pt = ptr.pos;
+        if (!isDrawing) {
+          isDrawing = true;
+          currentPoints = [pt];
+          currentSpeeds = [0.25];
+          prevStrokePt = pt.clone();
+          lastStrokeTime = now;
+        } else {
+          const last = currentPoints[currentPoints.length - 1];
+          const dist = last.distanceTo(pt);
+          if (dist >= 0.014) {
+            const segDt = Math.max(0.01, (now - lastStrokeTime) * 0.001);
+            const spd = dist / segDt;
+            currentPoints.push(pt);
+            currentSpeeds.push(spd);
+            prevStrokePt = pt.clone();
+            lastStrokeTime = now;
+            rebuildPreview();
+          }
+        }
+      } else if (isDrawing) {
+        isDrawing = false;
+        finalizeStroke();
+      }
+    }
+
+    stepStrokeCollisions();
+  }
+
+  const unsubFrame = APP.onUpdate ? APP.onUpdate(update) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(update);
+
+  APP._inst1DrawCleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame();
+    else APP.frameHooks?.delete(update);
+    cancelActiveStroke();
+    if (sculptRing.parent) sculptRing.parent.remove(sculptRing);
+    sculptRing.geometry.dispose();
+    sculptRing.material.dispose();
+    if (toolbarEl && toolbarEl.parentNode) toolbarEl.parentNode.removeChild(toolbarEl);
+  };
+
+  APP.registerAbilityHandler?.('spatial_drawing_gravity', function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('sculpt') || low.includes('نحت')) {
+      drawCfg.mode = 'sculpt';
+      APP.drawingEnabled = true;
+      showMiniToolbar(true);
+      return { ok: true, message: 'Sculpt mode active! Opened Mini-Toolbar.' };
+    }
+    if (low.includes('toolbar') || low.includes('ادوات')) {
+      showMiniToolbar(true);
+      return { ok: true, message: 'Drawing & Sculpting Mini-Toolbar opened.' };
+    }
+    if (low.includes('start drawing')) { APP.drawingEnabled = true; showMiniToolbar(true); return { ok: true, message: '3D drawing enabled.' }; }
+    if (low.includes('stop drawing')) { APP.drawingEnabled = false; cancelActiveStroke(); return { ok: true, message: '3D drawing paused.' }; }
+    let next = !APP.drawingGravity;
+    if (low.includes('on') || low.includes('تشغيل')) next = true;
+    else if (low.includes('off') || low.includes('ايقاف') || low.includes('إيقاف')) next = false;
+    APP.setDrawingGravity(next);
+    showMiniToolbar(true);
+    return { ok: true, message: 'Drawing Gravity is now ' + (next ? 'ON (applies to next drawings)' : 'OFF (next drawings stay static)') + '.' };
+  });
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 3. Repo Asset Spawner (GLB, GLTF, PNG, JPG, WEBP, MP4)
+# ----------------------------------------------------------------------
+@ability: spawn_repo_asset
+@pin: Spawn Asset
+@desc: Spawns matching .glb/.gltf, image (.png/.jpg/.webp), or video assets from repo /assets/ or local imports (English & Arabic).
+@match: spawn | احضر | جيبلي | هات | load & model
+@code:
+(async function () {
+  const raw = String(command || '').trim();
+  const AR_DICT = {
+    'قطة': 'cat', 'قطه': 'cat', 'قط': 'cat', 'بسة': 'cat',
+    'كلب': 'dog', 'جرو': 'dog',
+    'حصان': 'horse', 'فرس': 'horse',
+    'سيارة': 'car', 'عربية': 'car',
+    'طائر': 'bird', 'عصفور': 'bird',
+    'شجرة': 'tree', 'غابة': 'forest',
+    'منزل': 'house', 'بيت': 'house',
+    'روبوت': 'robot', 'آلي': 'robot',
+    'كرة': 'ball', 'سمكة': 'fish',
+    'سيف': 'sword', 'كرسي': 'chair', 'طاولة': 'table',
+    'تنين': 'dragon', 'قمر': 'moon', 'شمس': 'sun'
+  };
+
+  let query = raw
+    .replace(/^(please\s+)?(spawn|load|bring|fetch|get|show\s+me|احضر|جيبلي|هات)\s+(a|an|the|model|of|picture|image)?\s*/i, '')
+    .trim();
+
+  for (const [ar, en] of Object.entries(AR_DICT)) {
+    if (query.includes(ar)) { query = en; break; }
+  }
+  if (!query) query = 'cat';
+
+  const spawner = APP.spawnAsset || APP.spawnAssetByName;
+  if (typeof spawner !== 'function') return { ok: false, error: 'Asset spawner unavailable.' };
+  const res = await spawner(query);
+  if (!res?.ok && res?.error) APP.ui?.toast?.(res.error, 5000);
+  return res;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 4. Multi-Form Hand-Reactive Volumetric Fire Engine (APP.fire)
+#    Forms: Torch | Hand Fire | Object/Part Burn | Campfire | Extinguish
+# ----------------------------------------------------------------------
+@ability: make_fire_torch
+@pin: Fire Torch
+@desc: Realistic multi-form GLSL FBM volumetric fire engine: hand-reactive Torch, Fire on Virtual Hand, Partial Object Burning, and Campfire.
+@match: make & fire & torch | fire & torch | torch | burn & part | burn & object | campfire | bonfire | extinguish & fire | stop & fire | اصنع & شعلة | شعلة & نار | مشعل | احرق & جزء | نار & مخيم | اطفاء & النار
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  // Shared Volumetric FBM Fire Shader Factory
+  function createVolumetricFireMaterial(opts = {}) {
+    const uniforms = {
+      uTime: { value: 0.0 },
+      uBend: { value: new THREE.Vector3(0, 0, 0) },
+      uIntensity: { value: Number(opts.intensity) || 1.0 },
+      uFlameH: { value: Number(opts.height) || 0.24 }
+    };
+    const mat = new THREE.ShaderMaterial({
+      uniforms,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      vertexShader: [
+        'uniform float uTime;',
+        'uniform vec3 uBend;',
+        'uniform float uIntensity;',
+        'uniform float uFlameH;',
+        'varying vec2 vUv;',
+        'varying float vHeight;',
+        'void main() {',
+        '  vUv = uv;',
+        '  vHeight = clamp(uv.y, 0.0, 1.0);',
+        '  vec3 p = position;',
+        '  float h2 = vHeight * vHeight;',
+        '  p.xz *= (1.0 - vHeight * 0.45) * mix(0.88, 1.32, clamp(uIntensity - 0.5, 0.0, 1.2));',
+        '  p.y *= mix(0.92, 1.55, clamp((uIntensity - 0.8) * 0.55, 0.0, 1.2));',
+        '  float sway = sin(uTime * 10.5 + position.y * 20.0) * 0.014 * h2;',
+        '  p.x += uBend.x * h2 + sway;',
+        '  p.z += uBend.z * h2 + cos(uTime * 8.2 + position.y * 17.0) * 0.014 * h2;',
+        '  gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);',
+        '}'
+      ].join('\n'),
+      fragmentShader: [
+        'uniform float uTime;',
+        'uniform float uIntensity;',
+        'varying vec2 vUv;',
+        'varying float vHeight;',
+        'float fHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }',
+        'float fNoise(vec2 p) {',
+        '  vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);',
+        '  return mix(mix(fHash(i), fHash(i + vec2(1.0, 0.0)), f.x), mix(fHash(i + vec2(0.0, 1.0)), fHash(i + vec2(1.0, 1.0)), f.x), f.y);',
+        '}',
+        'float fbm(vec2 p) {',
+        '  float v = 0.0; float a = 0.52;',
+        '  for (int i = 0; i < 4; i++) { v += a * fNoise(p); p *= 2.07; a *= 0.5; }',
+        '  return v;',
+        '}',
+        'void main() {',
+        '  vec2 uv = vUv;',
+        '  float n = fbm(vec2(uv.x * 4.5, uv.y * 3.8 - uTime * 3.8));',
+        '  float n2 = fbm(vec2(uv.x * 8.2 + 3.1, uv.y * 6.8 - uTime * 5.6));',
+        '  float shape = (1.0 - vHeight) * 1.15;',
+        '  float density = smoothstep(0.26, 0.85, shape + (n * 0.56 + n2 * 0.30 - 0.36));',
+        '  float radialFade = 1.0 - smoothstep(0.14, 0.50, abs(uv.x - 0.5));',
+        '  float alpha = density * radialFade * smoothstep(0.0, 0.14, vHeight) * (1.0 - smoothstep(0.75, 1.0, vHeight));',
+        '  if (alpha < 0.01) discard;',
+        '  vec3 blueCore = vec3(0.32, 0.65, 1.0);',
+        '  vec3 whiteHot = vec3(1.0, 0.96, 0.82);',
+        '  vec3 gold = vec3(1.0, 0.62, 0.10);',
+        '  vec3 emberRed = vec3(0.90, 0.16, 0.02);',
+        '  vec3 col = mix(emberRed, gold, smoothstep(0.24, 0.68, density));',
+        '  col = mix(col, whiteHot, smoothstep(0.68, 0.95, density) * (1.0 - vHeight * 0.62));',
+        '  col = mix(col, blueCore, (1.0 - smoothstep(0.0, 0.24, vHeight)) * 0.55);',
+        '  gl_FragColor = vec4(col * (1.35 * uIntensity), alpha * 0.95);',
+        '}'
+      ].join('\n')
+    });
+    return { mat, uniforms };
+  }
+
+  function createFlameCluster(w, h, yOffset = 0) {
+    const { mat, uniforms } = createVolumetricFireMaterial({ height: h });
+    const g = new THREE.Group();
+    g.position.y = yOffset;
+    const pGeo = new THREE.PlaneGeometry(w, h, 10, 16);
+    pGeo.translate(0, h * 0.5, 0);
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(pGeo, mat);
+      m.rotation.y = (i * Math.PI) / 4;
+      g.add(m);
+    }
+    return { group: g, uniforms, mat };
+  }
+
+  // Computes combined hand proximity + hand-swipe wind force on any world flame position
+  const _prevHandMap = new Map();
+  const _tmpHVel = new THREE.Vector3(), _tmpDir = new THREE.Vector3(), _tmpW = new THREE.Vector3();
+
+  function getHandWorldPoint(h) {
+    if (!h || !h.active) return null;
+    if (h.isHand && h.fingerTips?.index) return h.fingerTips.index;
+    if (h.pos) return h.pos;
+    if (h.rayOrigin && h.rayDir) return _tmpW.copy(h.rayOrigin).addScaledVector(h.rayDir, 0.55);
+    return null;
+  }
+
+  function sampleHandWindForce(flameWorldPos, dt) {
+    let boost = 0;
+    const wind = new THREE.Vector3();
+    for (const [k, h] of Object.entries(APP.hands || {})) {
+      const hp = getHandWorldPoint(h);
+      if (!hp) continue;
+      const last = _prevHandMap.get(k);
+      if (last) _tmpHVel.subVectors(hp, last).divideScalar(Math.max(0.005, dt));
+      else _tmpHVel.set(0, 0, 0);
+      _prevHandMap.set(k, hp.clone());
+
+      const dist = hp.distanceTo(flameWorldPos);
+      if (dist < 0.75) {
+        const prox = 1.0 - dist / 0.75;
+        boost += prox * 0.95;
+        _tmpDir.subVectors(hp, flameWorldPos).setY(0);
+        if (_tmpDir.lengthSq() > 0.0001) _tmpDir.normalize();
+        // Hand swipe pushes flames dramatically + gentle suction flare toward warm palm
+        wind.x += _tmpHVel.x * prox * 0.085 + _tmpDir.x * prox * 0.032;
+        wind.z += _tmpHVel.z * prox * 0.085 + _tmpDir.z * prox * 0.032;
+      }
+    }
+    return { wind, boost };
+  }
+
+  // --------------------------------------------------------------------
+  // FORM 1: Realistic Hand-Reactive Volumetric Fire Torch
+  // --------------------------------------------------------------------
+  function spawnTorch() {
+    const torchGroup = new THREE.Group();
+    torchGroup.name = 'Realistic_Fire_Torch';
+
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x3b2314, roughness: 0.88, metalness: 0.05 });
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.015, 0.44, 18), woodMat);
+    handle.position.y = 0.22;
+    torchGroup.add(handle);
+
+    const ironMat = new THREE.MeshStandardMaterial({ color: 0x1f242d, roughness: 0.36, metalness: 0.88 });
+    const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.044, 0.025, 0.075, 18), ironMat);
+    collar.position.y = 0.45;
+    torchGroup.add(collar);
+
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const rib = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.07, 0.006), ironMat);
+      rib.position.set(Math.cos(a) * 0.042, 0.49, Math.sin(a) * 0.042);
+      rib.rotation.z = -Math.cos(a) * 0.18;
+      rib.rotation.x = Math.sin(a) * 0.18;
+      torchGroup.add(rib);
+    }
+
+    const coalMat = new THREE.MeshStandardMaterial({
+      color: 0x1a0802, emissive: 0xff3b00, emissiveIntensity: 2.4, roughness: 0.75
+    });
+    const coals = new THREE.Mesh(new THREE.SphereGeometry(0.036, 16, 14), coalMat);
+    coals.scale.set(1, 0.6, 1); coals.position.y = 0.485;
+    torchGroup.add(coals);
+
+    const flame = createFlameCluster(0.14, 0.26, 0.47);
+    torchGroup.add(flame.group);
+
+    const fireLight = new THREE.PointLight(0xff7b29, 2.2, 5.0);
+    fireLight.position.set(0, 0.60, 0);
+    torchGroup.add(fireLight);
+
+    const sparkCount = 42;
+    const sparkPos = new Float32Array(sparkCount * 3);
+    const sparkVel = Array.from({ length: sparkCount }, () => new THREE.Vector3((Math.random() - 0.5) * 0.04, 0.25 + Math.random() * 0.32, (Math.random() - 0.5) * 0.04));
+    for (let i = 0; i < sparkCount; i++) {
+      sparkPos[i * 3] = (Math.random() - 0.5) * 0.04;
+      sparkPos[i * 3 + 1] = 0.50 + Math.random() * 0.22;
+      sparkPos[i * 3 + 2] = (Math.random() - 0.5) * 0.04;
+    }
+    const sparkGeo = new THREE.BufferGeometry();
+    sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+    torchGroup.add(new THREE.Points(sparkGeo, new THREE.PointsMaterial({
+      color: 0xffc168, size: 0.0085, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false
+    })));
+
+    const spawnPos = APP.getSpawnPosition ? APP.getSpawnPosition(0.92, true) : new THREE.Vector3(0, 0, -1);
+    torchGroup.position.copy(spawnPos);
+    APP.scene.add(torchGroup);
+
+    const prevTorchPos = torchGroup.position.clone(), currentBend = new THREE.Vector3(), flameWorld = new THREE.Vector3(), tmpTVel = new THREE.Vector3();
+
+    const entity = APP.registerEntity(torchGroup, {
+      name: 'Realistic Fire Torch',
+      category: 'torch',
+      holdable: true,
+      hasGravity: true,
+      restitution: 0.15,
+      onUpdate: function (dt) {
+        const delta = Math.max(0.004, Math.min(0.04, dt || 0.016));
+        const t = performance.now() * 0.001;
+        flame.uniforms.uTime.value = t;
+
+        tmpTVel.subVectors(torchGroup.position, prevTorchPos).divideScalar(delta);
+        prevTorchPos.copy(torchGroup.position);
+
+        flame.group.getWorldPosition(flameWorld);
+        const hw = sampleHandWindForce(flameWorld, delta);
+        const targetBend = new THREE.Vector3(-tmpTVel.x * 0.065 + hw.wind.x, 0, -tmpTVel.z * 0.065 + hw.wind.z);
+        const targetIntensity = 1.0 + Math.sin(t * 14) * 0.08 + Math.cos(t * 23) * 0.06 + hw.boost;
+
+        targetBend.clampLength(0, 0.16);
+        currentBend.lerp(targetBend, Math.min(1, delta * 12));
+        const localBend = currentBend.clone().applyQuaternion(torchGroup.quaternion.clone().invert());
+
+        flame.uniforms.uBend.value.copy(localBend);
+        flame.uniforms.uIntensity.value += (targetIntensity - flame.uniforms.uIntensity.value) * Math.min(1, delta * 10);
+
+        fireLight.intensity = 1.9 * flame.uniforms.uIntensity.value;
+        coalMat.emissiveIntensity = 1.8 + flame.uniforms.uIntensity.value * 0.95;
+
+        const arr = sparkGeo.attributes.position.array;
+        for (let i = 0; i < sparkCount; i++) {
+          const sv = sparkVel[i];
+          arr[i * 3] += (sv.x + localBend.x * 2.6 + Math.sin(t * 7 + i) * 0.03) * delta;
+          arr[i * 3 + 1] += sv.y * flame.uniforms.uIntensity.value * delta;
+          arr[i * 3 + 2] += (sv.z + localBend.z * 2.6 + Math.cos(t * 6 + i) * 0.03) * delta;
+          if (arr[i * 3 + 1] > 0.92) {
+            arr[i * 3] = (Math.random() - 0.5) * 0.04; arr[i * 3 + 1] = 0.50; arr[i * 3 + 2] = (Math.random() - 0.5) * 0.04;
+          }
+        }
+        sparkGeo.attributes.position.needsUpdate = true;
+      }
+    });
+
+    APP.visual?.applyDissolveShader?.(torchGroup, 'materialize');
+    APP.emit?.('entity:created', entity);
+    APP.bot?.onEntityCreated?.(entity);
+    return { ok: true, id: entity.id, message: 'Created realistic hand-reactive volumetric Fire Torch.' };
+  }
+
+  // --------------------------------------------------------------------
+  // FORM 2: Fire on Your Virtual Hand (Reacts to Hand Speed & Ignites Objects!)
+  // --------------------------------------------------------------------
+  function spawnHandFire(opts = {}) {
+    if (APP._handFireEnt && APP.entities.includes(APP._handFireEnt)) {
+      if (opts.toggle !== false && opts.active === false) {
+        APP.removeEntity?.(APP._handFireEnt, false);
+        APP._handFireEnt = null;
+        return { ok: true, message: 'Extinguished hand fire.' };
+      }
+      APP.removeEntity?.(APP._handFireEnt, false);
+    }
+
+    const handFireGroup = new THREE.Group();
+    handFireGroup.name = 'Virtual_Hand_Fire';
+    const flame = createFlameCluster(0.14, 0.24, -0.02);
+    handFireGroup.add(flame.group);
+
+    const hLight = new THREE.PointLight(0xff6b1a, 1.8, 3.8);
+    hLight.position.y = 0.08;
+    handFireGroup.add(hLight);
+
+    const sparkCount = 48;
+    const sPos = new Float32Array(sparkCount * 3);
+    const sVel = Array.from({ length: sparkCount }, () => new THREE.Vector3());
+    const sLife = new Float32Array(sparkCount);
+    const sGeo = new THREE.BufferGeometry();
+    sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+    const sPts = new THREE.Points(sGeo, new THREE.PointsMaterial({
+      color: 0xffb347, size: 0.011, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false
+    }));
+    sPts.frustumCulled = false;
+    handFireGroup.add(sPts);
+    let nextS = 0;
+
+    APP.scene.add(handFireGroup);
+    const handPref = String(opts.hand || '').toLowerCase();
+    const prevPos = new THREE.Vector3(), hVel = new THREE.Vector3(), curBend = new THREE.Vector3(), tmpBox = new THREE.Box3();
+    let hasPrev = false, touchTimer = 0, igniteCooldown = 0;
+
+    const ent = APP.registerEntity(handFireGroup, {
+      name: 'Virtual Hand Fire',
+      category: 'world_fx',
+      grabbable: false,
+      physics: { enabled: false },
+      onUpdate: function (dt) {
+        const delta = Math.max(0.004, Math.min(0.04, dt || 0.016));
+        const t = performance.now() * 0.001;
+        flame.uniforms.uTime.value = t;
+        igniteCooldown = Math.max(0, igniteCooldown - delta);
+
+        const hands = APP.hands || {};
+        const pick = (handPref && hands[handPref]?.active) ? hands[handPref]
+          : (hands.right?.active ? hands.right : (hands.left?.active ? hands.left : hands.dhand));
+        const hp = getHandWorldPoint(pick);
+
+        if (!hp) {
+          handFireGroup.visible = false;
+          return;
+        }
+        handFireGroup.visible = true;
+        handFireGroup.position.copy(hp);
+
+        if (hasPrev) hVel.subVectors(hp, prevPos).divideScalar(delta);
+        else { hVel.set(0, 0, 0); hasPrev = true; }
+        prevPos.copy(hp);
+
+        const spd = hVel.length();
+        const targetBend = new THREE.Vector3(-hVel.x * 0.075, 0, -hVel.z * 0.075).clampLength(0, 0.22);
+        curBend.lerp(targetBend, Math.min(1, delta * 14));
+        flame.uniforms.uBend.value.copy(curBend);
+        const targetInt = 1.05 + Math.min(1.4, spd * 0.45) + Math.sin(t * 16) * 0.1;
+        flame.uniforms.uIntensity.value += (targetInt - flame.uniforms.uIntensity.value) * Math.min(1, delta * 12);
+        hLight.intensity = 1.6 * flame.uniforms.uIntensity.value;
+
+        // Shed world-space sparks in wake of hand motion
+        const spawnCnt = spd > 0.4 ? 3 : 1;
+        for (let k = 0; k < spawnCnt; k++) {
+          const idx = nextS; nextS = (nextS + 1) % sparkCount;
+          sPos[idx * 3] = (Math.random() - 0.5) * 0.05;
+          sPos[idx * 3 + 1] = Math.random() * 0.06;
+          sPos[idx * 3 + 2] = (Math.random() - 0.5) * 0.05;
+          sVel[idx].set(-hVel.x * 0.35 + (Math.random() - 0.5) * 0.18, 0.45 + Math.random() * 0.55, -hVel.z * 0.35 + (Math.random() - 0.5) * 0.18);
+          sLife[idx] = 0.45 + Math.random() * 0.35;
+        }
+        for (let i = 0; i < sparkCount; i++) {
+          if (sLife[i] <= 0) { sPos[i * 3 + 1] = -99; continue; }
+          sLife[i] -= delta;
+          sPos[i * 3] += sVel[i].x * delta; sPos[i * 3 + 1] += sVel[i].y * delta; sPos[i * 3 + 2] += sVel[i].z * delta;
+        }
+        sGeo.attributes.position.needsUpdate = true;
+
+        // Touch any entity or cloth to ignite it!
+        if (igniteCooldown <= 0) {
+          for (const other of APP.entities || []) {
+            if (!other || other === ent || !other.group?.parent || other.category === 'world_fx' || other.category === 'board' || other.category === 'portal' || other.isPen) continue;
+            tmpBox.setFromObject(other.group).expandByScalar(0.06);
+            if (tmpBox.containsPoint(hp)) {
+              touchTimer += delta;
+              if (touchTimer > 0.25) {
+                touchTimer = 0; igniteCooldown = 1.6;
+                if (other.category === 'cloth' && APP.sim?.burnCloth) APP.sim.burnCloth({ origin: 'center' });
+                else burnObjectPart({ target: other.id, point: hp.toArray(), part: 'point' });
+              }
+              break;
+            }
+          }
+        }
+      }
+    });
+
+    APP._handFireEnt = ent;
+    return { ok: true, id: ent.id, message: 'Ignited fire on your virtual hand! Wave to bend flames or touch objects to burn them.' };
+  }
+
+  // --------------------------------------------------------------------
+  // FORM 3: Burn Any Object OR Specific Part of an Object
+  // --------------------------------------------------------------------
+  function burnObjectPart(opts = {}) {
+    const q = String(opts.target || 'latest').trim();
+    let target = q ? APP.findEntity?.(q) : null;
+    if (!target || target.category === 'world_fx' || target.category === 'board' || target.category === 'portal') {
+      const cands = (APP.entities || []).filter((e) => e && e.group?.parent && e.category !== 'world_fx' && e.category !== 'board' && e.category !== 'portal' && !e.isPen);
+      target = cands[cands.length - 1] || null;
+    }
+    if (!target) return { ok: false, error: 'No target object found to burn.' };
+
+    if (target.category === 'cloth' && APP.sim?.burnCloth) {
+      return APP.sim.burnCloth({ origin: opts.part || 'bottom' });
+    }
+
+    target.group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(target.group);
+    if (box.isEmpty()) return { ok: false, error: 'Target bounds empty.' };
+    const size = new THREE.Vector3(), center = new THREE.Vector3();
+    box.getSize(size); box.getCenter(center);
+
+    const part = String(opts.part || 'top').toLowerCase();
+    const burnCenter = center.clone();
+    if (Array.isArray(opts.point) && opts.point.length === 3) {
+      burnCenter.set(opts.point[0], opts.point[1], opts.point[2]);
+    } else if (part === 'top') {
+      burnCenter.y = box.max.y - size.y * 0.14;
+    } else if (part === 'bottom' || part === 'base') {
+      burnCenter.y = box.min.y + size.y * 0.14;
+    } else if (part === 'left') {
+      burnCenter.x = box.min.x + size.x * 0.18;
+    } else if (part === 'right') {
+      burnCenter.x = box.max.x - size.x * 0.18;
+    } else if (part === 'front') {
+      burnCenter.z = box.max.z - size.z * 0.18;
+    }
+
+    const burnRadius = part === 'all' ? Math.max(size.x, size.y, size.z) * 0.85 : Math.max(0.14, Math.min(size.x, size.y, size.z) * 0.55);
+
+    // Sample surface points inside that part to attach localized volumetric flames
+    const localFlames = [];
+    const anchorPts = [];
+    const vTmp = new THREE.Vector3();
+    target.group.traverse((c) => {
+      if (!c.isMesh || !c.geometry?.attributes?.position || c.userData?.nxrDecal) return;
+      const posA = c.geometry.attributes.position;
+      const step = Math.max(1, Math.floor(posA.count / 90));
+      for (let i = 0; i < posA.count; i += step) {
+        vTmp.fromBufferAttribute(posA, i).applyMatrix4(c.matrixWorld);
+        if (vTmp.distanceTo(burnCenter) <= burnRadius) {
+          anchorPts.push(target.group.worldToLocal(vTmp.clone()));
+        }
+      }
+      // Inject localized charring & glowing ember crack shader onto target mesh
+      if (c.material && !c.material.isShaderMaterial) {
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        c.material = mats.map((m) => {
+          const cl = m.clone();
+          const uTime = { value: 0 };
+          const localBurnC = target.group.worldToLocal(burnCenter.clone());
+          cl.userData.nxrBurnTime = uTime;
+          cl.customProgramCacheKey = () => 'nxr_part_burn_v1';
+          cl.onBeforeCompile = (shader) => {
+            shader.uniforms.uPBTime = uTime;
+            shader.uniforms.uPBCenter = { value: localBurnC };
+            shader.uniforms.uPBRad = { value: burnRadius };
+            shader.vertexShader = shader.vertexShader
+              .replace('#include <common>', '#include <common>\nvarying vec3 vPBPos;')
+              .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPBPos = position;');
+            shader.fragmentShader = shader.fragmentShader
+              .replace('#include <common>', '#include <common>\nuniform float uPBTime; uniform vec3 uPBCenter; uniform float uPBRad;\nvarying vec3 vPBPos;\nfloat pbHash(vec3 p){p=fract(p*0.3183+0.1);p*=17.0;return fract(p.x*p.y*p.z*(p.x+p.y+p.z));}')
+              .replace('#include <map_fragment>', '#include <map_fragment>\nfloat pbD=1.0-smoothstep(uPBRad*0.35,uPBRad*1.05,distance(vPBPos,uPBCenter));\ndiffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.03,0.02,0.02),pbD*0.92);')
+              .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\nfloat pbCrk=step(0.62,pbHash(floor(vPBPos*42.0)));\nfloat pbFlick=0.65+0.35*sin(uPBTime*18.0+vPBPos.y*25.0);\ntotalEmissiveRadiance+=vec3(1.0,0.28,0.02)*pbD*pbCrk*pbFlick*3.2;');
+          };
+          cl.needsUpdate = true;
+          return cl;
+        });
+        if (!Array.isArray(c.material)) c.material = c.material[0];
+      }
+    });
+
+    if (!anchorPts.length) anchorPts.push(target.group.worldToLocal(burnCenter.clone()));
+
+    const fireOverlay = new THREE.Group();
+    fireOverlay.name = `Burn_${part}_${target.name}`;
+    const clusterCount = Math.min(6, Math.max(2, anchorPts.length));
+    for (let i = 0; i < clusterCount; i++) {
+      const p = anchorPts[Math.floor((i / clusterCount) * anchorPts.length)];
+      const fSize = Math.max(0.09, Math.min(0.24, burnRadius * 0.72));
+      const cl = createFlameCluster(fSize, fSize * 1.65, 0);
+      cl.group.position.copy(p);
+      fireOverlay.add(cl.group);
+      localFlames.push(cl);
+    }
+
+    const burnLight = new THREE.PointLight(0xff6b1a, 2.0, 4.2);
+    burnLight.position.copy(target.group.worldToLocal(burnCenter.clone())).add(new THREE.Vector3(0, 0.12, 0));
+    fireOverlay.add(burnLight);
+
+    target.group.add(fireOverlay);
+    const curBend = new THREE.Vector3(), fWorld = new THREE.Vector3();
+
+    const fxEnt = APP.registerEntity(new THREE.Group(), {
+      name: `Fire on ${target.name} (${part})`,
+      category: 'world_fx',
+      grabbable: false,
+      physics: { enabled: false },
+      onUpdate: function (dt) {
+        if (!target.group?.parent || !fireOverlay.parent) {
+          APP.removeEntity?.(fxEnt, false);
+          return;
+        }
+        const delta = Math.max(0.004, Math.min(0.04, dt || 0.016));
+        const t = performance.now() * 0.001;
+        fireOverlay.getWorldPosition(fWorld);
+        const hw = sampleHandWindForce(fWorld, delta);
+        const targetBend = hw.wind.clampLength(0, 0.18);
+        curBend.lerp(targetBend, Math.min(1, delta * 10));
+        const localBend = curBend.clone().applyQuaternion(target.group.quaternion.clone().invert());
+
+        for (let i = 0; i < localFlames.length; i++) {
+          localFlames[i].uniforms.uTime.value = t + i * 0.7;
+          localFlames[i].uniforms.uBend.value.copy(localBend);
+          localFlames[i].uniforms.uIntensity.value = 1.0 + hw.boost + Math.sin(t * 14 + i) * 0.1;
+        }
+        burnLight.intensity = 1.7 + hw.boost * 1.4 + Math.sin(t * 17) * 0.25;
+        target.group.traverse((c) => {
+          if (c.isMesh && c.material?.userData?.nxrBurnTime) c.material.userData.nxrBurnTime.value = t;
+        });
+      }
+    });
+
+    return { ok: true, id: fxEnt.id, message: `Ignited ${part} part of ${target.name}.` };
+  }
+
+  // --------------------------------------------------------------------
+  // FORM 4: Realistic Interactive Campfire / Bonfire
+  // --------------------------------------------------------------------
+  function spawnCampfire() {
+    const campG = new THREE.Group();
+    campG.name = 'Interactive_Campfire';
+    const logMat = new THREE.MeshStandardMaterial({ color: 0x3a2010, roughness: 0.92 });
+    const coalMat = new THREE.MeshStandardMaterial({ color: 0x1a0802, emissive: 0xff3b00, emissiveIntensity: 2.2, roughness: 0.8 });
+
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.042, 0.42, 12), logMat);
+      log.position.set(Math.cos(a) * 0.10, 0.06, Math.sin(a) * 0.10);
+      log.rotation.z = Math.cos(a) * 0.95;
+      log.rotation.x = -Math.sin(a) * 0.95;
+      campG.add(log);
+    }
+    const coals = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.035, 16), coalMat);
+    coals.position.y = 0.018;
+    campG.add(coals);
+
+    const fMain = createFlameCluster(0.28, 0.44, 0.03);
+    const fSide1 = createFlameCluster(0.16, 0.28, 0.03); fSide1.group.position.set(0.08, 0.03, 0.04);
+    const fSide2 = createFlameCluster(0.16, 0.28, 0.03); fSide2.group.position.set(-0.07, 0.03, -0.05);
+    campG.add(fMain.group, fSide1.group, fSide2.group);
+
+    const light = new THREE.PointLight(0xff7722, 2.8, 6.5);
+    light.position.y = 0.24;
+    campG.add(light);
+
+    const sp = APP.getSpawnPosition ? APP.getSpawnPosition(1.15, true) : new THREE.Vector3(0, 0, -1.15);
+    campG.position.set(sp.x, 0, sp.z);
+    APP.scene.add(campG);
+
+    const curBend = new THREE.Vector3(), fWorld = new THREE.Vector3();
+    const ent = APP.registerEntity(campG, {
+      name: 'Interactive Campfire',
+      category: 'torch',
+      holdable: false,
+      physics: { enabled: false },
+      onUpdate: function (dt) {
+        const delta = Math.max(0.004, Math.min(0.04, dt || 0.016));
+        const t = performance.now() * 0.001;
+        campG.getWorldPosition(fWorld);
+        const hw = sampleHandWindForce(fWorld, delta);
+        curBend.lerp(hw.wind.clampLength(0, 0.24), Math.min(1, delta * 10));
+        [fMain, fSide1, fSide2].forEach((fl, idx) => {
+          fl.uniforms.uTime.value = t + idx * 0.6;
+          fl.uniforms.uBend.value.copy(curBend);
+          fl.uniforms.uIntensity.value = 1.05 + hw.boost + Math.sin(t * 12 + idx) * 0.1;
+        });
+        light.intensity = 2.4 + hw.boost * 1.8 + Math.sin(t * 15) * 0.35;
+      }
+    });
+    return { ok: true, id: ent.id, message: 'Created realistic hand-reactive Campfire.' };
+  }
+
+  function extinguishAll() {
+    let cnt = 0;
+    for (const e of [...(APP.entities || [])]) {
+      if (e && (e.name?.startsWith('Fire on ') || e === APP._handFireEnt)) {
+        APP.removeEntity?.(e, false);
+        cnt++;
+      }
+    }
+    APP._handFireEnt = null;
+    return { ok: true, message: cnt ? `Extinguished ${cnt} fire effect(s).` : 'No active fire effects to extinguish.' };
+  }
+
+  APP.fire = {
+    torch: spawnTorch,
+    hand: spawnHandFire,
+    burnPart: burnObjectPart,
+    campfire: spawnCampfire,
+    extinguish: extinguishAll,
+    dispatch(opts = {}) {
+      const f = String(opts.form || opts.mode || 'torch').toLowerCase();
+      if (f === 'extinguish' || f === 'stop' || f === 'off') return extinguishAll();
+      if (f === 'hand' || f === 'hand_fire') return spawnHandFire(opts);
+      if (f === 'object' || f === 'part' || f === 'object_part') return burnObjectPart(opts);
+      if (f === 'campfire' || f === 'bonfire') return spawnCampfire();
+      return spawnTorch();
+    }
+  };
+
+  // Register AI Tool for Multi-Form Fire
+  const FIRE_TOOL = {
+    name: 'simulate_fire',
+    description: 'Spawn realistic hand-reactive GLSL volumetric fire in multiple forms: hand-held Fire Torch ("torch"), Fire on user\'s Virtual Hand ("hand"), burning a specific part of any 3D object ("object_part" with target + part="top|bottom|left|right|front|all"), interactive Campfire ("campfire"), or "extinguish".',
+    parameters: {
+      type: 'object',
+      properties: {
+        form: { type: 'string', description: 'torch | hand | object_part | campfire | extinguish' },
+        target: { type: 'string', description: 'Entity name/id or "latest" when form="object_part".' },
+        part: { type: 'string', description: 'top | bottom | left | right | front | all' },
+        hand: { type: 'string', description: 'left | right (for form="hand")' }
+      }
+    }
+  };
+  APP.registerBotTool?.(FIRE_TOOL, (a) => APP.fire.dispatch(a || {}));
+
+  APP.registerAbilityHandler?.('make_fire_torch', function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('extinguish') || low.includes('stop') || low.includes('اطفاء')) return extinguishAll();
+    if (low.includes('campfire') || low.includes('bonfire') || low.includes('مخيم')) return spawnCampfire();
+    if (low.includes('burn') || low.includes('احرق')) {
+      const part = low.includes('bottom') || low.includes('base') ? 'bottom'
+        : low.includes('left') ? 'left'
+        : low.includes('right') ? 'right'
+        : low.includes('front') ? 'front'
+        : low.includes('all') || low.includes('whole') ? 'all'
+        : 'top';
+      return burnObjectPart({ target: 'latest', part });
+    }
+    return spawnTorch();
+  });
+
+  if (typeof command === 'string' && command.trim()) {
+    return APP.registerAbilityHandler ? APP.fire.dispatch({ form: command.toLowerCase().includes('campfire') ? 'campfire' : command.toLowerCase().includes('burn') ? 'object_part' : 'torch' }) : spawnTorch();
+  }
+  return spawnTorch();
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 5. Fire on Virtual Hand Preset
+# ----------------------------------------------------------------------
+@ability: hand_fire_action
+@pin: Hand Fire
+@desc: Ignites realistic interactive volumetric fire directly on your virtual hand/controller.
+@match: fire on my hand | fire on hand | hand fire | flame hand | نار على يدي | يد نارية
+@code:
+(function () {
+  if (!APP.fire?.hand) return { ok: false, error: 'Fire engine not ready. Click Fire Torch first or reload.' };
+  const r = APP.fire.hand({ toggle: true });
+  APP.ui?.toast?.(r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 6. Leak-Proof RenderTarget Dancy 3D Portal (True Parallax, Zero Spill)
+# ----------------------------------------------------------------------
+@ability: open_dancy_portal
+@pin: Open Portal
+@desc: Opens an undulating dancing 3D portal powered by an isolated offscreen portal scene & head-tracked parallax camera so nothing ever renders outside the portal frame.
+@match: portal | open portal | show & portal | بوابة | افتح بوابة | اظهر بوابة
+@code:
+(async function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene || !APP.renderer) return { ok: false, error: 'Scene not ready.' };
+
+  const AR_WORLD_DICT = {
+    'غابة': 'forest', 'الغابة': 'forest', 'غابه': 'forest',
+    'فضاء': 'space', 'الفضاء': 'space', 'نجوم': 'space', 'كواكب': 'space',
+    'بحر': 'ocean', 'البحر': 'ocean', 'محيط': 'ocean', 'تحت الماء': 'ocean',
+    'مدينة': 'cyber', 'المدينة': 'cyber', 'سايبربانك': 'cyber',
+    'صحراء': 'desert', 'الصحراء': 'desert',
+    'جبل': 'snow', 'جبال': 'snow', 'ثلج': 'snow', 'جليد': 'snow',
+    'قلعة': 'castle', 'القلعة': 'castle',
+    'بركان': 'lava', 'نار': 'lava', 'جحيم': 'lava',
+    'ماتريكس': 'cyber', 'الماتريكس': 'cyber'
+  };
+
+  function parseWorldQuery(rawCmd) {
+    let q = String(rawCmd || '')
+      .replace(/^(please\s+)?(open|show|create|make|spawn|افتح|اظهر|اعرض|اصنع)\s+(a|an|the)?\s*(dancy\s+|3d\s+|magic\s+)?(portal|بوابة|بوابه)\s*(to|of|for|into|ل|الى|إلى)?\s*(a|an|the)?\s*/i, '')
+      .trim();
+    for (const [ar, en] of Object.entries(AR_WORLD_DICT)) {
+      if (q.includes(ar) || String(rawCmd || '').includes(ar)) return en;
+    }
+    if (q.startsWith('ال') && q.length > 3) q = q.slice(2);
+    return q.toLowerCase();
+  }
+
+  async function findWorldAsset(worldQuery) {
+    const q = String(worldQuery || '').replace(/\.[^.]+$/, '').toLowerCase().trim();
+
+    if (!q) {
+      if (APP.importedGLBs?.size) {
+        const first = Array.from(APP.importedGLBs.values())[0];
+        return { kind: 'glb', name: first.cleanName, url: first.url };
+      }
+      if (APP.importedImages?.size) {
+        const first = Array.from(APP.importedImages.values())[0];
+        return { kind: 'image', name: first.cleanName, url: first.url };
+      }
+      const presets = ['forest', 'space', 'ocean', 'cyber', 'lava', 'desert', 'snow'];
+      return { kind: 'procedural', name: presets[Math.floor(Math.random() * presets.length)] };
+    }
+
+    if (APP.importedGLBs?.size) {
+      const hit = APP.importedGLBs.get(q) || Array.from(APP.importedGLBs.values()).find((r) => r.cleanName.includes(q));
+      if (hit) return { kind: 'glb', name: hit.cleanName, url: hit.url };
+    }
+    if (APP.importedImages?.size) {
+      const hit = APP.importedImages.get(q) || Array.from(APP.importedImages.values()).find((r) => r.cleanName.includes(q));
+      if (hit) return { kind: 'image', name: hit.cleanName, url: hit.url };
+    }
+
+    const probes = [
+      { kind: 'glb', url: `./assets/${q}.glb` },
+      { kind: 'glb', url: `./assets/${q}.gltf` },
+      { kind: 'glb', url: `./${q}.glb` },
+      { kind: 'image', url: `./assets/${q}.jpg` },
+      { kind: 'image', url: `./assets/${q}.jpeg` },
+      { kind: 'image', url: `./assets/${q}.png` },
+      { kind: 'image', url: `./assets/${q}.webp` },
+      { kind: 'image', url: `./${q}.jpg` },
+      { kind: 'image', url: `./${q}.png` }
+    ];
+    for (const p of probes) {
+      try {
+        const res = await fetch(p.url, { method: 'HEAD' });
+        if (res.ok) return { kind: p.kind, name: q, url: p.url };
+      } catch (_) {}
+    }
+
+    return { kind: 'procedural', name: q };
+  }
+
+  function buildProceduralMiniWorld(name) {
+    const low = String(name || '').toLowerCase();
+    const mini = new THREE.Group();
+    const isSpace = /space|nebula|star|moon|galaxy|planet|cosmos/.test(low);
+    const isOcean = /ocean|sea|water|coral|underwater/.test(low);
+    const isCyber = /cyber|city|neon|matrix|future|tokyo/.test(low);
+    const isLava = /lava|volcano|hell|fire|inferno|magma/.test(low);
+    const isDesert = /desert|sand|dune|pyramid|egypt/.test(low);
+    const isSnow = /snow|ice|winter|mountain|arctic/.test(low);
+
+    const skyCol = isSpace ? 0x040212 : isOcean ? 0x042a46 : isCyber ? 0x09051a : isLava ? 0x240702 : isDesert ? 0xd97706 : isSnow ? 0x94a3b8 : 0x0d2b1d;
+    const pocketSky = new THREE.Mesh(
+      new THREE.SphereGeometry(6.0, 28, 20),
+      new THREE.MeshBasicMaterial({ color: skyCol, side: THREE.BackSide })
+    );
+    pocketSky.position.set(0, 0, -2.5);
+    mini.add(pocketSky);
+
+    const floorCol = isSpace ? 0x1e1b4b : isOcean ? 0x0369a1 : isCyber ? 0x0f172a : isLava ? 0x29110a : isDesert ? 0xe6b873 : isSnow ? 0xe2e8f0 : 0x14532d;
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(4.5, 36),
+      new THREE.MeshStandardMaterial({ color: floorCol, roughness: isOcean ? 0.15 : 0.8, metalness: isOcean ? 0.5 : 0.05 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(0, -0.78, -2.4);
+    mini.add(ground);
+
+    const animatedItems = [];
+
+    if (isSpace) {
+      const planet = new THREE.Mesh(
+        new THREE.SphereGeometry(0.46, 28, 28),
+        new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.42, emissive: 0x0ea5e9, emissiveIntensity: 0.35 })
+      );
+      planet.position.set(0, 0.12, -2.1);
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.58, 0.85, 40),
+        new THREE.MeshBasicMaterial({ color: 0xa78bfa, side: THREE.DoubleSide, transparent: true, opacity: 0.78 })
+      );
+      ring.rotation.x = 1.22; planet.add(ring);
+      mini.add(planet);
+      animatedItems.push((t) => { planet.rotation.y = t * 0.35; });
+
+      const starGeo = new THREE.BufferGeometry();
+      const sp = new Float32Array(180 * 3);
+      for (let i = 0; i < 180; i++) {
+        sp[i * 3] = (Math.random() - 0.5) * 5.0;
+        sp[i * 3 + 1] = (Math.random() - 0.5) * 3.5;
+        sp[i * 3 + 2] = -0.8 - Math.random() * 4.0;
+      }
+      starGeo.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+      mini.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.025 })));
+    } else if (isCyber) {
+      const bMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.25, metalness: 0.8 });
+      for (let i = 0; i < 14; i++) {
+        const h = 0.6 + (i % 4) * 0.48;
+        const b = new THREE.Mesh(new THREE.BoxGeometry(0.26, h, 0.26), bMat);
+        const col = i % 2 === 0 ? 0x00f0ff : 0xf43f5e;
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.03, 0.27), new THREE.MeshBasicMaterial({ color: col }));
+        strip.position.y = h * 0.35;
+        b.add(strip);
+        const x = ((i % 7) - 3) * 0.48;
+        const z = -1.3 - Math.floor(i / 7) * 0.95;
+        b.position.set(x, -0.78 + h * 0.5, z);
+        mini.add(b);
+      }
+    } else if (isLava) {
+      const rockMat = new THREE.MeshStandardMaterial({ color: 0x1c1917, roughness: 0.92 });
+      const lavaPool = new THREE.Mesh(
+        new THREE.CircleGeometry(1.4, 24),
+        new THREE.MeshBasicMaterial({ color: 0xff4500 })
+      );
+      lavaPool.rotation.x = -Math.PI / 2; lavaPool.position.set(0, -0.76, -2.0);
+      mini.add(lavaPool);
+      for (let i = 0; i < 6; i++) {
+        const spire = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.85, 7), rockMat);
+        spire.position.set(Math.sin(i * 1.1) * 1.1, -0.35, -1.6 - (i % 3) * 0.6);
+        mini.add(spire);
+      }
+    } else if (isDesert) {
+      const pyrMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.85 });
+      const p1 = new THREE.Mesh(new THREE.ConeGeometry(0.72, 0.92, 4), pyrMat);
+      p1.position.set(-0.35, -0.32, -2.2); p1.rotation.y = Math.PI / 4;
+      const p2 = new THREE.Mesh(new THREE.ConeGeometry(0.50, 0.65, 4), pyrMat);
+      p2.position.set(0.55, -0.45, -1.9); p2.rotation.y = Math.PI / 4;
+      const sun = new THREE.Mesh(new THREE.SphereGeometry(0.32, 16, 16), new THREE.MeshBasicMaterial({ color: 0xfde047 }));
+      sun.position.set(0.2, 0.85, -3.5);
+      mini.add(p1, p2, sun);
+    } else if (isOcean) {
+      const coralCols = [0xf472b6, 0x38bdf8, 0xfbbf24, 0x34d399];
+      for (let i = 0; i < 12; i++) {
+        const coral = new THREE.Mesh(
+          new THREE.ConeGeometry(0.08, 0.35 + (i % 3) * 0.14, 7),
+          new THREE.MeshStandardMaterial({ color: coralCols[i % coralCols.length], roughness: 0.6 })
+        );
+        coral.position.set(((i % 5) - 2) * 0.42, -0.60, -1.3 - Math.floor(i / 5) * 0.65);
+        mini.add(coral);
+      }
+      const fish = new THREE.Mesh(new THREE.SphereGeometry(0.09, 12, 10), new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.3 }));
+      fish.scale.set(1.6, 0.8, 0.5);
+      mini.add(fish);
+      animatedItems.push((t) => { fish.position.set(Math.sin(t * 1.4) * 0.7, Math.sin(t * 2.1) * 0.2, -1.8 + Math.cos(t * 1.4) * 0.4); });
+    } else {
+      // Forest or Snow Mountain
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a2e19, roughness: 0.9 });
+      const leafMat = new THREE.MeshStandardMaterial({ color: isSnow ? 0xe2e8f0 : 0x16a34a, roughness: 0.7 });
+      for (let i = 0; i < 12; i++) {
+        const tree = new THREE.Group();
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.48, 8), trunkMat);
+        trunk.position.y = 0.24;
+        const crown = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.58, 9), leafMat);
+        crown.position.y = 0.60;
+        tree.add(trunk, crown);
+        const angle = (i / 12) * Math.PI * 1.4 - Math.PI * 0.7;
+        const dist = 0.95 + (i % 3) * 0.55;
+        tree.position.set(Math.sin(angle) * dist * 0.9, -0.78, -1.25 - dist * 0.85);
+        mini.add(tree);
+      }
+    }
+
+    mini.userData.updateAnim = (t) => animatedItems.forEach((fn) => fn(t));
+    return mini;
+  }
+
+  async function buildDancyPortal(worldArg) {
+    const worldQuery = parseWorldQuery(worldArg);
+    const asset = await findWorldAsset(worldQuery);
+
+    const portalGroup = new THREE.Group();
+    portalGroup.name = 'Portal_' + (asset.name || 'world');
+
+    const spawnPos = APP.getSpawnPosition ? APP.getSpawnPosition(1.45, true) : new THREE.Vector3(0, 0, -1.45);
+    portalGroup.position.set(spawnPos.x, 1.15, spawnPos.z);
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    portalGroup.lookAt(hp.x, portalGroup.position.y, hp.z);
+    APP.scene.add(portalGroup);
+
+    // 1. Isolated Offscreen Portal Scene & RenderTarget (100% IMPOSSIBLE to render outside portal!)
+    const rtSize = /quest|oculus|pico|xr/i.test(navigator.userAgent || '') ? 512 : 768;
+    const portalRT = new THREE.WebGLRenderTarget(rtSize, rtSize, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      depthBuffer: true
+    });
+    const portalScene = new THREE.Scene();
+    portalScene.add(new THREE.AmbientLight(0xffffff, 0.9));
+    const pDir = new THREE.DirectionalLight(0xfff5e4, 1.5);
+    pDir.position.set(3, 5, 3);
+    portalScene.add(pDir);
+
+    const worldAnchor = new THREE.Group();
+    portalScene.add(worldAnchor);
+
+    const worldGroup = new THREE.Group();
+    worldAnchor.add(worldGroup);
+
+    if (asset.kind === 'image') {
+      try {
+        const tex = await new THREE.TextureLoader().loadAsync(asset.url);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(5.5, 36, 24),
+          new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide })
+        );
+        sphere.position.set(0, 0, -0.3);
+        worldGroup.add(sphere);
+      } catch (_) {
+        worldGroup.add(buildProceduralMiniWorld(asset.name));
+      }
+    } else if (asset.kind === 'glb' && APP.gltfLoader) {
+      await new Promise((resolve) => {
+        APP.gltfLoader.load(asset.url, (gltf) => {
+          const model = gltf.scene;
+          const holder = new THREE.Group();
+          holder.add(model);
+          holder.updateMatrixWorld(true);
+          const box = new THREE.Box3().setFromObject(model);
+          const size = new THREE.Vector3(), center = new THREE.Vector3();
+          box.getSize(size); box.getCenter(center);
+          const scale = 1.95 / (Math.max(size.x, size.y, size.z) || 1);
+          model.scale.multiplyScalar(scale);
+
+          holder.updateMatrixWorld(true);
+          const box2 = new THREE.Box3().setFromObject(model);
+          const center2 = new THREE.Vector3();
+          box2.getCenter(center2);
+          model.position.x -= center2.x;
+          model.position.y -= center2.y + 0.05;
+          model.position.z -= center2.z + (box2.max.z - box2.min.z) * 0.5 + 0.35;
+
+          const backDome = new THREE.Mesh(
+            new THREE.SphereGeometry(5.5, 24, 18),
+            new THREE.MeshBasicMaterial({ color: 0x07131e, side: THREE.BackSide })
+          );
+          backDome.position.set(0, 0, -1.5);
+          worldGroup.add(backDome, holder);
+          resolve();
+        }, undefined, () => {
+          worldGroup.add(buildProceduralMiniWorld(asset.name));
+          resolve();
+        });
+      });
+    } else {
+      worldGroup.add(buildProceduralMiniWorld(asset.name));
+    }
+
+    // 2. Dancy Aperture Mesh + Screen-Space Parallax Projection Shader
+    const SEGMENTS = 72;
+    const BASE_RX = 0.62;
+    const BASE_RY = 0.88;
+
+    const maskGeo = new THREE.BufferGeometry();
+    const maskVerts = new Float32Array((SEGMENTS + 2) * 3);
+    const maskIndices = [];
+    for (let i = 1; i <= SEGMENTS; i++) maskIndices.push(0, i, i + 1);
+    maskGeo.setAttribute('position', new THREE.BufferAttribute(maskVerts, 3));
+    maskGeo.setIndex(maskIndices);
+
+    const portalUniforms = {
+      uPortalTex: { value: portalRT.texture },
+      uTime: { value: 0 }
+    };
+    const portalSurfaceMat = new THREE.ShaderMaterial({
+      uniforms: portalUniforms,
+      side: THREE.DoubleSide,
+      vertexShader: [
+        'varying vec4 vClipPos;',
+        'varying vec2 vLocalXY;',
+        'void main() {',
+        '  vLocalXY = position.xy;',
+        '  vClipPos = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+        '  gl_Position = vClipPos;',
+        '}'
+      ].join('\n'),
+      fragmentShader: [
+        'uniform sampler2D uPortalTex;',
+        'uniform float uTime;',
+        'varying vec4 vClipPos;',
+        'varying vec2 vLocalXY;',
+        'void main() {',
+        '  vec2 screenUV = (vClipPos.xy / vClipPos.w) * 0.5 + 0.5;',
+        '  float r = length(vLocalXY / vec2(0.62, 0.88));',
+        '  float edgeWarp = smoothstep(0.75, 1.02, r) * 0.008;',
+        '  screenUV += vec2(sin(uTime * 5.0 + vLocalXY.y * 12.0), cos(uTime * 4.5 + vLocalXY.x * 12.0)) * edgeWarp;',
+        '  vec4 col = texture2D(uPortalTex, clamp(screenUV, 0.001, 0.999));',
+        '  gl_FragColor = vec4(col.rgb, 1.0);',
+        '}'
+      ].join('\n')
+    });
+    const portalSurfaceMesh = new THREE.Mesh(maskGeo, portalSurfaceMat);
+    portalGroup.add(portalSurfaceMesh);
+
+    // Dancing Iridescent Outer Plasma Rim Ribbon
+    const rimGeo = new THREE.BufferGeometry();
+    const rimVerts = new Float32Array((SEGMENTS + 1) * 2 * 3);
+    const rimUvs = new Float32Array((SEGMENTS + 1) * 2 * 2);
+    const rimIndices = [];
+    for (let i = 0; i < SEGMENTS; i++) {
+      const a = i * 2, b = i * 2 + 1, c = (i + 1) * 2, d = (i + 1) * 2 + 1;
+      rimIndices.push(a, b, c, b, d, c);
+    }
+    for (let i = 0; i <= SEGMENTS; i++) {
+      const u = i / SEGMENTS;
+      rimUvs[i * 4] = u; rimUvs[i * 4 + 1] = 0;
+      rimUvs[i * 4 + 2] = u; rimUvs[i * 4 + 3] = 1;
+    }
+    rimGeo.setAttribute('position', new THREE.BufferAttribute(rimVerts, 3));
+    rimGeo.setAttribute('uv', new THREE.BufferAttribute(rimUvs, 2));
+    rimGeo.setIndex(rimIndices);
+
+    const rimUniforms = { uTime: { value: 0 } };
+    const rimMesh = new THREE.Mesh(rimGeo, new THREE.ShaderMaterial({
+      uniforms: rimUniforms,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: [
+        'uniform float uTime; varying vec2 vUv;',
+        'void main() {',
+        '  float core = exp(-pow((vUv.y - 0.5) * 5.0, 2.0));',
+        '  float wave = 0.5 + 0.5 * sin(vUv.x * 25.1327 - uTime * 4.5);',
+        '  float wave2 = 0.5 + 0.5 * cos(vUv.x * 43.9822 + uTime * 3.1);',
+        '  vec3 col = mix(vec3(0.0, 0.96, 0.72), vec3(0.22, 0.74, 0.98), wave);',
+        '  col = mix(col, vec3(0.75, 0.45, 1.0), wave2 * 0.45);',
+        '  col = mix(col, vec3(0.92, 1.0, 0.98), pow(core, 2.4));',
+        '  gl_FragColor = vec4(col * 1.35, core * (0.75 + 0.25 * wave));',
+        '}'
+      ].join('\n')
+    }));
+    portalGroup.add(rimMesh);
+
+    function updateDancyAperture(t) {
+      const mPos = maskGeo.attributes.position.array;
+      const rPos = rimGeo.attributes.position.array;
+      mPos[0] = 0; mPos[1] = 0; mPos[2] = 0;
+      for (let i = 0; i <= SEGMENTS; i++) {
+        const theta = (i / SEGMENTS) * Math.PI * 2;
+        const w = 1.0
+          + 0.085 * Math.sin(3.0 * theta + t * 2.6)
+          + 0.055 * Math.cos(5.0 * theta - t * 3.4)
+          + 0.030 * Math.sin(7.0 * theta + t * 4.8);
+        const x = Math.cos(theta) * BASE_RX * w;
+        const y = Math.sin(theta) * BASE_RY * w;
+        const zWave = Math.sin(4.0 * theta + t * 2.2) * 0.025;
+
+        const mIdx = (i + 1) * 3;
+        mPos[mIdx] = x; mPos[mIdx + 1] = y; mPos[mIdx + 2] = 0;
+
+        const rIdx = i * 6;
+        rPos[rIdx] = x * 0.94; rPos[rIdx + 1] = y * 0.94; rPos[rIdx + 2] = zWave;
+        rPos[rIdx + 3] = x * 1.12; rPos[rIdx + 4] = y * 1.12; rPos[rIdx + 5] = zWave;
+      }
+      maskGeo.attributes.position.needsUpdate = true;
+      rimGeo.attributes.position.needsUpdate = true;
+      rimUniforms.uTime.value = t;
+      portalUniforms.uTime.value = t;
+    }
+
+    const portalLight = new THREE.PointLight(0x00f0b4, 1.4, 3.5);
+    portalLight.position.set(0, 0, 0.25);
+    portalGroup.add(portalLight);
+
+    const portalCam = new THREE.PerspectiveCamera(65, 1, 0.05, 40);
+    const tmpScale = new THREE.Vector3();
+
+    const ent = APP.registerEntity(portalGroup, {
+      name: 'Portal to ' + (asset.name || 'World'),
+      category: 'portal',
+      holdable: true,
+      physics: { gravity: false, enabled: false },
+      onUpdate: function () {
+        if (!portalGroup.parent) {
+          portalRT.dispose();
+          return;
+        }
+        const t = performance.now() * 0.001;
+        updateDancyAperture(t);
+
+        // Animate pocket world
+        worldGroup.children.forEach((c) => c.userData?.updateAnim?.(t));
+
+        // Sync worldAnchor in isolated portalScene to portalGroup's exact world pose
+        portalGroup.updateMatrixWorld(true);
+        worldAnchor.position.copy(portalGroup.position);
+        worldAnchor.quaternion.copy(portalGroup.quaternion);
+        worldAnchor.scale.copy(portalGroup.scale);
+
+        const r = APP.renderer;
+        const mainCam = APP.camera;
+        if (!r || !mainCam) return;
+
+        const refCam = (r.xr?.isPresenting && mainCam.cameras?.length) ? mainCam.cameras[0] : mainCam;
+        refCam.updateMatrixWorld(true);
+        refCam.matrixWorld.decompose(portalCam.position, portalCam.quaternion, tmpScale);
+
+        const m = refCam.projectionMatrix.elements;
+        if (m && m[5] > 0.01 && m[0] > 0.01) {
+          portalCam.fov = 2 * Math.atan(1 / m[5]) * (180 / Math.PI);
+          portalCam.aspect = m[5] / m[0];
+          portalCam.updateProjectionMatrix();
+        } else {
+          portalCam.fov = refCam.fov || 65;
+          portalCam.aspect = refCam.aspect || 1;
+          portalCam.updateProjectionMatrix();
+        }
+        portalCam.updateMatrixWorld(true);
+
+        const prevRT = r.getRenderTarget();
+        const prevXR = r.xr ? r.xr.enabled : false;
+        const prevAutoClear = r.autoClear;
+        try {
+          if (r.xr) r.xr.enabled = false;
+          r.setRenderTarget(portalRT);
+          r.autoClear = true;
+          r.clear();
+          r.render(portalScene, portalCam);
+        } finally {
+          r.autoClear = prevAutoClear;
+          r.setRenderTarget(prevRT);
+          if (r.xr) r.xr.enabled = prevXR;
+        }
+      }
+    });
+
+    updateDancyAperture(performance.now() * 0.001);
+    APP.emit?.('entity:created', ent);
+    APP.bot?.onEntityCreated?.(ent);
+
+    return { ok: true, id: ent.id, message: `Opened leak-proof 3D portal to "${asset.name}" (${asset.kind}).` };
+  }
+
+  const PORTAL_TOOL = {
+    name: 'open_portal',
+    description: 'Opens a dancing 3D parallax portal window into any world (space, forest, ocean, cyber/city, lava/volcano, desert, snow, or any loaded GLB/image name). Nothing renders outside the portal aperture.',
+    parameters: {
+      type: 'object',
+      properties: {
+        world: { type: 'string', description: 'World name or theme e.g. "space", "forest", "ocean", "cyber", "lava", "desert", "snow", or model/image name.' }
+      }
+    }
+  };
+  APP.registerBotTool?.(PORTAL_TOOL, (a) => buildDancyPortal(a?.world || ''));
+
+  APP.openPortal = buildDancyPortal;
+  return await buildDancyPortal(typeof command === 'string' ? command : '');
+})();
+@end
