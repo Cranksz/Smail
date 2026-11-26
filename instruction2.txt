@@ -1,0 +1,2239 @@
+# ======================================================================
+# instruction2.txt — Studio-Grade Physics & VFX Engine (APP.sim v4)
+#   - Realistic Water & Viscous Fluids: Analytic Snell Refraction +
+#     Caustics + Beer-Lambert Absorption + Fresnel Env Reflection +
+#     72x72 2D Wave/Flood Solver + Buoyancy & Object/Hand/Mouse Wakes +
+#     Movable Tilting Pour Pitcher & Rayleigh-Breakup Stream
+#   - Realistic Granular (Sand, Snow, Wet Sand, Gold, Ash): 92x92
+#     Avalanche Continuum + 6000 Rolling/Colliding Micro-Grains +
+#     Hand/Mouse Trench Carving + Grabbable VR Controller Emitter
+#   - Realistic Cloth (Linen, Silk, Denim, Velvet, Lace, Chainmail):
+#     Sub-stepped 36x26 Bend-Spring XPBD/Verlet + Backlit Sheen +
+#     Fractal FBM Combustion Burning (Scorch, Ember Filament, Smoke) & Tear
+# ======================================================================
+
+@ability: sim_engine_core
+@autorun
+@desc: Builds studio-grade APP.sim (refractive/caustic fluids, viscous honey, spreading floods, rolling micro-granular with movable VR emitter, realistic textured burnable/tearable cloth) and registers AI tools + VR/mouse interaction.
+@match: simulation engine status
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return;
+
+  function parseHexColor(col, fallbackHex) {
+    if (typeof col === 'number' && isFinite(col)) return new THREE.Color(col);
+    if (typeof col === 'string' && col.trim()) {
+      try { return new THREE.Color(col.trim()); } catch (_) {}
+    }
+    return new THREE.Color(fallbackHex);
+  }
+
+  function resolvePos(posOpt, distDefault = 1.15) {
+    if (Array.isArray(posOpt) && posOpt.length === 3) {
+      return new THREE.Vector3(Number(posOpt[0]) || 0, Number(posOpt[1]) || 0, Number(posOpt[2]) || 0);
+    }
+    return APP.getSpawnPosition ? APP.getSpawnPosition(distDefault, true) : new THREE.Vector3(0, 0, -distDefault);
+  }
+
+  function getEntityBounds(ent) {
+    if (!ent || !ent.group) return null;
+    ent.group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(ent.group);
+    if (box.isEmpty()) return null;
+    const size = new THREE.Vector3(), center = new THREE.Vector3();
+    box.getSize(size); box.getCenter(center);
+    return { box, size, center };
+  }
+
+  // Shared lightweight desktop/touch raycast interaction for Water, Granular, Cloth
+  const interactives = APP._simInteractives || (APP._simInteractives = []);
+  if (!APP._simPointerBound && typeof window !== 'undefined') {
+    APP._simPointerBound = true;
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const lastWorld = new Map();
+    let pointerDown = false;
+    let activeClothDrag = null;
+
+    function updateNDC(e) {
+      const el = APP.renderer?.domElement;
+      const rect = el ? el.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+      ndc.x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+      ndc.y = -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+    }
+
+    function pruneAndTest(e, isClick) {
+      const cam = APP.camera;
+      if (!cam) return;
+      updateNDC(e);
+      raycaster.setFromCamera(ndc, cam);
+      for (let i = interactives.length - 1; i >= 0; i--) {
+        if (!interactives[i].group?.parent) interactives.splice(i, 1);
+      }
+      if (activeClothDrag && pointerDown) {
+        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+          cam.getWorldDirection(new THREE.Vector3()).negate(),
+          activeClothDrag.worldPt
+        );
+        const hitPt = new THREE.Vector3();
+        if (raycaster.ray.intersectPlane(plane, hitPt)) {
+          activeClothDrag.worldPt.copy(hitPt);
+          activeClothDrag.item.onPointerDrag?.(hitPt, activeClothDrag.speed);
+        }
+        return;
+      }
+      for (let i = 0; i < interactives.length; i++) {
+        const item = interactives[i];
+        if (!item.mesh) continue;
+        const hits = raycaster.intersectObject(item.mesh, false);
+        if (hits.length > 0) {
+          const pt = hits[0].point;
+          const prev = lastWorld.get(item);
+          const vel = prev ? pt.clone().sub(prev) : new THREE.Vector3();
+          lastWorld.set(item, pt.clone());
+          if (isClick && item.type === 'cloth') {
+            activeClothDrag = { item, worldPt: pt.clone(), speed: vel.length() };
+          }
+          item.onPointerHit?.(pt, vel, isClick, pointerDown);
+          break;
+        } else {
+          lastWorld.delete(item);
+        }
+      }
+    }
+
+    window.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      pointerDown = true;
+      pruneAndTest(e, true);
+    }, { passive: true });
+    window.addEventListener('pointermove', (e) => {
+      pruneAndTest(e, false);
+    }, { passive: true });
+    window.addEventListener('pointerup', () => {
+      pointerDown = false;
+      if (activeClothDrag) {
+        activeClothDrag.item.onPointerRelease?.();
+        activeClothDrag = null;
+      }
+    }, { passive: true });
+  }
+
+  // ====================================================================
+  // 1. STUDIO-GRADE FLUID & VISCOUS ENGINE
+  //    (Real Snell Refraction, Caustics, Beer-Lambert, 2D Shallow Wave,
+  //     Buoyancy, Movable Pitcher, Pouring / Pool / Splashing / Spreading)
+  // ====================================================================
+  function createWaterSimulation(opts = {}) {
+    const mode = String(opts.mode || '').toLowerCase();
+    const fluidType = String(opts.fluid || opts.type || (mode === 'honey' ? 'honey' : 'water')).toLowerCase();
+    const attachEnt = opts.attach_to ? APP.findEntity?.(opts.attach_to) : null;
+    const attachInfo = getEntityBounds(attachEnt);
+
+    const isHoney = fluidType === 'honey' || fluidType === 'syrup' || fluidType === 'amber';
+    const isLava = fluidType === 'lava' || fluidType === 'magma';
+    const isSlime = fluidType === 'slime';
+    const viscosity = Number(opts.viscosity ?? (isHoney ? 0.88 : isLava ? 0.92 : isSlime ? 0.72 : 0.04));
+
+    const isSpreading = mode === 'spreading' || mode === 'spill' || mode === 'puddle' || mode === 'flood' || !!opts.spreading;
+    const isPouring = !!opts.pouring || mode === 'pouring' || !!opts.pour_from;
+    const isWaterfall = !!opts.waterfall || mode === 'waterfall';
+    const isFountain = !!opts.fountain || mode === 'fountain' || mode === 'splashing' || !!opts.splashing;
+
+    const container = opts.container
+      ? String(opts.container).toLowerCase()
+      : (attachInfo || isSpreading ? 'none' : (mode === 'bowl' || mode === 'cup' ? mode : 'basin'));
+
+    const isGlassContainer = container.includes('glass');
+    const isCup = container.includes('cup');
+    const isBowl = container.includes('bowl') || isCup;
+
+    // Physical Beer-Lambert absorption coefficients (R, G, B)
+    const absorbVec = isHoney ? new THREE.Vector3(0.45, 2.8, 9.5)
+      : isLava ? new THREE.Vector3(0.1, 1.8, 6.0)
+      : isSlime ? new THREE.Vector3(3.2, 0.45, 3.8)
+      : new THREE.Vector3(2.8, 0.72, 0.35);
+
+    const defaultFluidCol = isHoney ? 0xd97706 : isLava ? 0xff4500 : isSlime ? 0x22c55e : 0x38bdf8;
+    const fluidColor = parseHexColor(opts.color, defaultFluidCol);
+    const glow = opts.glow !== undefined ? !!opts.glow : isLava;
+
+    const waterGroup = new THREE.Group();
+    const labelFluid = fluidType.charAt(0).toUpperCase() + fluidType.slice(1);
+    waterGroup.name = attachEnt ? `${labelFluid}_in_${attachEnt.name}`
+      : isSpreading ? `${labelFluid}_Spill_Sim`
+      : isWaterfall ? `${labelFluid}_Waterfall_Sim`
+      : isFountain ? `${labelFluid}_Splash_Sim`
+      : isPouring ? `${labelFluid}_Pour_Sim`
+      : `${labelFluid}_Pool_Sim`;
+
+    const radius = Number(opts.radius) || (
+      attachInfo ? Math.max(0.12, Math.min(attachInfo.size.x, attachInfo.size.z) * 0.40)
+      : isSpreading ? 1.25
+      : isCup ? 0.12 : isBowl ? 0.30 : 0.96
+    );
+    const vesselH = Number(opts.height) || (
+      attachInfo ? Math.max(0.12, attachInfo.size.y * 0.85)
+      : isSpreading ? 0.06
+      : isCup ? 0.25 : isBowl ? 0.23 : 0.24
+    );
+    const holdable = opts.holdable !== undefined ? !!opts.holdable : (isBowl && !isSpreading);
+
+    let innerProfileFn = () => radius * 0.96;
+    if (isBowl && container !== 'none') {
+      const pts = [], steps = 16, wallThick = Math.max(0.012, radius * 0.06), baseR = isCup ? radius * 0.65 : radius * 0.42;
+      pts.push(new THREE.Vector2(0.001, 0), new THREE.Vector2(baseR, 0));
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        pts.push(new THREE.Vector2(THREE.MathUtils.lerp(baseR, radius, isCup ? Math.pow(t, 0.55) : Math.sqrt(t)), t * vesselH));
+      }
+      pts.push(new THREE.Vector2(radius - wallThick * 0.45, vesselH + wallThick * 0.35), new THREE.Vector2(radius - wallThick, vesselH));
+      for (let i = steps - 1; i >= 1; i--) {
+        const t = i / steps;
+        const r = Math.max(0.01, THREE.MathUtils.lerp(baseR, radius, isCup ? Math.pow(t, 0.55) : Math.sqrt(t)) - wallThick);
+        pts.push(new THREE.Vector2(r, Math.max(wallThick, t * vesselH)));
+      }
+      pts.push(new THREE.Vector2(0.001, wallThick));
+
+      innerProfileFn = (y) => {
+        const t = THREE.MathUtils.clamp(y / vesselH, 0.05, 0.98);
+        return Math.max(0.02, THREE.MathUtils.lerp(baseR, radius, isCup ? Math.pow(t, 0.55) : Math.sqrt(t)) - wallThick * 1.08);
+      };
+
+      const vesselMat = isGlassContainer
+        ? new THREE.MeshPhysicalMaterial({ color: 0xeaf6ff, transmission: 0.92, ior: 1.51, thickness: 0.14, roughness: 0.06, clearcoat: 1.0, side: THREE.DoubleSide })
+        : new THREE.MeshStandardMaterial({ color: parseHexColor(opts.container_color, 0x2a2f38), roughness: 0.38, metalness: 0.14, side: THREE.DoubleSide });
+
+      const vesselMesh = new THREE.Mesh(new THREE.LatheGeometry(pts, 44), vesselMat);
+      vesselMesh.castShadow = true; vesselMesh.receiveShadow = true;
+      waterGroup.add(vesselMesh);
+    } else if (container === 'basin') {
+      const size = radius * 2;
+      const slateMat = new THREE.MeshStandardMaterial({ color: 0x28303b, roughness: 0.72, metalness: 0.12 });
+      const bed = new THREE.Mesh(new THREE.BoxGeometry(size + 0.14, 0.024, size + 0.14), slateMat);
+      bed.position.y = 0.012; bed.receiveShadow = true;
+      waterGroup.add(bed);
+      const wt = 0.065, half = radius + wt * 0.5;
+      const wN = new THREE.Mesh(new THREE.BoxGeometry(size + wt * 2, vesselH, wt), slateMat);
+      wN.position.set(0, vesselH * 0.5, -half); wN.castShadow = true; wN.receiveShadow = true;
+      const wS = wN.clone(); wS.position.z = half;
+      const wE = new THREE.Mesh(new THREE.BoxGeometry(wt, vesselH, size), slateMat);
+      wE.position.set(half, vesselH * 0.5, 0); wE.castShadow = true; wE.receiveShadow = true;
+      const wW = wE.clone(); wW.position.x = -half;
+      waterGroup.add(wN, wS, wE, wW);
+    }
+
+    if (attachInfo) {
+      waterGroup.position.set(attachInfo.center.x, attachInfo.box.min.y, attachInfo.center.z);
+    } else {
+      waterGroup.position.copy(resolvePos(opts.position, isBowl ? 0.95 : 1.35));
+    }
+    APP.scene.add(waterGroup);
+
+    // 1A. Real Cartesian 2D Shallow-Water Grid (72x72) for ALL forms
+    const GRID = isBowl || isCup ? 48 : 72;
+    const SIZE = radius * 2.0;
+    const N = GRID * GRID;
+    const sH = new Float32Array(N);
+    const sVel = new Float32Array(N);
+    const sNext = new Float32Array(N);
+    const sFoam = new Float32Array(N);
+    const sDepth = new Float32Array(N);
+    const sObs = new Uint8Array(N);
+
+    let fillLevel = isPouring && !attachInfo ? 0.42 : (Number(opts.fill) || 0.72);
+    const maxFill = 0.88;
+    const minY = isBowl ? vesselH * 0.16 : (attachInfo ? attachInfo.size.y * 0.22 : 0.05);
+    const maxY = isBowl ? vesselH * 0.88 : (attachInfo ? attachInfo.size.y * 0.74 : vesselH * 0.80);
+    let curWaterY = isSpreading ? 0.008 : THREE.MathUtils.lerp(minY, maxY, fillLevel);
+    let curR = innerProfileFn(curWaterY);
+    const isCircular = isBowl || !!attachInfo;
+
+    const waterGeo = new THREE.PlaneGeometry(SIZE, SIZE, GRID - 1, GRID - 1);
+    waterGeo.rotateX(-Math.PI / 2);
+    waterGeo.setAttribute('aFoam', new THREE.BufferAttribute(sFoam, 1));
+    waterGeo.setAttribute('aDepth', new THREE.BufferAttribute(sDepth, 1));
+
+    if (isSpreading) {
+      const cx = Math.floor(GRID / 2), cz = Math.floor(GRID / 2);
+      if (!isPouring) {
+        for (let z = -5; z <= 5; z++) for (let x = -5; x <= 5; x++) {
+          const d = Math.hypot(x, z);
+          if (d <= 5.2) sH[(cz + z) * GRID + (cx + x)] = (1.0 - d / 5.5) * (isHoney ? 0.052 : 0.028);
+        }
+      }
+    }
+
+    // 1B. Photorealistic Snell-Refracted + Beer-Lambert + Env-Reflected + Caustics Shader
+    const fluidUniforms = {
+      uTime: { value: 0 },
+      uAbsorb: { value: absorbVec },
+      uTint: { value: fluidColor },
+      uGlow: { value: glow ? 0.85 : 0.0 },
+      uVisc: { value: viscosity },
+      uIsSpreading: { value: isSpreading ? 1.0 : 0.0 },
+      uIsCircular: { value: isCircular ? 1.0 : 0.0 },
+      uClipR: { value: curR * 0.99 },
+      uBaseY: { value: curWaterY },
+      uFloorY: { value: waterGroup.position.y + 0.025 }
+    };
+
+    const fluidMat = new THREE.ShaderMaterial({
+      uniforms: fluidUniforms,
+      transparent: true,
+      side: THREE.DoubleSide,
+      vertexShader: [
+        'attribute float aFoam; attribute float aDepth;',
+        'varying vec3 vWPos; varying vec3 vLocalPos; varying vec3 vWNorm; varying float vFoam; varying float vDepth;',
+        'void main() {',
+        '  vFoam = aFoam; vDepth = aDepth;',
+        '  vLocalPos = position;',
+        '  vec4 wp = modelMatrix * vec4(position, 1.0);',
+        '  vWPos = wp.xyz;',
+        '  vWNorm = normalize(mat3(modelMatrix) * normal);',
+        '  gl_Position = projectionMatrix * viewMatrix * wp;',
+        '}'
+      ].join('\n'),
+      fragmentShader: [
+        'uniform float uTime; uniform vec3 uAbsorb; uniform vec3 uTint; uniform float uGlow; uniform float uVisc;',
+        'uniform float uIsSpreading; uniform float uIsCircular; uniform float uClipR; uniform float uBaseY; uniform float uFloorY;',
+        'varying vec3 vWPos; varying vec3 vLocalPos; varying vec3 vWNorm; varying float vFoam; varying float vDepth;',
+        'float hash21(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.5); return fract(p.x * p.y); }',
+        'float noise2(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); f=f*f*(3.0-2.0*f); return mix(mix(hash21(i),hash21(i+vec2(1,0)),f.x),mix(hash21(i+vec2(0,1)),hash21(i+vec2(1,1)),f.x),f.y); }',
+        'float fbm(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<3;i++){ s+=a*noise2(p); p*=2.03; a*=0.5; } return s; }',
+        'float caustics(vec2 uv, float t){',
+        '  vec2 p = uv * 5.2;',
+        '  float n1 = sin(p.x*1.7 + t*1.4 + cos(p.y*2.1 - t*1.1));',
+        '  float n2 = cos(p.y*2.3 - t*1.3 + sin(p.x*1.9 + t*0.9));',
+        '  float c = 1.0 - abs(n1 + n2) * 0.5;',
+        '  return pow(clamp(c, 0.0, 1.0), 6.0);',
+        '}',
+        'vec3 sampleEnv(vec3 R){',
+        '  float up = clamp(R.y, -1.0, 1.0);',
+        '  vec3 sky = mix(vec3(0.45, 0.52, 0.60), vec3(0.14, 0.28, 0.52), smoothstep(0.0, 0.85, max(0.0, up)));',
+        '  vec3 ground = vec3(0.08, 0.09, 0.11);',
+        '  vec3 env = up >= 0.0 ? sky : mix(vec3(0.28, 0.32, 0.36), ground, smoothstep(0.0, -0.5, up));',
+        '  vec3 sunDir = normalize(vec3(0.55, 0.82, 0.38));',
+        '  float sunDisc = smoothstep(0.96, 0.996, dot(R, sunDir));',
+        '  float softBox = smoothstep(0.5, 0.95, dot(R, normalize(vec3(-0.6, 0.75, -0.3)))) * 0.35;',
+        '  return env + vec3(1.0, 0.96, 0.88) * (sunDisc * 2.2 + softBox);',
+        '}',
+        'void main() {',
+        '  if (uIsCircular > 0.5 && length(vLocalPos.xz) > uClipR) discard;',
+        '  if (uIsSpreading > 0.5 && vDepth < 0.0008) discard;',
+        '  vec3 N = normalize(vWNorm);',
+        '  float microT = uTime * mix(1.4, 0.15, uViscosity_dummy_zero: 0.0);',
+        '  float tFlow = uTime * mix(1.3, 0.25, uVisc);',
+        '  float nx = (fbm(vWPos.xz * 9.5 + vec2(tFlow * 0.4, -tFlow * 0.3)) - 0.5);',
+        '  float nz = (fbm(vWPos.xz * 9.5 + vec2(-tFlow * 0.35, tFlow * 0.45) + 7.3) - 0.5);',
+        '  float rippleAmt = mix(0.065, 0.015, uVisc) * (0.35 + clamp(vFoam * 1.5, 0.0, 1.0));',
+        '  N = normalize(N + vec3(nx, 0.0, nz) * rippleAmt);',
+        '  vec3 I = normalize(vWPos - cameraPosition);',
+        '  vec3 V = -I;',
+        '  vec3 R_refl = reflect(I, N);',
+        '  vec3 R_refr = refract(I, N, mix(1.0/1.333, 1.0/1.49, uVisc));',
+        '  float depth = max(0.008, vDepth);',
+        '  float hitT = clamp(depth / max(0.15, -R_refr.y), 0.01, 0.65);',
+        '  vec2 floorXZ = vWPos.xz + R_refr.xz * hitT;',
+        '  float stoneTex = 0.14 + 0.10 * fbm(floorXZ * 14.0) + 0.04 * noise2(floorXZ * 48.0);',
+        '  vec3 bedCol = uIsSpreading > 0.5 ? vec3(0.16, 0.17, 0.19) * (0.85 + 0.3 * stoneTex) : vec3(0.24, 0.27, 0.30) * (0.7 + stoneTex * 1.4);',
+        '  float caust = mix(caustics(floorXZ, uTime * 1.15), 0.0, uVisc);',
+        '  bedCol += vec3(0.9, 0.97, 1.0) * caust * (0.55 + 0.45 * clamp(1.0 - depth * 1.5, 0.0, 1.0));',
+        '  vec3 trans = exp(-uAbsorb * depth * mix(1.4, 1.9, uVisc));',
+        '  vec3 refrCol = mix(uTint * 0.35, bedCol * trans, 0.85);',
+        '  if (uVisc > 0.45) refrCol = mix(uTint * 0.85, vec3(0.45, 0.16, 0.02), clamp(depth * 9.0, 0.0, 0.85));',
+        '  float F0 = mix(0.02, 0.04, uVisc);',
+        '  float fres = F0 + (1.0 - F0) * pow(1.0 - max(0.0, dot(N, V)), 5.0);',
+        '  vec3 envCol = sampleEnv(R_refl);',
+        '  vec3 L = normalize(vec3(0.55, 0.82, 0.38));',
+        '  vec3 H = normalize(L + V);',
+        '  float spec = pow(max(0.0, dot(N, H)), mix(360.0, 72.0, uVisc * 0.65));',
+        '  float sss = pow(clamp(dot(V, -L + N * 0.5), 0.0, 1.0), 3.0) * mix(0.18, 0.55, uVisc);',
+        '  vec3 col = mix(refrCol, envCol, clamp(fres, 0.0, 0.96)) + uTint * (sss + uGlow);',
+        '  float bubbleN = fbm(vWPos.xz * 28.0 + uTime * 0.6);',
+        '  float foamMask = clamp((vFoam - 0.10) * (0.6 + bubbleN * 0.85), 0.0, 0.95) * (1.0 - uVisc * 0.92);',
+        '  col = mix(col, vec3(0.92, 0.96, 0.99), foamMask);',
+        '  col += vec3(1.0, 0.97, 0.92) * spec * mix(2.4, 1.3, uVisc);',
+        '  float alpha = uIsSpreading > 0.5 ? smoothstep(0.0008, 0.006, vDepth) * mix(0.72, 0.98, 1.0 - trans.r * 0.5 + fres) : mix(0.86, 0.99, fres + foamMask * 0.5);',
+        '  gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.99));',
+        '}'
+      ].join('\n').replace('uViscosity_dummy_zero: 0.0', '0.0')
+    });
+
+    const waterMesh = new THREE.Mesh(waterGeo, fluidMat);
+    waterMesh.position.y = isSpreading ? 0.002 : curWaterY;
+    waterGroup.add(waterMesh);
+
+    // 1C. Realistic Clear Refractive Stream + Movable Tilting Pitcher
+    const streamUniforms = {
+      uTime: { value: 0 },
+      uTint: { value: fluidColor },
+      uAbsorb: { value: absorbVec },
+      uGlow: { value: glow ? 0.75 : 0.0 },
+      uVisc: { value: viscosity }
+    };
+    const streamMat = new THREE.ShaderMaterial({
+      uniforms: streamUniforms, transparent: true, side: THREE.DoubleSide,
+      vertexShader: 'varying vec2 vUv; varying vec3 vWNorm; varying vec3 vWPos; void main(){ vUv=uv; vec4 wp=modelMatrix*vec4(position,1.0); vWPos=wp.xyz; vWNorm=normalize(mat3(modelMatrix)*normal); gl_Position=projectionMatrix*viewMatrix*wp; }',
+      fragmentShader: [
+        'uniform float uTime; uniform vec3 uTint; uniform vec3 uAbsorb; uniform float uGlow; uniform float uVisc;',
+        'varying vec2 vUv; varying vec3 vWNorm; varying vec3 vWPos;',
+        'void main(){',
+        '  vec3 N = normalize(vWNorm); vec3 V = normalize(cameraPosition - vWPos);',
+        '  float fres = 0.02 + 0.98 * pow(1.0 - max(0.0, dot(N, V)), 4.0);',
+        '  float sp = mix(14.0, 3.8, uVisc);',
+        '  float turb = sin(vUv.y * 42.0 + uTime * sp + sin(vUv.x * 16.0)) * 0.5 + 0.5;',
+        '  vec3 H = normalize(normalize(vec3(0.55, 0.82, 0.38)) + V);',
+        '  float spec = pow(max(0.0, dot(N, H)), 140.0);',
+        '  vec3 body = uVisc > 0.45 ? mix(uTint, vec3(0.55, 0.22, 0.02), 0.35) : mix(vec3(0.75, 0.92, 0.98), uTint, 0.42);',
+        '  vec3 col = mix(body, vec3(0.92, 0.97, 1.0), fres * 0.85 + turb * (1.0 - uVisc) * 0.25) + vec3(1.0) * spec * 1.8 + uTint * uGlow;',
+        '  float alpha = mix(0.32 + fres * 0.58 + turb * 0.14, 0.88, uVisc);',
+        '  gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.96));',
+        '}'
+      ].join('\n')
+    });
+
+    let pourSourceEnt = null, pourCustomEnt = null, streamMesh = null;
+    const STREAM_SEGS = 26, RAD_SEGS = 12;
+    const streamGeo = new THREE.CylinderGeometry(1, 1, 1, RAD_SEGS, STREAM_SEGS, true);
+    const streamBasePos = streamGeo.attributes.position.array.slice();
+    let impactLocal = new THREE.Vector3(0, curWaterY, 0);
+
+    if (isPouring) {
+      let initSpoutWorld = waterGroup.position.clone().add(new THREE.Vector3(isSpreading ? 0.12 : radius * 0.62, isSpreading ? 0.65 : vesselH + 0.52, 0));
+      if (typeof opts.pour_from === 'string') {
+        pourCustomEnt = APP.findEntity?.(opts.pour_from);
+        const info = getEntityBounds(pourCustomEnt);
+        if (info) { initSpoutWorld.copy(info.center); initSpoutWorld.y = info.box.min.y + info.size.y * 0.35; }
+      } else if (Array.isArray(opts.pour_from) && opts.pour_from.length === 3) {
+        initSpoutWorld.set(opts.pour_from[0], opts.pour_from[1], opts.pour_from[2]);
+      } else if (!attachInfo && opts.movable_source !== false) {
+        const pitcherG = new THREE.Group();
+        pitcherG.name = `${labelFluid}_Pitcher`;
+        const pMat = isHoney
+          ? new THREE.MeshPhysicalMaterial({ color: 0xfef3c7, transmission: 0.78, roughness: 0.10, ior: 1.5 })
+          : new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.86, roughness: 0.20 });
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.072, 0.17, 20), pMat);
+        const spout = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.085, 16), pMat);
+        spout.rotation.z = Math.PI * 0.38; spout.position.set(-0.074, 0.05, 0);
+        const handle = new THREE.Mesh(new THREE.TorusGeometry(0.048, 0.008, 10, 20, Math.PI), pMat);
+        handle.rotation.z = -Math.PI / 2; handle.position.set(0.068, 0.0, 0);
+        pitcherG.add(body, spout, handle);
+        pitcherG.position.copy(initSpoutWorld).add(new THREE.Vector3(0.09, 0.03, 0));
+        pitcherG.rotation.z = 0.52;
+        APP.scene.add(pitcherG);
+        pourSourceEnt = APP.registerEntity(pitcherG, {
+          name: `${labelFluid} Pitcher`,
+          category: 'tool',
+          grabbable: true,
+          holdable: true,
+          physics: { enabled: false },
+          onUpdate: function () {
+            if (!waterGroup.parent) APP.removeEntity?.(pourSourceEnt, false);
+          }
+        });
+      }
+      streamMesh = new THREE.Mesh(streamGeo, streamMat);
+      streamMesh.frustumCulled = false;
+      waterGroup.add(streamMesh);
+    } else if (isWaterfall) {
+      const wfW = radius * 1.05, wfH = 1.15;
+      const wfGeo = new THREE.PlaneGeometry(wfW, wfH, 18, 22);
+      const pAttr = wfGeo.attributes.position;
+      for (let i = 0; i < pAttr.count; i++) {
+        const yn = (pAttr.getY(i) + wfH * 0.5) / wfH;
+        pAttr.setZ(i, Math.pow(1 - yn, 1.5) * 0.38);
+      }
+      wfGeo.computeVertexNormals();
+      const wfMesh = new THREE.Mesh(wfGeo, streamMat);
+      wfMesh.position.set(0, curWaterY + wfH * 0.45, -radius * 0.55);
+      waterGroup.add(wfMesh);
+      impactLocal.set(0, curWaterY, -radius * 0.2);
+    }
+
+    // 1D. Crisp Refractive Splash Droplets + Aerated Mist
+    const DROP_COUNT = isHoney ? 24 : 220;
+    const dropPos = new Float32Array(DROP_COUNT * 3);
+    const dropVel = Array.from({ length: DROP_COUNT }, () => new THREE.Vector3());
+    const dropLife = new Float32Array(DROP_COUNT);
+    const dropSize = new Float32Array(DROP_COUNT);
+    const dropGeo = new THREE.BufferGeometry();
+    dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+    dropGeo.setAttribute('aSize', new THREE.BufferAttribute(dropSize, 1));
+    dropGeo.setAttribute('aLife', new THREE.BufferAttribute(dropLife, 1));
+    const dropPts = new THREE.Points(dropGeo, new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false,
+      uniforms: { uCol: { value: isHoney ? fluidColor : new THREE.Color(0xeef8ff) }, uPx: { value: window.devicePixelRatio || 1 } },
+      vertexShader: 'attribute float aSize; attribute float aLife; uniform float uPx; varying float vLife; void main(){ vLife=aLife; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=aLife>0.01?clamp((aSize*uPx)/max(0.25,-mv.z),1.5,10.0):0.0; gl_Position=projectionMatrix*mv; }',
+      fragmentShader: 'uniform vec3 uCol; varying float vLife; void main(){ vec2 p=gl_PointCoord-0.5; float r=dot(p,p)*4.0; if(r>1.0)discard; float spec=smoothstep(0.3, 0.0, length(p-vec2(-0.15,-0.15))); gl_FragColor=vec4(uCol+spec*0.5, (1.0-r)*clamp(vLife*1.4,0.0,0.82)); }'
+    }));
+    dropPts.frustumCulled = false;
+    waterGroup.add(dropPts);
+    let nextDrop = 0;
+
+    function emitSplash(lx, ly, lz, strength) {
+      if (isHoney && strength < 0.9) return;
+      const cnt = isHoney ? 1 : Math.min(14, Math.ceil(strength * 8));
+      for (let i = 0; i < cnt; i++) {
+        const idx = nextDrop; nextDrop = (nextDrop + 1) % DROP_COUNT;
+        dropPos[idx * 3] = lx + (Math.random() - 0.5) * 0.04;
+        dropPos[idx * 3 + 1] = ly + 0.012;
+        dropPos[idx * 3 + 2] = lz + (Math.random() - 0.5) * 0.04;
+        const isMist = !isHoney && Math.random() < 0.35;
+        const spread = (isCup ? 0.28 : 0.78) * (isMist ? 1.45 : 1.0);
+        dropVel[idx].set(
+          (Math.random() - 0.5) * spread,
+          (isMist ? 0.25 + Math.random() * 0.45 : 0.55 + Math.random() * 1.1) * strength * (isHoney ? 0.4 : 1.0),
+          (Math.random() - 0.5) * spread
+        );
+        dropLife[idx] = isMist ? 0.65 + Math.random() * 0.4 : 0.38 + Math.random() * 0.28;
+        dropSize[idx] = isMist ? 16.0 : (isCup ? 7.0 : 10.0);
+      }
+    }
+
+    function disturbGrid(lx, lz, amp, radCells = 2) {
+      const gx = Math.round((lx / SIZE + 0.5) * (GRID - 1));
+      const gz = Math.round((lz / SIZE + 0.5) * (GRID - 1));
+      if (gx < 1 || gx >= GRID - 1 || gz < 1 || gz >= GRID - 1) return;
+      if (isCircular && Math.hypot(lx, lz) > curR * 0.96) return;
+      for (let dz = -radCells; dz <= radCells; dz++) {
+        for (let dx = -radCells; dx <= radCells; dx++) {
+          const nx = gx + dx, nz = gz + dz;
+          if (nx < 1 || nx >= GRID - 1 || nz < 1 || nz >= GRID - 1) continue;
+          const d = Math.hypot(dx, dz);
+          if (d <= radCells + 0.2) {
+            const w = Math.exp(-(d * d) / (radCells * 0.9 + 0.3));
+            const idx = nz * GRID + nx;
+            sVel[idx] += amp * w;
+            sFoam[idx] = Math.min(1.0, sFoam[idx] + Math.abs(amp) * 28.0 * w);
+          }
+        }
+      }
+    }
+
+    const tmpLocal = new THREE.Vector3(), tmpStart = new THREE.Vector3(), tmpDir = new THREE.Vector3();
+    const tmpP0 = new THREE.Vector3(), tmpP1 = new THREE.Vector3(), tmpT = new THREE.Vector3(), tmpN = new THREE.Vector3(), tmpB = new THREE.Vector3();
+    const prevPos = waterGroup.position.clone(), prevHands = new Map(), prevEntPos = new Map(), tmpBox = new THREE.Box3(), tmpC = new THREE.Vector3(), tmpSz = new THREE.Vector3();
+    let dropTick = 0;
+
+    // Register interactive pointer target (mouse/touch wakes & splashes)
+    interactives.push({
+      type: 'water',
+      group: waterGroup,
+      mesh: waterMesh,
+      onPointerHit: (worldPt, worldVel, isClick) => {
+        tmpLocal.copy(worldPt);
+        waterGroup.worldToLocal(tmpLocal);
+        const spd = worldVel.length();
+        if (isClick || spd > 0.002) {
+          const amp = isClick ? -0.016 : -Math.min(0.014, spd * 0.35);
+          disturbGrid(tmpLocal.x, tmpLocal.z, amp, isClick ? 3 : 2);
+          if (isClick || spd > 0.025) emitSplash(tmpLocal.x, curWaterY, tmpLocal.z, isClick ? 0.9 : Math.min(1.1, spd * 14.0));
+        }
+      }
+    });
+
+    function updateParabolicStream(now) {
+      if (!streamMesh) return;
+      let spoutVelX = 0, spoutVelZ = 0;
+      if (pourSourceEnt?.group?.parent) {
+        tmpStart.set(-0.088, 0.046, 0);
+        pourSourceEnt.group.localToWorld(tmpStart);
+        tmpDir.set(-1.0, -0.35, 0).applyQuaternion(pourSourceEnt.group.quaternion).normalize();
+        waterGroup.worldToLocal(tmpStart);
+        spoutVelX = tmpDir.x * 0.48;
+        spoutVelZ = tmpDir.z * 0.48;
+      } else if (pourCustomEnt?.group?.parent) {
+        const info = getEntityBounds(pourCustomEnt);
+        if (info) {
+          tmpStart.copy(info.center);
+          tmpStart.y = info.box.min.y + info.size.y * 0.35;
+          waterGroup.worldToLocal(tmpStart);
+          spoutVelX = -tmpStart.x * 0.42; spoutVelZ = -tmpStart.z * 0.42;
+        }
+      } else {
+        tmpStart.set(isSpreading ? 0.12 : radius * 0.58, isSpreading ? 0.65 : vesselH + 0.50, 0);
+        spoutVelX = -tmpStart.x * 0.42; spoutVelZ = -tmpStart.z * 0.42;
+      }
+
+      const fallH = Math.max(0.06, tmpStart.y - curWaterY);
+      const tFlight = Math.sqrt((2.0 * fallH) / 9.8);
+      const endX = tmpStart.x + spoutVelX * tFlight;
+      const endZ = tmpStart.z + spoutVelZ * tFlight;
+      impactLocal.set(endX, curWaterY, endZ);
+
+      const posAttr = streamGeo.attributes.position;
+      const baseR = Math.min(0.022, radius * 0.085) * (isHoney ? 0.72 : 1.0);
+      const coilAmp = isHoney ? 0.020 : 0.0015;
+      const coilFreq = isHoney ? 9.0 : 14.0;
+
+      for (let iy = 0; iy <= STREAM_SEGS; iy++) {
+        const t = iy / STREAM_SEGS;
+        const cx = THREE.MathUtils.lerp(tmpStart.x, endX, t) + Math.sin(now * coilFreq - t * 6.5) * coilAmp * Math.pow(t, 2.2);
+        const cz = THREE.MathUtils.lerp(tmpStart.z, endZ, t) + Math.cos(now * coilFreq - t * 6.5) * coilAmp * Math.pow(t, 2.2);
+        const cy = tmpStart.y - 0.5 * 9.8 * Math.pow(t * tFlight, 2.0);
+        tmpP0.set(cx, cy, cz);
+
+        const t2 = Math.min(1.0, t + 0.02);
+        tmpP1.set(THREE.MathUtils.lerp(tmpStart.x, endX, t2), tmpStart.y - 0.5 * 9.8 * Math.pow(t2 * tFlight, 2.0), THREE.MathUtils.lerp(tmpStart.z, endZ, t2));
+        tmpT.subVectors(tmpP1, tmpP0).normalize();
+        if (tmpT.lengthSq() < 0.001) tmpT.set(0, -1, 0);
+        tmpN.set(0, 0, 1).cross(tmpT);
+        if (tmpN.lengthSq() < 0.001) tmpN.set(1, 0, 0).cross(tmpT);
+        tmpN.normalize();
+        tmpB.crossVectors(tmpT, tmpN).normalize();
+
+        // Mass conservation thinning: r ~ 1 / sqrt(speed)
+        const thin = 1.0 / Math.sqrt(1.0 + t * (isHoney ? 1.8 : 3.2));
+        const neckScale = isHoney
+          ? (thin + Math.pow(t, 5.0) * 0.45)
+          : (thin + Math.sin(t * 26.0 - now * 18.0) * 0.09 * t);
+        const r = Math.max(0.0035, baseR * neckScale);
+
+        for (let ir = 0; ir <= RAD_SEGS; ir++) {
+          const idx = (iy * (RAD_SEGS + 1) + ir) * 3;
+          const bx = streamBasePos[idx], bz = streamBasePos[idx + 2];
+          posAttr.array[idx] = tmpP0.x + (tmpN.x * bx + tmpB.x * bz) * r;
+          posAttr.array[idx + 1] = tmpP0.y + (tmpN.y * bx + tmpB.y * bz) * r;
+          posAttr.array[idx + 2] = tmpP0.z + (tmpN.z * bx + tmpB.z * bz) * r;
+        }
+      }
+      posAttr.needsUpdate = true;
+      streamGeo.computeVertexNormals();
+    }
+
+    const ent = APP.registerEntity(waterGroup, {
+      name: opts.name || waterGroup.name,
+      category: 'world_fx',
+      grabbable: holdable,
+      holdable: holdable,
+      physics: { enabled: holdable, gravity: holdable },
+      onUpdate: function (dt) {
+        const delta = Math.min(0.033, Math.max(0.004, dt || 0.016));
+        const now = performance.now() * 0.001;
+        fluidUniforms.uTime.value = now;
+        streamUniforms.uTime.value = now;
+        fluidUniforms.uFloorY.value = waterGroup.position.y + 0.025;
+
+        if (isPouring) updateParabolicStream(now);
+
+        if (isPouring || isWaterfall || isFountain) {
+          const hitInside = !isCircular || Math.hypot(impactLocal.x, impactLocal.z) <= curR * 0.96;
+          if (isPouring && !isSpreading && hitInside && fillLevel < maxFill && !attachInfo) {
+            fillLevel = Math.min(maxFill, fillLevel + delta * (isHoney ? 0.028 : 0.055));
+            curWaterY = THREE.MathUtils.lerp(minY, maxY, fillLevel);
+            curR = innerProfileFn(curWaterY);
+            waterMesh.position.y = curWaterY;
+            fluidUniforms.uClipR.value = curR * 0.99;
+            fluidUniforms.uBaseY.value = curWaterY;
+          }
+          dropTick += delta;
+          if (dropTick > (isHoney ? 0.08 : 0.04)) {
+            dropTick = 0;
+            if (isSpreading) {
+              const gx = Math.round((impactLocal.x / SIZE + 0.5) * (GRID - 1));
+              const gz = Math.round((impactLocal.z / SIZE + 0.5) * (GRID - 1));
+              if (gx >= 2 && gx < GRID - 2 && gz >= 2 && gz < GRID - 2) {
+                sH[gz * GRID + gx] = Math.min(0.14, sH[gz * GRID + gx] + (isHoney ? 0.012 : 0.018));
+                curWaterY = sH[gz * GRID + gx];
+              }
+            }
+            if (hitInside || isSpreading) {
+              disturbGrid(impactLocal.x, impactLocal.z, isFountain ? 0.014 : (isHoney ? 0.003 : -0.009), 2);
+              emitSplash(impactLocal.x, curWaterY, impactLocal.z, isFountain ? 1.5 : (isCup ? 0.45 : 0.85));
+            }
+          }
+        }
+
+        // Slosh when moving bowl/cup
+        if (!isSpreading && waterGroup.position.distanceTo(prevPos) > 0.002) {
+          disturbGrid(-Math.sign(waterGroup.position.x - prevPos.x) * curR * 0.45, -Math.sign(waterGroup.position.z - prevPos.z) * curR * 0.45, isHoney ? -0.002 : -0.008, 3);
+          prevPos.copy(waterGroup.position);
+        }
+
+        // VR Hand & Controller Interaction
+        for (const [hk, h] of Object.entries(APP.hands || {})) {
+          if (!h || !h.active) continue;
+          const points = [];
+          if (h.isHand && h.fingerTips?.index) points.push([hk + '_idx', h.fingerTips.index]);
+          if (h.pos) points.push([hk + '_palm', h.pos]);
+          for (const [key, hp] of points) {
+            tmpLocal.copy(hp); waterGroup.worldToLocal(tmpLocal);
+            const last = prevHands.get(key), spd = last ? tmpLocal.distanceTo(last) / delta : 0;
+            prevHands.set(key, tmpLocal.clone());
+            if (tmpLocal.y < curWaterY + 0.12 && tmpLocal.y > -0.10 && spd > 0.08) {
+              disturbGrid(tmpLocal.x, tmpLocal.z, isHoney ? -0.004 : -Math.min(0.018, spd * 0.012), 2);
+              if (spd > 0.35) emitSplash(tmpLocal.x, curWaterY, tmpLocal.z, Math.min(1.2, spd * 0.55));
+            }
+          }
+        }
+
+        // Scene Entity Coupling: Obstacles + Splash Wakes + Buoyancy!
+        sObs.fill(0);
+        const waterTopWorldY = waterGroup.position.y + curWaterY;
+        for (const other of APP.entities || []) {
+          if (!other || other === ent || other === pourSourceEnt || other === pourCustomEnt || !other.group || other.category === 'world_fx' || other.category === 'board') continue;
+          tmpBox.setFromObject(other.group);
+          if (tmpBox.isEmpty()) continue;
+          tmpBox.getCenter(tmpC); tmpBox.getSize(tmpSz);
+
+          if (tmpBox.min.y < waterTopWorldY + 0.04 && tmpBox.max.y > waterGroup.position.y - 0.05) {
+            // Mark grid cells occupied by object if spreading
+            if (isSpreading) {
+              const x0 = Math.max(1, Math.floor(((tmpBox.min.x - waterGroup.position.x) / SIZE + 0.5) * (GRID - 1)));
+              const x1 = Math.min(GRID - 2, Math.ceil(((tmpBox.max.x - waterGroup.position.x) / SIZE + 0.5) * (GRID - 1)));
+              const z0 = Math.max(1, Math.floor(((tmpBox.min.z - waterGroup.position.z) / SIZE + 0.5) * (GRID - 1)));
+              const z1 = Math.min(GRID - 2, Math.ceil(((tmpBox.max.z - waterGroup.position.z) / SIZE + 0.5) * (GRID - 1)));
+              for (let gz = z0; gz <= z1; gz++) for (let gx = x0; gx <= x1; gx++) sObs[gz * GRID + gx] = 1;
+            }
+
+            // Object wake when moving in water
+            tmpLocal.copy(tmpC); waterGroup.worldToLocal(tmpLocal);
+            const prevE = prevEntPos.get(other.id);
+            const eSpd = prevE ? tmpLocal.distanceTo(prevE) / delta : 0;
+            prevEntPos.set(other.id, tmpLocal.clone());
+            if (eSpd > 0.06 && Math.hypot(tmpLocal.x, tmpLocal.z) < radius * 1.05) {
+              disturbGrid(tmpLocal.x, tmpLocal.z, -Math.min(0.016, eSpd * 0.014), 3);
+              if (eSpd > 0.45) emitSplash(tmpLocal.x, curWaterY, tmpLocal.z, Math.min(1.1, eSpd * 0.5));
+            }
+
+            // Gentle Archimedes Buoyancy on physics-enabled objects inside pool
+            if (!isSpreading && other.physics?.enabled && other.velocity && Math.hypot(tmpLocal.x, tmpLocal.z) < radius * 0.95) {
+              const subm = THREE.MathUtils.clamp((waterTopWorldY - tmpBox.min.y) / Math.max(0.05, tmpSz.y), 0, 1);
+              if (subm > 0) {
+                other.velocity.y += subm * 12.5 * delta;
+                other.velocity.multiplyScalar(1.0 - subm * 0.06);
+              }
+            }
+          }
+        }
+
+        if (isSpreading) {
+          // 2D Viscous/Shallow Flood Solver
+          const spreadRate = isHoney ? 0.045 : (isLava ? 0.030 : 0.22);
+          const minSurf = isHoney ? 0.0032 : 0.0001;
+          const damp = isHoney ? 0.78 : 0.965;
+          sNext.set(sH);
+          const dirs = [-1, 1, -GRID, GRID];
+          for (let z = 1; z < GRID - 1; z++) {
+            for (let x = 1; x < GRID - 1; x++) {
+              const idx = z * GRID + x;
+              const h0 = sH[idx];
+              if (h0 <= 0.0003) { sFoam[idx] *= 0.88; continue; }
+              let outSum = 0;
+              for (let d = 0; d < 4; d++) {
+                const ni = idx + dirs[d];
+                if (sObs[ni]) continue;
+                const diff = h0 - sH[ni];
+                if (diff > minSurf) {
+                  const flux = Math.min(h0 * 0.23, (diff - minSurf) * spreadRate);
+                  sNext[idx] -= flux;
+                  sNext[ni] += flux;
+                  outSum += flux;
+                }
+              }
+              sFoam[idx] = THREE.MathUtils.lerp(sFoam[idx], Math.min(1.0, outSum * 130.0), 0.24);
+            }
+          }
+          for (let i = 0; i < N; i++) {
+            sVel[i] = (sVel[i] + (sNext[i] - sH[i])) * damp;
+            sH[i] = Math.max(0, sNext[i] + sVel[i] * 0.16);
+            sDepth[i] = sH[i];
+          }
+        } else {
+          // 2D Cartesian Shallow-Water Wave Equation (Artifact-Free Ripples & Reflections)
+          const c2 = isHoney ? 0.08 : isLava ? 0.06 : 0.38;
+          const damp = isHoney ? 0.89 : isLava ? 0.86 : 0.991;
+          const maxH = isHoney ? 0.015 : (isBowl ? 0.025 : 0.065);
+          const rLimit = curR * 0.98;
+          for (let z = 1; z < GRID - 1; z++) {
+            const lz = (z / (GRID - 1) - 0.5) * SIZE;
+            for (let x = 1; x < GRID - 1; x++) {
+              const idx = z * GRID + x;
+              if (isCircular) {
+                const lx = (x / (GRID - 1) - 0.5) * SIZE;
+                if (Math.hypot(lx, lz) > rLimit) { sH[idx] = 0; sVel[idx] = 0; continue; }
+              }
+              const avg = (sH[idx - 1] + sH[idx + 1] + sH[idx - GRID] + sH[idx + GRID]) * 0.25;
+              sVel[idx] = (sVel[idx] + (avg - sH[idx]) * c2) * damp;
+              sNext[idx] = THREE.MathUtils.clamp(sH[idx] + sVel[idx], -maxH, maxH);
+              const slope = Math.abs(sH[idx + 1] - sH[idx - 1]) + Math.abs(sH[idx + GRID] - sH[idx - GRID]);
+              sFoam[idx] = THREE.MathUtils.lerp(sFoam[idx], Math.min(1.0, slope * 14.0 + Math.abs(sVel[idx]) * 18.0), 0.18);
+            }
+          }
+          // Reflective basin walls
+          for (let i = 0; i < GRID; i++) {
+            sNext[i] = sNext[GRID + i];
+            sNext[(GRID - 1) * GRID + i] = sNext[(GRID - 2) * GRID + i];
+            sNext[i * GRID] = sNext[i * GRID + 1];
+            sNext[i * GRID + GRID - 1] = sNext[i * GRID + GRID - 2];
+          }
+          for (let i = 0; i < N; i++) {
+            sH[i] = sNext[i];
+            sDepth[i] = curWaterY + sH[i];
+          }
+        }
+
+        const posA = waterGeo.attributes.position;
+        for (let i = 0; i < N; i++) posA.setY(i, sH[i]);
+        posA.needsUpdate = true;
+        waterGeo.computeVertexNormals();
+        waterGeo.attributes.aFoam.needsUpdate = true;
+        waterGeo.attributes.aDepth.needsUpdate = true;
+
+        for (let i = 0; i < DROP_COUNT; i++) {
+          if (dropLife[i] <= 0) { dropPos[i * 3 + 1] = -99; continue; }
+          dropLife[i] -= delta; dropVel[i].y -= 8.5 * delta;
+          dropPos[i * 3] += dropVel[i].x * delta; dropPos[i * 3 + 1] += dropVel[i].y * delta; dropPos[i * 3 + 2] += dropVel[i].z * delta;
+          if (dropPos[i * 3 + 1] < curWaterY) dropLife[i] = 0;
+        }
+        dropGeo.attributes.position.needsUpdate = true;
+        dropGeo.attributes.aLife.needsUpdate = true;
+      }
+    });
+
+    APP.lastEntityId = ent.id;
+    APP.emit?.('entity:created', ent);
+    return { ok: true, id: ent.id, name: ent.name, message: `Created ${ent.name}.` };
+  }
+
+  // ====================================================================
+  // 2. REALISTIC GRANULAR ENGINE (Sand, Snow, Wet Sand, Gold, Ash)
+  //    92x92 Avalanche Heightfield + 6,000 Falling & Surface-Rolling
+  //    Micro-Grains + Hand/Mouse Trench Carving + Grabbable VR Emitter
+  // ====================================================================
+  function createGranularSimulation(opts = {}) {
+    const matType = String(opts.material || 'sand').toLowerCase();
+    const isSnow = matType === 'snow';
+    const isWetSand = matType === 'wet_sand' || matType === 'mud' || matType === 'clay';
+    const isGold = matType === 'gold';
+    const isGravel = matType === 'gravel';
+    const isAsh = matType === 'ash';
+
+    const defaultCol = isGold ? 0xd4a017 : isSnow ? 0xeef4fa : isWetSand ? 0x6f4e32 : isAsh ? 0x475569 : isGravel ? 0x64748b : 0xc9a978;
+    const baseCol = parseHexColor(opts.color, defaultCol);
+    const targetEnt = opts.pour_on_target ? APP.findEntity?.(opts.pour_on_target) : null;
+    const fromEnt = opts.pour_from_entity ? APP.findEntity?.(opts.pour_from_entity) : null;
+    const fromInfo = getEntityBounds(fromEnt);
+
+    const sandGroup = new THREE.Group();
+    sandGroup.name = `Granular_${matType}_Sim`;
+
+    const SIZE = Number(opts.size) || 2.20;
+    const GRID = 92;
+    const CELL = SIZE / (GRID - 1);
+    const slopeFactor = isSnow ? 1.25 : isWetSand ? 1.05 : isGravel ? 0.85 : isAsh ? 0.52 : 0.66;
+    const MAX_SLOPE = CELL * slopeFactor;
+    const pileH = new Float32Array(GRID * GRID);
+    const pileAO = new Float32Array(GRID * GRID);
+
+    // Subtle natural starter sand bed so dunes sculpt immediately
+    const cMid = (GRID - 1) * 0.5;
+    for (let z = 0; z < GRID; z++) {
+      for (let x = 0; x < GRID; x++) {
+        const d = Math.hypot(x - cMid, z - cMid) / (GRID * 0.45);
+        if (d < 1.0) pileH[z * GRID + x] = Math.pow(1.0 - d, 1.8) * 0.06;
+      }
+    }
+
+    const pileGeo = new THREE.PlaneGeometry(SIZE, SIZE, GRID - 1, GRID - 1);
+    pileGeo.rotateX(-Math.PI / 2);
+    pileGeo.setAttribute('aAO', new THREE.BufferAttribute(pileAO, 1));
+
+    const pileMat = new THREE.MeshStandardMaterial({
+      color: baseCol,
+      roughness: isGold ? 0.28 : isWetSand ? 0.45 : isSnow ? 0.88 : 0.98,
+      metalness: isGold ? 0.85 : 0.0
+    });
+    pileMat.customProgramCacheKey = () => `nxr_gran_v4_${matType}`;
+    pileMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uIsSnow = { value: isSnow ? 1.0 : 0.0 };
+      shader.uniforms.uIsWet = { value: isWetSand ? 1.0 : 0.0 };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float aAO; varying vec3 vGranWPos; varying float vGranAO;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGranWPos = (modelMatrix * vec4(position, 1.0)).xyz; vGranAO = aAO;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', [
+          '#include <common>',
+          'uniform float uIsSnow; uniform float uIsWet;',
+          'varying vec3 vGranWPos; varying float vGranAO;',
+          'float gHash(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.5); return fract(p.x * p.y); }'
+        ].join('\n'))
+        .replace('#include <map_fragment>', [
+          '#include <map_fragment>',
+          'float fine = gHash(floor(vGranWPos.xz * 750.0 + vGranWPos.y * 120.0));',
+          'float med = gHash(floor(vGranWPos.xz * 240.0));',
+          'float ao = clamp(1.0 - vGranAO * 1.8, 0.55, 1.05);',
+          'if (uIsSnow > 0.5) {',
+          '  vec3 shadowCol = diffuseColor.rgb * vec3(0.76, 0.86, 0.98);',
+          '  diffuseColor.rgb = mix(shadowCol, vec3(0.98, 0.99, 1.0), ao * 0.78 + fine * 0.08);',
+          '} else {',
+          '  diffuseColor.rgb *= ao * (0.86 + fine * 0.16 + med * 0.10);',
+          '}'
+        ].join('\n'))
+        .replace('#include <emissivemap_fragment>', [
+          '#include <emissivemap_fragment>',
+          'vec3 Vg = normalize(cameraPosition - vGranWPos);',
+          'float glint = step(0.993, gHash(floor(vGranWPos.xz * 480.0) + floor(Vg.xz * 18.0)));',
+          'totalEmissiveRadiance += glint * (uIsSnow > 0.5 ? vec3(0.7, 0.85, 1.0) : diffuseColor.rgb * 0.7) * 0.55;'
+        ].join('\n'));
+    };
+
+    const pileMesh = new THREE.Mesh(pileGeo, pileMat);
+    pileMesh.receiveShadow = true; pileMesh.castShadow = true;
+    sandGroup.add(pileMesh);
+
+    // 6,000 Realistic Sub-Millimeter Micro-Grains (Falling + Rolling Down Dunes + Ballistic Splash)
+    const GRAIN_COUNT = Math.min(8000, Math.max(2500, Number(opts.count) || 6000));
+    const gPos = new Float32Array(GRAIN_COUNT * 3);
+    const gVel = new Float32Array(GRAIN_COUNT * 3);
+    const gCol = new Float32Array(GRAIN_COUNT * 3);
+    const gSize = new Float32Array(GRAIN_COUNT);
+    const gState = new Uint8Array(GRAIN_COUNT); // 0=falling, 1=rolling on slope, 2=ballistic splash
+    const gRollTime = new Float32Array(GRAIN_COUNT);
+    const gSeed = new Float32Array(GRAIN_COUNT);
+
+    const basePos = fromInfo ? new THREE.Vector3(fromInfo.center.x, 0, fromInfo.center.z)
+      : targetEnt?.group ? new THREE.Vector3(targetEnt.group.position.x, 0, targetEnt.group.position.z)
+      : resolvePos(opts.position, 1.25);
+    sandGroup.position.copy(basePos);
+    APP.scene.add(sandGroup);
+
+    const tmpC = new THREE.Color();
+    for (let i = 0; i < GRAIN_COUNT; i++) {
+      gPos[i * 3] = (Math.random() - 0.5) * 0.025;
+      gPos[i * 3 + 1] = 0.06 + Math.random() * 1.05;
+      gPos[i * 3 + 2] = (Math.random() - 0.5) * 0.025;
+      gVel[i * 3 + 1] = -0.3 - Math.random() * 0.6;
+      gSize[i] = isGravel ? (8.5 + Math.random() * 5.0) : isSnow ? (5.0 + Math.random() * 4.5) : (2.6 + Math.random() * 2.6);
+      gSeed[i] = Math.random() * 100.0;
+      tmpC.copy(baseCol).offsetHSL((Math.random() - 0.5) * 0.025, (Math.random() - 0.5) * 0.08, (Math.random() - 0.5) * 0.18);
+      gCol[i * 3] = tmpC.r; gCol[i * 3 + 1] = tmpC.g; gCol[i * 3 + 2] = tmpC.b;
+    }
+
+    const grainGeo = new THREE.BufferGeometry();
+    grainGeo.setAttribute('position', new THREE.BufferAttribute(gPos, 3));
+    grainGeo.setAttribute('aCol', new THREE.BufferAttribute(gCol, 3));
+    grainGeo.setAttribute('aSize', new THREE.BufferAttribute(gSize, 1));
+    const grainPts = new THREE.Points(grainGeo, new THREE.ShaderMaterial({
+      transparent: true, depthWrite: true,
+      uniforms: { uPx: { value: window.devicePixelRatio || 1 }, uIsSnow: { value: isSnow ? 1.0 : 0.0 } },
+      vertexShader: 'attribute vec3 aCol; attribute float aSize; uniform float uPx; varying vec3 vCol; void main(){ vCol=aCol; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=clamp((aSize*uPx)/max(0.25,-mv.z), 1.2, 4.5); gl_Position=projectionMatrix*mv; }',
+      fragmentShader: 'uniform float uIsSnow; varying vec3 vCol; void main(){ vec2 c=gl_PointCoord-0.5; float r=dot(c,c)*4.0; if(r>1.0)discard; float shade=mix(0.72, 1.18, clamp(-c.y+0.5, 0.0, 1.0)); gl_FragColor=vec4(vCol*shade, uIsSnow>0.5 ? (1.0-r)*0.9 : 1.0); }'
+    }));
+    grainPts.frustumCulled = false;
+    sandGroup.add(grainPts);
+
+    // Grabbable VR Controller Emitter Funnel
+    let emitterEnt = null;
+    if (!fromEnt && opts.emitter !== false) {
+      const emG = new THREE.Group();
+      emG.name = `${matType}_Emitter`;
+      const funnel = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.082, 0.020, 0.16, 24, 1, true),
+        new THREE.MeshPhysicalMaterial({ color: 0xe2e8f0, transmission: 0.78, roughness: 0.12, ior: 1.48, side: THREE.DoubleSide })
+      );
+      const collar = new THREE.Mesh(
+        new THREE.TorusGeometry(0.082, 0.008, 10, 24),
+        new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.88, roughness: 0.22 })
+      );
+      collar.rotation.x = Math.PI / 2; collar.position.y = 0.08;
+      const nozzle = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.022, 0.016, 0.04, 18),
+        new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.9, roughness: 0.25 })
+      );
+      nozzle.position.y = -0.09;
+      const fillCore = new THREE.Mesh(
+        new THREE.ConeGeometry(0.070, 0.11, 18),
+        new THREE.MeshStandardMaterial({ color: baseCol, roughness: 0.94 })
+      );
+      fillCore.rotation.x = Math.PI; fillCore.position.y = 0.01;
+      emG.add(funnel, collar, nozzle, fillCore);
+      emG.position.copy(basePos).add(new THREE.Vector3(0, 1.08, 0));
+      APP.scene.add(emG);
+
+      emitterEnt = APP.registerEntity(emG, {
+        name: `${matType.charAt(0).toUpperCase() + matType.slice(1)} Emitter`,
+        category: 'tool',
+        grabbable: true,
+        holdable: true,
+        physics: { enabled: false },
+        onUpdate: function () {
+          if (!sandGroup.parent) APP.removeEntity?.(emitterEnt, false);
+        }
+      });
+    }
+
+    const tmpLocal = new THREE.Vector3(), tmpEmPos = new THREE.Vector3(), tmpBox = new THREE.Box3(), tmpCenter = new THREE.Vector3();
+    const prevEmPos = new THREE.Vector3(0, 1.0, 0), emVel = new THREE.Vector3(), prevHands = new Map();
+    let splashPtr = 0;
+
+    function carveAndThrow(lx, lz, vx, vz) {
+      const gx = Math.round((lx / SIZE + 0.5) * (GRID - 1));
+      const gz = Math.round((lz / SIZE + 0.5) * (GRID - 1));
+      if (gx < 2 || gx >= GRID - 2 || gz < 2 || gz >= GRID - 2) return;
+      const centerH = pileH[gz * GRID + gx];
+      if (centerH <= 0.004) return;
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = gx + dx, nz = gz + dz, d = Math.hypot(dx, dz);
+          if (d <= 2.2) {
+            const take = Math.min(pileH[nz * GRID + nx], 0.016 * (1.0 - d / 2.6));
+            pileH[nz * GRID + nx] -= take;
+            const rx = THREE.MathUtils.clamp(nx + Math.sign(dx) * 2, 1, GRID - 2);
+            const rz = THREE.MathUtils.clamp(nz + Math.sign(dz) * 2, 1, GRID - 2);
+            pileH[rz * GRID + rx] += take * 0.72;
+          }
+        }
+      }
+      // Throw physical ballistic sand grains from carved spot!
+      for (let k = 0; k < 24; k++) {
+        const idx = splashPtr; splashPtr = (splashPtr + 1) % GRAIN_COUNT;
+        const i3 = idx * 3;
+        gState[idx] = 2;
+        gPos[i3] = lx + (Math.random() - 0.5) * 0.05;
+        gPos[i3 + 1] = centerH + 0.012;
+        gPos[i3 + 2] = lz + (Math.random() - 0.5) * 0.05;
+        gVel[i3] = vx * 0.45 + (Math.random() - 0.5) * 0.65;
+        gVel[i3 + 1] = 0.45 + Math.random() * 0.65;
+        gVel[i3 + 2] = vz * 0.45 + (Math.random() - 0.5) * 0.65;
+      }
+    }
+
+    interactives.push({
+      type: 'granular',
+      group: sandGroup,
+      mesh: pileMesh,
+      onPointerHit: (worldPt, worldVel, isClick, isDown) => {
+        if (!isClick && !isDown && worldVel.length() < 0.008) return;
+        tmpLocal.copy(worldPt);
+        sandGroup.worldToLocal(tmpLocal);
+        carveAndThrow(tmpLocal.x, tmpLocal.z, worldVel.x * 16.0, worldVel.z * 16.0);
+      }
+    });
+
+    function depositSmooth(gx, gz, amt) {
+      const w0 = amt * 0.44, w1 = amt * 0.14;
+      pileH[gz * GRID + gx] = Math.min(0.62, pileH[gz * GRID + gx] + w0);
+      pileH[gz * GRID + (gx + 1)] = Math.min(0.62, pileH[gz * GRID + (gx + 1)] + w1);
+      pileH[gz * GRID + (gx - 1)] = Math.min(0.62, pileH[gz * GRID + (gx - 1)] + w1);
+      pileH[(gz + 1) * GRID + gx] = Math.min(0.62, pileH[(gz + 1) * GRID + gx] + w1);
+      pileH[(gz - 1) * GRID + gx] = Math.min(0.62, pileH[(gz - 1) * GRID + gx] + w1);
+    }
+
+    const ent = APP.registerEntity(sandGroup, {
+      name: `Granular ${matType}`,
+      category: 'world_fx',
+      grabbable: false,
+      physics: { enabled: false },
+      onUpdate: function (dt) {
+        const delta = Math.min(0.033, Math.max(0.004, dt || 0.016));
+        const now = performance.now() * 0.001;
+
+        if (emitterEnt?.group?.parent) {
+          tmpEmPos.set(0, -0.11, 0);
+          emitterEnt.group.localToWorld(tmpEmPos);
+          sandGroup.worldToLocal(tmpEmPos);
+        } else if (fromEnt?.group?.parent) {
+          const fi = getEntityBounds(fromEnt);
+          if (fi) {
+            tmpEmPos.copy(fi.center);
+            tmpEmPos.y = fi.box.min.y + fi.size.y * 0.25;
+            sandGroup.worldToLocal(tmpEmPos);
+          }
+        } else {
+          tmpEmPos.set(targetEnt ? 0 : Math.sin(now * 0.65) * 0.16, 1.12, targetEnt ? 0 : Math.cos(now * 0.55) * 0.16);
+        }
+        emVel.subVectors(tmpEmPos, prevEmPos).divideScalar(delta).clampLength(0, 2.5);
+        prevEmPos.copy(tmpEmPos);
+
+        const obsBoxes = [];
+        for (const other of APP.entities || []) {
+          if (!other || other === ent || other === fromEnt || other === emitterEnt || !other.group || other.category === 'world_fx' || other.category === 'board') continue;
+          tmpBox.setFromObject(other.group);
+          if (!tmpBox.isEmpty()) {
+            tmpBox.min.sub(sandGroup.position); tmpBox.max.sub(sandGroup.position);
+            obsBoxes.push(tmpBox.clone());
+          }
+        }
+
+        // VR Hand/Controller Sand Carving & Throwing
+        for (const [hk, h] of Object.entries(APP.hands || {})) {
+          if (!h || !h.active) continue;
+          const hp = h.isHand ? h.fingerTips?.index : h.pos;
+          if (!hp) continue;
+          tmpLocal.copy(hp); sandGroup.worldToLocal(tmpLocal);
+          const last = prevHands.get(hk);
+          const hVx = last ? (tmpLocal.x - last.x) / delta : 0;
+          const hVz = last ? (tmpLocal.z - last.z) / delta : 0;
+          prevHands.set(hk, tmpLocal.clone());
+          const gx = Math.round((tmpLocal.x / SIZE + 0.5) * (GRID - 1));
+          const gz = Math.round((tmpLocal.z / SIZE + 0.5) * (GRID - 1));
+          if (gx >= 2 && gx < GRID - 2 && gz >= 2 && gz < GRID - 2 && tmpLocal.y <= pileH[gz * GRID + gx] + 0.08) {
+            carveAndThrow(tmpLocal.x, tmpLocal.z, hVx, hVz);
+          }
+        }
+
+        const grav = isSnow ? 1.85 : isAsh ? 1.2 : 8.8;
+        const depositPerGrain = isSnow ? 0.00055 : 0.00048;
+        const nozzleSpread = isSnow ? 0.055 : 0.018;
+
+        for (let i = 0; i < GRAIN_COUNT; i++) {
+          const i3 = i * 3;
+          const st = gState[i];
+
+          if (st === 1) {
+            // Physically rolling/sliding grain down the dune slope!
+            gRollTime[i] -= delta;
+            const gx = Math.floor((gPos[i3] / SIZE + 0.5) * (GRID - 1));
+            const gz = Math.floor((gPos[i3 + 2] / SIZE + 0.5) * (GRID - 1));
+            if (gx >= 2 && gx < GRID - 2 && gz >= 2 && gz < GRID - 2 && gRollTime[i] > 0) {
+              const idx = gz * GRID + gx;
+              const dhx = (pileH[idx + 1] - pileH[idx - 1]) / (2 * CELL);
+              const dhz = (pileH[idx + GRID] - pileH[idx - GRID]) / (2 * CELL);
+              const slope = Math.hypot(dhx, dhz);
+              gVel[i3] = gVel[i3] * 0.88 - dhx * 1.45 * delta * 60.0;
+              gVel[i3 + 2] = gVel[i3 + 2] * 0.88 - dhz * 1.45 * delta * 60.0;
+              gPos[i3] += gVel[i3] * delta;
+              gPos[i3 + 2] += gVel[i3 + 2] * delta;
+              gPos[i3 + 1] = pileH[idx] + 0.003;
+              if (slope < slopeFactor * 0.35 && gRollTime[i] < 0.2) gRollTime[i] = 0;
+              continue;
+            }
+            if (gx >= 2 && gx < GRID - 2 && gz >= 2 && gz < GRID - 2) {
+              depositSmooth(gx, gz, depositPerGrain);
+            }
+            gState[i] = 0;
+            gPos[i3] = tmpEmPos.x + (Math.random() - 0.5) * nozzleSpread;
+            gPos[i3 + 1] = Math.max(0.08, tmpEmPos.y) - Math.random() * 0.03;
+            gPos[i3 + 2] = tmpEmPos.z + (Math.random() - 0.5) * nozzleSpread;
+            gVel[i3] = emVel.x * 0.55 + (Math.random() - 0.5) * (isSnow ? 0.22 : 0.07);
+            gVel[i3 + 1] = emVel.y * 0.35 - 0.18 - Math.random() * 0.25;
+            gVel[i3 + 2] = emVel.z * 0.55 + (Math.random() - 0.5) * (isSnow ? 0.22 : 0.07);
+            continue;
+          }
+
+          if (isSnow || isAsh) {
+            gVel[i3] += Math.sin(now * 2.4 + gSeed[i]) * 0.42 * delta;
+            gVel[i3 + 2] += Math.cos(now * 2.0 + gSeed[i] * 1.3) * 0.42 * delta;
+            gVel[i3] *= 0.97; gVel[i3 + 2] *= 0.97;
+            gVel[i3 + 1] = Math.max(-0.85, gVel[i3 + 1] - grav * delta);
+          } else {
+            gVel[i3 + 1] -= grav * delta;
+          }
+
+          gPos[i3] += gVel[i3] * delta;
+          gPos[i3 + 1] += gVel[i3 + 1] * delta;
+          gPos[i3 + 2] += gVel[i3 + 2] * delta;
+
+          for (let b = 0; b < obsBoxes.length; b++) {
+            const ob = obsBoxes[b];
+            if (gPos[i3] > ob.min.x && gPos[i3] < ob.max.x && gPos[i3 + 2] > ob.min.z && gPos[i3 + 2] < ob.max.z && gPos[i3 + 1] > ob.min.y && gPos[i3 + 1] < ob.max.y) {
+              ob.getCenter(tmpCenter);
+              gPos[i3 + 1] = ob.max.y + 0.006;
+              gVel[i3] += (gPos[i3] - tmpCenter.x) * 3.0;
+              gVel[i3 + 2] += (gPos[i3 + 2] - tmpCenter.z) * 3.0;
+              gVel[i3 + 1] = Math.abs(gVel[i3 + 1]) * (isSnow ? 0.05 : 0.22);
+            }
+          }
+
+          const gx = Math.floor((gPos[i3] / SIZE + 0.5) * (GRID - 1));
+          const gz = Math.floor((gPos[i3 + 2] / SIZE + 0.5) * (GRID - 1));
+          const inB = gx >= 2 && gx < GRID - 2 && gz >= 2 && gz < GRID - 2;
+          const fY = inB ? pileH[gz * GRID + gx] : 0;
+
+          if (gPos[i3 + 1] <= fY) {
+            if (inB && !isSnow && Math.random() < 0.42) {
+              // Transition to surface-rolling grain sliding down the dune slope!
+              gState[i] = 1;
+              gRollTime[i] = 0.22 + Math.random() * 0.35;
+              gPos[i3 + 1] = fY + 0.003;
+              gVel[i3] *= 0.4; gVel[i3 + 2] *= 0.4; gVel[i3 + 1] = 0;
+            } else {
+              if (inB) depositSmooth(gx, gz, depositPerGrain);
+              gState[i] = 0;
+              gPos[i3] = tmpEmPos.x + (Math.random() - 0.5) * nozzleSpread;
+              gPos[i3 + 1] = Math.max(0.08, tmpEmPos.y) - Math.random() * 0.03;
+              gPos[i3 + 2] = tmpEmPos.z + (Math.random() - 0.5) * nozzleSpread;
+              gVel[i3] = emVel.x * 0.55 + (Math.random() - 0.5) * (isSnow ? 0.22 : 0.07);
+              gVel[i3 + 1] = emVel.y * 0.35 - 0.18 - Math.random() * 0.25;
+              gVel[i3 + 2] = emVel.z * 0.55 + (Math.random() - 0.5) * (isSnow ? 0.22 : 0.07);
+            }
+          }
+        }
+        grainGeo.attributes.position.needsUpdate = true;
+
+        // Dual-pass 8-neighbor Thermal Erosion (Angle of Repose) + Crevice AO
+        const dirs = [-1, 1, -GRID, GRID, -GRID - 1, -GRID + 1, GRID - 1, GRID + 1];
+        const diagScale = [1, 1, 1, 1, 1.414, 1.414, 1.414, 1.414];
+        const slumpRate = isWetSand ? 0.14 : isSnow ? 0.18 : 0.32;
+        for (let pass = 0; pass < 2; pass++) {
+          for (let z = 1; z < GRID - 1; z++) {
+            for (let x = 1; x < GRID - 1; x++) {
+              const idx = z * GRID + x, h = pileH[idx];
+              if (h <= 0.0004) { pileAO[idx] = 0; continue; }
+              let aoSum = 0;
+              for (let d = 0; d < 8; d++) {
+                const ni = idx + dirs[d];
+                const lim = MAX_SLOPE * diagScale[d];
+                const diff = h - pileH[ni];
+                if (diff < 0) aoSum += -diff;
+                if (diff > lim) {
+                  const mv = (diff - lim) * slumpRate * (d >= 4 ? 0.5 : 1.0);
+                  pileH[idx] -= mv;
+                  pileH[ni] += mv;
+                }
+              }
+              pileAO[idx] = aoSum * 12.0;
+            }
+          }
+        }
+
+        const posA = pileGeo.attributes.position;
+        for (let i = 0; i < pileH.length; i++) posA.setY(i, pileH[i]);
+        posA.needsUpdate = true;
+        pileGeo.attributes.aAO.needsUpdate = true;
+        pileGeo.computeVertexNormals();
+      }
+    });
+
+    APP.lastEntityId = ent.id;
+    APP.emit?.('entity:created', ent);
+    return { ok: true, id: ent.id, emitterId: emitterEnt?.id, name: ent.name, message: `Spawned ${matType} simulation with movable controller emitter.` };
+  }
+
+  // ====================================================================
+  // 3. REALISTIC CLOTH ENGINE (36x26 Sub-Stepped Bend-Spring Verlet,
+  //    Photorealistic Woven PBR Textures, Fractal Burning, & Tearing)
+  // ====================================================================
+  function buildClothTextures(texName, baseCol) {
+    const type = String(texName || 'linen').toLowerCase();
+    const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    const b = document.createElement('canvas'); b.width = 512; b.height = 512;
+    const btx = b.getContext('2d');
+
+    const hex = '#' + baseCol.getHexString();
+    ctx.fillStyle = hex; ctx.fillRect(0, 0, 512, 512);
+    btx.fillStyle = '#808080'; btx.fillRect(0, 0, 512, 512);
+
+    let alphaTex = null;
+    let matProps = { roughness: 0.85, metalness: 0.0, sheen: 0.45, sheenRoughness: 0.65, bumpScale: 0.018, alphaTest: 0 };
+
+    if (type === 'silk') {
+      const grad = ctx.createLinearGradient(0, 0, 512, 512);
+      grad.addColorStop(0, 'rgba(255,255,255,0.12)');
+      grad.addColorStop(0.5, 'rgba(0,0,0,0.05)');
+      grad.addColorStop(1, 'rgba(255,255,255,0.15)');
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, 512, 512);
+      for (let i = -512; i < 1024; i += 3) {
+        ctx.strokeStyle = (i % 6 === 0) ? 'rgba(255,255,255,0.045)' : 'rgba(0,0,0,0.04)';
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + 512, 512); ctx.stroke();
+        btx.strokeStyle = (i % 6 === 0) ? '#989898' : '#686868';
+        btx.beginPath(); btx.moveTo(i, 0); btx.lineTo(i + 512, 512); btx.stroke();
+      }
+      matProps = { roughness: 0.30, metalness: 0.08, sheen: 1.0, sheenRoughness: 0.24, bumpScale: 0.007, alphaTest: 0 };
+    } else if (type === 'denim') {
+      ctx.fillStyle = baseCol.getHex() === 0x7f1d1d ? '#1e3557' : hex;
+      ctx.fillRect(0, 0, 512, 512);
+      for (let i = -512; i < 1024; i += 4) {
+        ctx.strokeStyle = (i % 8 === 0) ? 'rgba(210,225,245,0.13)' : 'rgba(10,18,35,0.16)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + 512, 512); ctx.stroke();
+        btx.strokeStyle = (i % 8 === 0) ? '#b0b0b0' : '#505050';
+        btx.beginPath(); btx.moveTo(i, 0); btx.lineTo(i + 512, 512); btx.stroke();
+      }
+      matProps = { roughness: 0.90, metalness: 0.0, sheen: 0.18, sheenRoughness: 0.85, bumpScale: 0.025, alphaTest: 0 };
+    } else if (type === 'velvet') {
+      ctx.fillStyle = baseCol.clone().multiplyScalar(0.68).getStyle();
+      ctx.fillRect(0, 0, 512, 512);
+      for (let i = 0; i < 12000; i++) {
+        const x = Math.random() * 512, y = Math.random() * 512;
+        ctx.fillStyle = Math.random() > 0.5 ? 'rgba(255,255,255,0.045)' : 'rgba(0,0,0,0.14)';
+        ctx.fillRect(x, y, 2, 2);
+        btx.fillStyle = Math.random() > 0.5 ? '#9c9c9c' : '#646464';
+        btx.fillRect(x, y, 2, 2);
+      }
+      matProps = { roughness: 0.94, metalness: 0.0, sheen: 1.0, sheenRoughness: 0.32, bumpScale: 0.022, alphaTest: 0 };
+    } else if (type === 'chainmail') {
+      ctx.fillStyle = '#2d3748'; ctx.fillRect(0, 0, 512, 512);
+      ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2.5;
+      btx.fillStyle = '#202020'; btx.fillRect(0, 0, 512, 512);
+      btx.strokeStyle = '#ffffff'; btx.lineWidth = 2.5;
+      for (let y = 8; y < 512; y += 14) {
+        for (let x = 8; x < 512; x += 14) {
+          const ox = (Math.floor(y / 14) % 2) * 7;
+          ctx.beginPath(); ctx.arc(x + ox, y, 6, 0, Math.PI * 2); ctx.stroke();
+          btx.beginPath(); btx.arc(x + ox, y, 6, 0, Math.PI * 2); btx.stroke();
+        }
+      }
+      matProps = { roughness: 0.30, metalness: 0.92, sheen: 0.0, sheenRoughness: 0.5, bumpScale: 0.036, alphaTest: 0 };
+    } else if (type === 'lace') {
+      const a = document.createElement('canvas'); a.width = 512; a.height = 512;
+      const atx = a.getContext('2d');
+      atx.fillStyle = '#000000'; atx.fillRect(0, 0, 512, 512);
+      atx.strokeStyle = '#ffffff'; atx.lineWidth = 3.5;
+      ctx.fillStyle = baseCol.getHex() === 0x7f1d1d ? '#f1f5f9' : hex; ctx.fillRect(0, 0, 512, 512);
+      for (let y = 0; y <= 512; y += 28) {
+        for (let x = 0; x <= 512; x += 28) {
+          atx.beginPath(); atx.arc(x, y, 12, 0, Math.PI * 2); atx.stroke();
+          atx.beginPath(); atx.arc(x + 14, y + 14, 8, 0, Math.PI * 2); atx.stroke();
+        }
+      }
+      atx.lineWidth = 14; atx.strokeRect(7, 7, 498, 498);
+      alphaTex = new THREE.CanvasTexture(a);
+      matProps = { roughness: 0.72, metalness: 0.02, sheen: 0.55, sheenRoughness: 0.5, bumpScale: 0.015, alphaTest: 0.45 };
+    } else {
+      // Natural Woven Linen / Tapestry (Realistic organic fibers, no cartoony border)
+      if (type === 'linen' && baseCol.getHex() === 0x7f1d1d) {
+        ctx.fillStyle = '#d4c5b0'; ctx.fillRect(0, 0, 512, 512);
+      }
+      for (let i = 0; i < 512; i += 4) {
+        const slub = (Math.sin(i * 0.7) * 0.5 + 0.5) * 0.06;
+        ctx.fillStyle = (i % 8 === 0) ? `rgba(0,0,0,${0.06 + slub})` : `rgba(255,255,255,${0.05 + slub})`;
+        ctx.fillRect(i, 0, 2, 512); ctx.fillRect(0, i, 512, 2);
+        btx.fillStyle = (i % 8 === 0) ? '#626262' : '#a8a8a8';
+        btx.fillRect(i, 0, 2, 512); btx.fillRect(0, i, 512, 2);
+      }
+      // Subtle stitched hem seam
+      ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.setLineDash([6, 4]); ctx.lineWidth = 2;
+      ctx.strokeRect(10, 10, 492, 492); ctx.setLineDash([]);
+    }
+
+    const mapTex = new THREE.CanvasTexture(c); mapTex.colorSpace = THREE.SRGBColorSpace;
+    const bumpTex = new THREE.CanvasTexture(b);
+    return { map: mapTex, bumpMap: bumpTex, alphaMap: alphaTex, ...matProps };
+  }
+
+  function createClothSimulation(opts = {}) {
+    const mode = String(opts.mode || 'banner').toLowerCase();
+    const isDrape = mode === 'drape' || mode === 'tablecloth';
+    const targetEnt = opts.target ? APP.findEntity?.(opts.target) : null;
+    const betEnts = Array.isArray(opts.between_entities) && opts.between_entities.length === 2
+      ? [APP.findEntity?.(opts.between_entities[0]), APP.findEntity?.(opts.between_entities[1])]
+      : null;
+
+    if (APP._activeClothEnt && APP.entities?.includes(APP._activeClothEnt) && opts.replace !== false) {
+      APP.removeEntity?.(APP._activeClothEnt, false);
+    }
+
+    const clothGroup = new THREE.Group();
+    clothGroup.name = isDrape ? 'Draped_Cloth_Sim' : 'Interactive_Cloth_Sim';
+
+    const COLS = 36, ROWS = 26;
+    let W = Number(opts.width) || (isDrape ? 1.24 : 1.16);
+    const H = Number(opts.height) || (isDrape ? 1.24 : 0.88);
+
+    const bInfoA = betEnts?.[0] ? getEntityBounds(betEnts[0]) : null;
+    const bInfoB = betEnts?.[1] ? getEntityBounds(betEnts[1]) : null;
+    if (bInfoA && bInfoB) {
+      W = Math.max(0.45, Math.min(2.8, bInfoA.center.distanceTo(bInfoB.center)));
+    }
+
+    const DX = W / (COLS - 1), DY = H / (ROWS - 1), DIAG = Math.hypot(DX, DY), N_COUNT = COLS * ROWS;
+
+    if (!isDrape && !(bInfoA && bInfoB)) {
+      const rod = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.011, 0.011, W + 0.14, 16),
+        new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.88, roughness: 0.28 })
+      );
+      rod.rotation.z = Math.PI / 2; rod.position.set(0, H * 0.5 + 0.014, 0);
+      clothGroup.add(rod);
+    }
+
+    const baseCol = parseHexColor(opts.color, 0x7f1d1d);
+    let curTexName = String(opts.texture || 'linen').toLowerCase();
+    const texData = buildClothTextures(curTexName, baseCol);
+
+    const cur = [], prev = [], pinned = [];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const x = (c / (COLS - 1) - 0.5) * W;
+        const y = isDrape ? 0.0 : (H * 0.5 - r * DY);
+        const z = isDrape ? (r / (ROWS - 1) - 0.5) * H : 0.0;
+        cur.push(new THREE.Vector3(x, y, z));
+        prev.push(new THREE.Vector3(x, y, z));
+        pinned.push(bInfoA && bInfoB ? (r === 0 && (c === 0 || c === COLS - 1)) : (!isDrape && r === 0));
+      }
+    }
+
+    const springs = [], hGrid = Array.from({ length: ROWS }, () => new Array(COLS - 1)), vGrid = Array.from({ length: ROWS - 1 }, () => new Array(COLS));
+    const tearable = opts.tearable !== false, tearMult = tearable ? 2.10 : 99.0;
+    function addSpring(a, b, rest, mult, stiff = 1.0, isBend = false) {
+      const s = { a, b, rest, tearDist: rest * mult, stiff, isBend, broken: false };
+      springs.push(s); return s;
+    }
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const i = r * COLS + c;
+      if (c < COLS - 1) hGrid[r][c] = addSpring(i, i + 1, DX, tearMult, 1.0, false);
+      if (r < ROWS - 1) vGrid[r][c] = addSpring(i, i + COLS, DY, tearMult, 1.0, false);
+      if (r < ROWS - 1 && c < COLS - 1) {
+        addSpring(i, i + COLS + 1, DIAG, tearMult * 1.15, 0.88, false);
+        addSpring(i + 1, i + COLS, DIAG, tearMult * 1.15, 0.88, false);
+      }
+      if (c < COLS - 2) addSpring(i, i + 2, DX * 2, 99.0, 0.36, true);
+      if (r < ROWS - 2) addSpring(i, i + COLS * 2, DY * 2, 99.0, 0.36, true);
+    }
+
+    const clothGeo = new THREE.BufferGeometry();
+    const posArr = new Float32Array(N_COUNT * 3), uvArr = new Float32Array(N_COUNT * 2);
+    const heatArr = new Float32Array(N_COUNT), charArr = new Float32Array(N_COUNT), burned = new Uint8Array(N_COUNT);
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const idx = r * COLS + c; uvArr[idx * 2] = c / (COLS - 1); uvArr[idx * 2 + 1] = 1.0 - r / (ROWS - 1);
+    }
+    const idxArr = new Uint16Array((ROWS - 1) * (COLS - 1) * 6);
+    clothGeo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+    clothGeo.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
+    clothGeo.setAttribute('aHeat', new THREE.BufferAttribute(heatArr, 1));
+    clothGeo.setAttribute('aChar', new THREE.BufferAttribute(charArr, 1));
+    clothGeo.setIndex(new THREE.BufferAttribute(idxArr, 1));
+
+    const clothMat = new THREE.MeshPhysicalMaterial({
+      map: texData.map,
+      bumpMap: texData.bumpMap,
+      bumpScale: texData.bumpScale,
+      alphaMap: texData.alphaMap,
+      alphaTest: texData.alphaTest,
+      roughness: texData.roughness,
+      metalness: texData.metalness,
+      sheen: texData.sheen,
+      sheenRoughness: texData.sheenRoughness,
+      sheenColor: baseCol.clone().lerp(new THREE.Color(0xffffff), 0.45),
+      side: THREE.DoubleSide
+    });
+    clothMat.customProgramCacheKey = () => 'nxr_cloth_burn_v4';
+    clothMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uBurnTime = { value: 0 };
+      clothMat.userData.shader = shader;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float aHeat; attribute float aChar;\nvarying float vHeat; varying float vChar; varying vec2 vClothUv; varying vec3 vClothWPos;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHeat = aHeat; vChar = aChar; vClothUv = uv; vClothWPos = (modelMatrix * vec4(position, 1.0)).xyz;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', [
+          '#include <common>',
+          'uniform float uBurnTime;',
+          'varying float vHeat; varying float vChar; varying vec2 vClothUv; varying vec3 vClothWPos;',
+          'float cHash2(vec2 p){ p=fract(p*vec2(127.1,311.7)); p+=dot(p,p+34.5); return fract(p.x*p.y); }',
+          'float cNoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); f=f*f*(3.0-2.0*f); return mix(mix(cHash2(i),cHash2(i+vec2(1,0)),f.x),mix(cHash2(i+vec2(0,1)),cHash2(i+vec2(1,1)),f.x),f.y); }',
+          'float cFbm(vec2 p){ return 0.55*cNoise(p) + 0.30*cNoise(p*2.1) + 0.15*cNoise(p*4.3); }'
+        ].join('\n'))
+        .replace('#include <map_fragment>', [
+          '#include <map_fragment>',
+          'float fbmEdge = cFbm(vClothUv * 26.0);',
+          'float burnProg = vChar + (fbmEdge - 0.5) * 0.28;',
+          'if (vChar > 0.02 && burnProg > 0.94) discard;',
+          'float scorch = smoothstep(0.18, 0.55, vHeat) * (1.0 - smoothstep(0.55, 0.88, burnProg));',
+          'diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.42, 0.28, 0.16), scorch);',
+          'float charMask = smoothstep(0.48, 0.82, burnProg);',
+          'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.025, 0.022, 0.02), charMask);'
+        ].join('\n'))
+        .replace('#include <emissivemap_fragment>', [
+          '#include <emissivemap_fragment>',
+          'float fbmEm = cFbm(vClothUv * 26.0);',
+          'float burnP = vChar + (fbmEm - 0.5) * 0.28;',
+          'float flick = 0.72 + 0.35 * sin(uBurnTime * 24.0 + vClothWPos.x * 20.0 + vClothWPos.y * 16.0);',
+          'float emberLine = smoothstep(0.76, 0.89, burnP) * (1.0 - smoothstep(0.89, 0.95, burnP)) * step(0.15, vHeat);',
+          'vec3 emberCol = mix(vec3(1.0, 0.16, 0.01), vec3(1.0, 0.78, 0.22), smoothstep(0.82, 0.92, burnP));',
+          'totalEmissiveRadiance += emberCol * emberLine * flick * 4.2;'
+        ].join('\n'));
+    };
+
+    const clothMesh = new THREE.Mesh(clothGeo, clothMat);
+    clothMesh.castShadow = true; clothMesh.receiveShadow = true;
+    clothGroup.add(clothMesh);
+
+    // Separate Natural Smoke Wisps (alpha-blended) + Tiny Tear/Ember Sparks
+    const SMOKE_MAX = 140;
+    const smPos = new Float32Array(SMOKE_MAX * 3), smVel = Array.from({ length: SMOKE_MAX }, () => new THREE.Vector3());
+    const smLife = new Float32Array(SMOKE_MAX), smType = new Float32Array(SMOKE_MAX); // 0=smoke, 1=spark, 2=fiber
+    const smGeo = new THREE.BufferGeometry();
+    smGeo.setAttribute('position', new THREE.BufferAttribute(smPos, 3));
+    smGeo.setAttribute('aLife', new THREE.BufferAttribute(smLife, 1));
+    smGeo.setAttribute('aType', new THREE.BufferAttribute(smType, 1));
+    clothGroup.add(new THREE.Points(smGeo, new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false,
+      uniforms: { uPx: { value: window.devicePixelRatio || 1 } },
+      vertexShader: 'attribute float aLife; attribute float aType; uniform float uPx; varying float vLife; varying float vType; void main(){ vLife=aLife; vType=aType; vec4 mv=modelViewMatrix*vec4(position,1.0); float sz = aType < 0.5 ? mix(38.0, 18.0, aLife) : 8.0; gl_PointSize=aLife>0.01?clamp((sz*uPx)/max(0.25,-mv.z),1.5,24.0):0.0; gl_Position=projectionMatrix*mv; }',
+      fragmentShader: 'varying float vLife; varying float vType; void main(){ float d=length(gl_PointCoord-0.5)*2.0; if(d>1.0)discard; if(vType<0.5){ gl_FragColor=vec4(vec3(0.16,0.16,0.18), (1.0-d*d)*clamp(vLife*0.28,0.0,0.28)); } else if(vType<1.5){ gl_FragColor=vec4(1.0,0.48,0.08, (1.0-d)*vLife); } else { gl_FragColor=vec4(0.85,0.82,0.75, (1.0-d)*vLife); } }'
+    })));
+    let nextSm = 0;
+
+    function emitParticle(pt, type, vx, vy, vz, life) {
+      const fi = nextSm; nextSm = (nextSm + 1) % SMOKE_MAX;
+      smPos[fi * 3] = pt.x + (Math.random() - 0.5) * 0.02;
+      smPos[fi * 3 + 1] = pt.y + (Math.random() - 0.5) * 0.02;
+      smPos[fi * 3 + 2] = pt.z + (Math.random() - 0.5) * 0.02;
+      smVel[fi].set(vx, vy, vz);
+      smLife[fi] = life;
+      smType[fi] = type;
+    }
+
+    let indicesDirty = true;
+    function rebuildClothIndices() {
+      let ptr = 0;
+      for (let r = 0; r < ROWS - 1; r++) for (let c = 0; c < COLS - 1; c++) {
+        const a = r * COLS + c, b = a + 1, d = a + COLS, e = d + 1;
+        if (burned[a] + burned[b] + burned[d] + burned[e] >= 3) continue;
+        if ((!hGrid[r][c].broken ? 1 : 0) + (!hGrid[r + 1][c].broken ? 1 : 0) + (!vGrid[r][c].broken ? 1 : 0) + (!vGrid[r][c + 1].broken ? 1 : 0) < 3) continue;
+        idxArr[ptr++] = a; idxArr[ptr++] = d; idxArr[ptr++] = b; idxArr[ptr++] = b; idxArr[ptr++] = d; idxArr[ptr++] = e;
+      }
+      clothGeo.index.needsUpdate = true; clothGeo.setDrawRange(0, ptr); indicesDirty = false;
+    }
+    rebuildClothIndices();
+
+    if (bInfoA && bInfoB) {
+      const mid = new THREE.Vector3().addVectors(bInfoA.center, bInfoB.center).multiplyScalar(0.5);
+      mid.y = Math.max(bInfoA.box.max.y, bInfoB.box.max.y) - H * 0.45;
+      clothGroup.position.copy(mid);
+      const dir = new THREE.Vector3().subVectors(bInfoB.center, bInfoA.center).setY(0).normalize();
+      if (dir.lengthSq() > 0.01) clothGroup.rotation.y = Math.atan2(-dir.z, dir.x);
+    } else if (isDrape && targetEnt?.group) {
+      const tInfo = getEntityBounds(targetEnt);
+      clothGroup.position.set(tInfo.center.x, tInfo.box.max.y + 0.25, tInfo.center.z);
+    } else {
+      const sp = resolvePos(opts.position, 1.05);
+      clothGroup.position.set(sp.x, isDrape ? 1.0 : 1.15, sp.z);
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+      if (!isDrape) clothGroup.lookAt(hp.x, clothGroup.position.y, hp.z);
+    }
+    APP.scene.add(clothGroup);
+
+    const tmpDelta = new THREE.Vector3(), tmpLocal = new THREE.Vector3(), tmpSphereC = new THREE.Vector3(), tmpBox = new THREE.Box3(), prevHands = new Map();
+    const tmpWind = new THREE.Vector3(), tmpNorm = new THREE.Vector3();
+    let grabbedIdx = -1, grabbedHand = null, ptrGrabIdx = -1, ptrDragTarget = null;
+    let isBurning = !!opts.burning, burnSpeed = Number(opts.burn_speed) || 1.0;
+
+    function tearAtLocalPoint(pt, rad, imp) {
+      let tore = false;
+      for (let i = 0; i < springs.length; i++) {
+        const s = springs[i]; if (s.broken || s.isBend) continue;
+        const mx = (cur[s.a].x + cur[s.b].x) * 0.5, my = (cur[s.a].y + cur[s.b].y) * 0.5, mz = (cur[s.a].z + cur[s.b].z) * 0.5;
+        if (Math.hypot(mx - pt.x, my - pt.y, mz - pt.z) < rad) {
+          s.broken = true; tore = true; indicesDirty = true;
+          emitParticle(cur[s.a], 2, (Math.random() - 0.5) * 0.8, Math.random() * 0.5, (Math.random() - 0.5) * 0.8, 0.5);
+          if (imp) { prev[s.a].sub(imp); prev[s.b].add(imp); }
+        }
+      }
+      return tore;
+    }
+
+    interactives.push({
+      type: 'cloth',
+      group: clothGroup,
+      mesh: clothMesh,
+      onPointerHit: (worldPt, worldVel, isClick) => {
+        tmpLocal.copy(worldPt); clothGroup.worldToLocal(tmpLocal);
+        if (isClick) {
+          let bestI = -1, bestD = 0.16;
+          for (let i = (isDrape ? 0 : COLS); i < N_COUNT; i++) {
+            if (burned[i]) continue;
+            const d = cur[i].distanceTo(tmpLocal);
+            if (d < bestD) { bestD = d; bestI = i; }
+          }
+          if (bestI !== -1) { ptrGrabIdx = bestI; ptrDragTarget = tmpLocal.clone(); }
+        } else if (worldVel.length() > 0.002) {
+          for (let i = (isDrape ? 0 : COLS); i < N_COUNT; i++) {
+            if (cur[i].distanceTo(tmpLocal) < 0.14) prev[i].addScaledVector(worldVel, -0.45);
+          }
+        }
+      },
+      onPointerDrag: (worldPt) => {
+        if (ptrGrabIdx === -1) return;
+        tmpLocal.copy(worldPt); clothGroup.worldToLocal(tmpLocal);
+        ptrDragTarget = tmpLocal.clone();
+      },
+      onPointerRelease: () => { ptrGrabIdx = -1; ptrDragTarget = null; }
+    });
+
+    function igniteAt(origin = 'bottom') {
+      isBurning = true;
+      const o = String(origin).toLowerCase();
+      if (o === 'center') {
+        const ci = Math.floor(ROWS * 0.55) * COLS + Math.floor(COLS * 0.5);
+        heatArr[ci] = 1.0;
+        if (ci + 1 < N_COUNT) heatArr[ci + 1] = 0.9;
+      } else if (o === 'corners') {
+        heatArr[(ROWS - 1) * COLS] = 1.0;
+        heatArr[N_COUNT - 1] = 1.0;
+      } else if (o === 'random') {
+        for (let k = 0; k < 3; k++) heatArr[Math.floor(Math.random() * N_COUNT)] = 1.0;
+      } else {
+        const r = ROWS - 1;
+        for (let c = Math.floor(COLS * 0.35); c <= Math.floor(COLS * 0.65); c++) {
+          heatArr[r * COLS + c] = 0.95 + Math.random() * 0.05;
+        }
+      }
+    }
+
+    if (isBurning) igniteAt(opts.burn_origin || 'bottom');
+
+    const clothApi = {
+      group: clothGroup,
+      tearSlice: (yRatio = 0.45) => {
+        const targetRow = Math.max(1, Math.min(ROWS - 2, Math.floor(yRatio * ROWS)));
+        for (let c = 0; c < COLS; c++) tearAtLocalPoint(cur[THREE.MathUtils.clamp(targetRow + Math.round(Math.sin(c * 0.9)), 1, ROWS - 2) * COLS + c], DX * 0.98, new THREE.Vector3(0, 0, 0.018));
+        rebuildClothIndices();
+      },
+      shred: () => {
+        for (let c = 3; c < COLS - 2; c += 4) for (let r = 1; r < ROWS - 1; r++) tearAtLocalPoint(cur[r * COLS + c], DX * 0.88, new THREE.Vector3(0, 0, 0.02));
+        rebuildClothIndices();
+      },
+      burn: (o = {}) => {
+        if (o.action === 'extinguish') {
+          isBurning = false; heatArr.fill(0); clothGeo.attributes.aHeat.needsUpdate = true; return;
+        }
+        if (o.speed) burnSpeed = Number(o.speed) || 1.0;
+        igniteAt(o.origin || 'bottom');
+      },
+      setTexture: (tex, newCol) => {
+        curTexName = String(tex || curTexName).toLowerCase();
+        const cObj = newCol ? parseHexColor(newCol, 0x7f1d1d) : baseCol;
+        const td = buildClothTextures(curTexName, cObj);
+        clothMat.map = td.map; clothMat.bumpMap = td.bumpMap; clothMat.bumpScale = td.bumpScale;
+        clothMat.alphaMap = td.alphaMap; clothMat.alphaTest = td.alphaTest;
+        clothMat.roughness = td.roughness; clothMat.metalness = td.metalness;
+        clothMat.sheen = td.sheen; clothMat.sheenRoughness = td.sheenRoughness;
+        clothMat.sheenColor = cObj.clone().lerp(new THREE.Color(0xffffff), 0.45);
+        clothMat.needsUpdate = true;
+      }
+    };
+
+    const ent = APP.registerEntity(clothGroup, {
+      name: opts.name || (isDrape ? 'Draped Cloth' : 'Interactive Cloth'),
+      category: 'cloth',
+      grabbable: false,
+      physics: { enabled: false },
+      onUpdate: function (dt) {
+        const safeDt = Math.min(0.025, Math.max(0.004, dt || 0.016)), now = performance.now() * 0.001;
+        if (clothMat.userData.shader) clothMat.userData.shader.uniforms.uBurnTime.value = now;
+        const floorLocalY = -clothGroup.position.y + 0.02;
+
+        const colliders = [];
+        for (const other of APP.entities || []) {
+          if (!other || other === ent || !other.group || other.category === 'world_fx' || other.category === 'board') continue;
+          tmpBox.setFromObject(other.group);
+          if (!tmpBox.isEmpty()) {
+            const sz = new THREE.Vector3(); tmpBox.getSize(sz); tmpBox.getCenter(tmpSphereC); clothGroup.worldToLocal(tmpSphereC);
+            colliders.push({ c: tmpSphereC.clone(), r: Math.max(sz.x, sz.y, sz.z) * 0.52 + 0.015 });
+          }
+        }
+
+        let activeGrab = false;
+        for (const [hk, h] of Object.entries(APP.hands || {})) {
+          if (!h || !h.active) continue;
+          const tip = h.isHand ? h.fingerTips?.index : h.pos;
+          if (!tip) continue;
+          tmpLocal.copy(tip); clothGroup.worldToLocal(tmpLocal);
+          const last = prevHands.get(hk), speed = last ? tmpLocal.distanceTo(last) / safeDt : 0;
+          prevHands.set(hk, tmpLocal.clone());
+
+          if ((h.trigger || h.pinching) && grabbedIdx === -1) {
+            let bestI = -1, bestD = 0.16;
+            for (let i = (isDrape ? 0 : COLS); i < N_COUNT; i++) {
+              if (burned[i]) continue;
+              const d = cur[i].distanceTo(tmpLocal);
+              if (d < bestD) { bestD = d; bestI = i; }
+            }
+            if (bestI !== -1) { grabbedIdx = bestI; grabbedHand = hk; }
+          }
+          if (grabbedHand === hk && (h.trigger || h.pinching) && grabbedIdx !== -1) {
+            cur[grabbedIdx].lerp(tmpLocal, 0.72); prev[grabbedIdx].copy(cur[grabbedIdx]); activeGrab = true;
+          }
+          if (tearable && speed > 1.35) tearAtLocalPoint(tmpLocal, 0.085, new THREE.Vector3(0, 0, 0.012));
+        }
+        if (!activeGrab) { grabbedIdx = -1; grabbedHand = null; }
+        if (ptrGrabIdx !== -1 && ptrDragTarget) {
+          cur[ptrGrabIdx].lerp(ptrDragTarget, 0.65);
+          prev[ptrGrabIdx].copy(cur[ptrGrabIdx]);
+        }
+
+        // Burning & Thermal Convection
+        if (isBurning && curTexName !== 'chainmail') {
+          for (let i = 0; i < springs.length; i++) {
+            const s = springs[i]; if (s.broken || s.isBend) continue;
+            const ha = heatArr[s.a], hb = heatArr[s.b];
+            if (ha > 0.25 && !burned[s.b]) {
+              const up = cur[s.b].y > cur[s.a].y ? 2.4 : 0.95;
+              heatArr[s.b] = Math.min(1.0, hb + ha * safeDt * 0.85 * burnSpeed * up);
+            }
+            if (hb > 0.25 && !burned[s.a]) {
+              const up = cur[s.a].y > cur[s.b].y ? 2.4 : 0.95;
+              heatArr[s.a] = Math.min(1.0, ha + hb * safeDt * 0.85 * burnSpeed * up);
+            }
+          }
+          for (let i = 0; i < N_COUNT; i++) {
+            if (burned[i]) continue;
+            if (heatArr[i] > 0.34) {
+              charArr[i] = Math.min(1.0, charArr[i] + safeDt * 0.42 * burnSpeed * (0.7 + Math.sin(i * 1.7) * 0.3));
+              if (charArr[i] > 0.25 && charArr[i] < 0.95) {
+                if (Math.random() < 0.08) emitParticle(cur[i], 0, (Math.random() - 0.5) * 0.14, 0.32 + Math.random() * 0.35, (Math.random() - 0.5) * 0.14, 1.1);
+                if (Math.random() < 0.04) emitParticle(cur[i], 1, (Math.random() - 0.5) * 0.35, 0.55 + Math.random() * 0.6, (Math.random() - 0.5) * 0.35, 0.55);
+              }
+              if (charArr[i] >= 1.0) {
+                burned[i] = 1; heatArr[i] = 0; indicesDirty = true;
+                for (let k = 0; k < springs.length; k++) {
+                  if (!springs[k].broken && (springs[k].a === i || springs[k].b === i)) springs[k].broken = true;
+                }
+              }
+            }
+          }
+          clothGeo.attributes.aHeat.needsUpdate = true;
+          clothGeo.attributes.aChar.needsUpdate = true;
+        }
+
+        // Sub-stepped Verlet Solver (2 substeps for stiff realistic drape)
+        const SUB = 2;
+        const subDt = safeDt / SUB;
+        const gravY = -8.2 * subDt * subDt;
+        const windStrength = Number(opts.wind ?? (isDrape ? 0.28 : 0.85));
+        const nAttr = clothGeo.attributes.normal;
+
+        for (let step = 0; step < SUB; step++) {
+          for (let i = 0; i < N_COUNT; i++) {
+            if (pinned[i] || i === grabbedIdx || i === ptrGrabIdx || burned[i]) continue;
+            const p = cur[i], pr = prev[i];
+            const vx = (p.x - pr.x) * 0.990, vy = (p.y - pr.y) * 0.990, vz = (p.z - pr.z) * 0.990;
+            pr.copy(p);
+            tmpWind.set(
+              Math.cos(now * 1.5 + p.y * 2.2) * 0.00014,
+              isBurning && heatArr[i] > 0.3 ? 0.00012 : 0.0,
+              (Math.sin(now * 2.1 + p.x * 2.8 + p.y * 1.6) * 0.55 + 0.38) * 0.00038
+            ).multiplyScalar(windStrength);
+            if (nAttr) {
+              tmpNorm.fromBufferAttribute(nAttr, i);
+              const aero = Math.abs(tmpNorm.dot(tmpWind));
+              p.x += vx + tmpWind.x * (0.4 + aero * 450.0);
+              p.y += vy + gravY + tmpWind.y;
+              p.z += vz + tmpWind.z * (0.4 + aero * 450.0);
+            } else {
+              p.x += vx + tmpWind.x; p.y += vy + gravY + tmpWind.y; p.z += vz + tmpWind.z;
+            }
+            if (p.y < floorLocalY) p.y = floorLocalY;
+          }
+
+          for (let iter = 0; iter < 5; iter++) {
+            for (let i = 0; i < springs.length; i++) {
+              const s = springs[i]; if (s.broken) continue;
+              const pa = cur[s.a], pb = cur[s.b]; tmpDelta.subVectors(pb, pa); const d = tmpDelta.length();
+              if (d < 1e-6) continue;
+              if (tearable && !s.isBend && iter === 0 && step === 0 && d > s.tearDist) {
+                s.broken = true; indicesDirty = true;
+                emitParticle(pa, 2, (Math.random() - 0.5) * 0.6, 0.3, (Math.random() - 0.5) * 0.6, 0.45);
+                continue;
+              }
+              const diff = ((d - s.rest) / d) * s.stiff;
+              const pinA = pinned[s.a] || s.a === grabbedIdx || s.a === ptrGrabIdx;
+              const pinB = pinned[s.b] || s.b === grabbedIdx || s.b === ptrGrabIdx;
+              if (pinA && pinB) continue;
+              if (pinA) pb.addScaledVector(tmpDelta, -diff);
+              else if (pinB) pa.addScaledVector(tmpDelta, diff);
+              else { pa.addScaledVector(tmpDelta, diff * 0.5); pb.addScaledVector(tmpDelta, -diff * 0.5); }
+            }
+            for (let ci = 0; ci < colliders.length; ci++) {
+              const col = colliders[ci], rSq = col.r * col.r;
+              for (let i = 0; i < N_COUNT; i++) {
+                if (pinned[i] || burned[i]) continue;
+                tmpDelta.subVectors(cur[i], col.c); const dSq = tmpDelta.lengthSq();
+                if (dSq < rSq && dSq > 1e-6) cur[i].copy(col.c).addScaledVector(tmpDelta, col.r / Math.sqrt(dSq));
+              }
+            }
+          }
+        }
+
+        if (indicesDirty) rebuildClothIndices();
+        for (let i = 0; i < N_COUNT; i++) { posArr[i * 3] = cur[i].x; posArr[i * 3 + 1] = cur[i].y; posArr[i * 3 + 2] = cur[i].z; }
+        clothGeo.attributes.position.needsUpdate = true;
+        clothGeo.computeVertexNormals();
+
+        for (let i = 0; i < SMOKE_MAX; i++) {
+          if (smLife[i] <= 0) { smPos[i * 3 + 1] = -99; continue; }
+          smLife[i] -= safeDt;
+          if (smType[i] < 0.5) {
+            smVel[i].x += Math.sin(now * 3.0 + i) * 0.15 * safeDt;
+            smVel[i].y += 0.22 * safeDt;
+          } else if (smType[i] < 1.5) {
+            smVel[i].y += 0.9 * safeDt;
+          } else {
+            smVel[i].y -= 3.5 * safeDt;
+          }
+          smPos[i * 3] += smVel[i].x * safeDt; smPos[i * 3 + 1] += smVel[i].y * safeDt; smPos[i * 3 + 2] += smVel[i].z * safeDt;
+        }
+        smGeo.attributes.position.needsUpdate = true;
+        smGeo.attributes.aLife.needsUpdate = true;
+        smGeo.attributes.aType.needsUpdate = true;
+      }
+    });
+
+    clothApi.entity = ent; APP._activeCloth = clothApi; APP._activeClothEnt = ent;
+    APP.lastEntityId = ent.id; APP.emit?.('entity:created', ent);
+    return { ok: true, id: ent.id, name: ent.name, message: `Spawned ${curTexName} ${ent.name}.` };
+  }
+
+  // ====================================================================
+  // 4. DISINTEGRATION ENGINE
+  // ====================================================================
+  function createDisintegration(opts = {}) {
+    const q = String(opts.target || '').trim();
+    let target = q ? APP.findEntity?.(q) : null;
+    if (!target || target.category === 'world_fx' || target.category === 'board') {
+      const candidates = (APP.entities || []).filter((e) => e && e.group?.parent && e.category !== 'world_fx' && e.category !== 'board' && !e.isPen);
+      target = candidates[candidates.length - 1] || null;
+    }
+    if (!target) {
+      const artGroup = new THREE.Group();
+      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.28, 16), new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.55, metalness: 0.45 }));
+      ped.position.y = 0.14;
+      const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.22, 2), new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0ea5e9, emissiveIntensity: 0.4, roughness: 0.25, metalness: 0.65 }));
+      core.position.y = 0.50;
+      artGroup.add(ped, core); artGroup.position.copy(resolvePos(null, 1.15));
+      target = APP.registerEntity(artGroup, { name: 'Artifact Monolith', category: 'artifact' });
+    }
+
+    const edgeCol = parseHexColor(opts.color, 0xff7b14);
+    const dur = Math.max(1.2, Math.min(6.0, Number(opts.duration) || 2.6));
+    target.group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(target.group);
+    const minY = isFinite(box.min.y) ? box.min.y : 0, maxY = isFinite(box.max.y) ? Math.max(minY + 0.1, box.max.y) : 1.0;
+
+    const samplePos = [], sampleCol = [], vTmp = new THREE.Vector3();
+    target.group.traverse((c) => {
+      if (!c.isMesh || !c.geometry?.attributes?.position) return;
+      const posA = c.geometry.attributes.position, colA = c.geometry.attributes.color;
+      const mat = Array.isArray(c.material) ? c.material[0] : c.material;
+      const baseCol = mat?.color ? mat.color : new THREE.Color(0x94a3b8);
+      const step = Math.max(1, Math.floor(posA.count / 450));
+      for (let i = 0; i < posA.count; i += step) {
+        vTmp.fromBufferAttribute(posA, i).applyMatrix4(c.matrixWorld);
+        samplePos.push(vTmp.x, vTmp.y, vTmp.z);
+        if (colA) sampleCol.push(colA.getX(i), colA.getY(i), colA.getZ(i));
+        else sampleCol.push(baseCol.r, baseCol.g, baseCol.b);
+      }
+    });
+
+    const P_COUNT = Math.min(1800, Math.max(600, samplePos.length / 3));
+    const pPos = new Float32Array(P_COUNT * 3), pCol = new Float32Array(P_COUNT * 3), pThresh = new Float32Array(P_COUNT);
+    const pVel = new Float32Array(P_COUNT * 3), pDetached = new Uint8Array(P_COUNT), pLife = new Float32Array(P_COUNT), pActive = new Float32Array(P_COUNT);
+    const srcLen = Math.max(1, samplePos.length / 3);
+    for (let i = 0; i < P_COUNT; i++) {
+      const si = (i % srcLen) * 3;
+      pPos[i * 3] = samplePos[si] + (Math.random() - 0.5) * 0.015;
+      pPos[i * 3 + 1] = samplePos[si + 1] + (Math.random() - 0.5) * 0.015;
+      pPos[i * 3 + 2] = samplePos[si + 2] + (Math.random() - 0.5) * 0.015;
+      pCol[i * 3] = sampleCol[si]; pCol[i * 3 + 1] = sampleCol[si + 1]; pCol[i * 3 + 2] = sampleCol[si + 2];
+      const normY = THREE.MathUtils.clamp((pPos[i * 3 + 1] - minY) / (maxY - minY), 0, 1);
+      pThresh[i] = THREE.MathUtils.clamp((opts.direction === 'top_down' ? 1 - normY : normY) * 0.72 + Math.random() * 0.28, 0.01, 0.99);
+      pLife[i] = 1.0; pVel[i * 3] = (Math.random() - 0.3) * 0.35 + 0.18; pVel[i * 3 + 1] = 0.24 + Math.random() * 0.45; pVel[i * 3 + 2] = (Math.random() - 0.5) * 0.35;
+    }
+
+    const uProg = { value: 0.0 }, topDownFlag = { value: opts.direction === 'top_down' ? 1.0 : 0.0 };
+    target.group.traverse((c) => {
+      if (!c.isMesh || !c.material) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      c.material = mats.map((m) => {
+        const cl = m.clone(); cl.side = THREE.DoubleSide; cl.customProgramCacheKey = () => 'nxr_dis_v4';
+        cl.onBeforeCompile = function (shader) {
+          shader.uniforms.uDisProg = uProg; shader.uniforms.uMinY = { value: minY }; shader.uniforms.uSpanY = { value: maxY - minY };
+          shader.uniforms.uTopDown = topDownFlag; shader.uniforms.uEdgeCol = { value: edgeCol };
+          shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vDisWPos;').replace('#include <project_vertex>', '#include <project_vertex>\nvDisWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+          const outAnchor = shader.fragmentShader.includes('#include <opaque_fragment>') ? '#include <opaque_fragment>' : '#include <output_fragment>';
+          shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uDisProg; uniform float uMinY; uniform float uSpanY; uniform float uTopDown; uniform vec3 uEdgeCol;\nvarying vec3 vDisWPos;\nfloat disHash(vec3 p){p=fract(p*0.3183+0.1);p*=17.0;return fract(p.x*p.y*p.z*(p.x+p.y+p.z));}').replace(outAnchor, `float disN=disHash(floor(vDisWPos*46.0));float disH=clamp((vDisWPos.y-uMinY)/max(0.05,uSpanY),0.0,1.0);if(uTopDown>0.5)disH=1.0-disH;float disVal=disH*0.72+disN*0.28;if(disVal<uDisProg)discard;float rim=1.0-smoothstep(uDisProg,uDisProg+0.08,disVal);outgoingLight=mix(outgoingLight,uEdgeCol*3.4,rim);\n${outAnchor}`);
+        };
+        cl.needsUpdate = true; return cl;
+      });
+      if (!Array.isArray(c.material)) c.material = c.material[0];
+    });
+
+    const dustGroup = new THREE.Group();
+    const pGeo = new THREE.BufferGeometry();
+    pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3)); pGeo.setAttribute('aCol', new THREE.BufferAttribute(pCol, 3));
+    pGeo.setAttribute('aLife', new THREE.BufferAttribute(pLife, 1)); pGeo.setAttribute('aActive', new THREE.BufferAttribute(pActive, 1));
+    const dustPts = new THREE.Points(pGeo, new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: { uSize: { value: 22.0 * (window.devicePixelRatio || 1) }, uEdgeCol: { value: edgeCol } },
+      vertexShader: 'attribute vec3 aCol; attribute float aLife; attribute float aActive; uniform float uSize; uniform vec3 uEdgeCol; varying vec3 vCol; varying float vAlpha; void main(){ vCol=mix(uEdgeCol,aCol,smoothstep(1.0,0.5,aLife)); vAlpha=aActive*clamp(aLife,0.0,1.0); vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=aActive>0.5?clamp((uSize/max(0.3,-mv.z))*aLife,1.5,10.0):0.0; gl_Position=projectionMatrix*mv; }',
+      fragmentShader: 'varying vec3 vCol; varying float vAlpha; void main(){ if(vAlpha<0.01)discard; float d=length(gl_PointCoord-0.5)*2.0; if(d>1.0)discard; gl_FragColor=vec4(vCol,pow(1.0-d,1.8)*vAlpha); }'
+    }));
+    dustPts.frustumCulled = false; dustGroup.add(dustPts); APP.scene.add(dustGroup);
+
+    let meshRemoved = false, elapsed = 0;
+    const dustEnt = APP.registerEntity(dustGroup, {
+      name: 'Disintegration Dust', category: 'world_fx', grabbable: false, physics: { enabled: false },
+      onUpdate: function (dt) {
+        const delta = Math.min(0.04, dt || 0.016); elapsed += delta; uProg.value = Math.min(1.08, elapsed / dur);
+        let anyAlive = false;
+        for (let i = 0; i < P_COUNT; i++) {
+          if (!pDetached[i]) { if (uProg.value >= pThresh[i]) { pDetached[i] = 1; pActive[i] = 1.0; } anyAlive = true; }
+          else if (pLife[i] > 0) {
+            anyAlive = true; const i3 = i * 3;
+            pVel[i3] += Math.sin(pPos[i3 + 1] * 5.0 + elapsed * 3.0) * 0.55 * delta; pVel[i3 + 2] += Math.cos(pPos[i3] * 5.0 + elapsed * 2.5) * 0.55 * delta;
+            pPos[i3] += pVel[i3] * delta; pPos[i3 + 1] += pVel[i3 + 1] * delta; pPos[i3 + 2] += pVel[i3 + 2] * delta; pLife[i] -= delta * 0.48;
+          }
+        }
+        if (!meshRemoved && uProg.value >= 1.05) { meshRemoved = true; APP.removeEntity?.(target, false); }
+        pGeo.attributes.position.needsUpdate = true; pGeo.attributes.aLife.needsUpdate = true; pGeo.attributes.aActive.needsUpdate = true;
+        if (meshRemoved && !anyAlive) APP.removeEntity?.(dustEnt, false);
+      }
+    });
+    return { ok: true, message: `Disintegrating ${target.name}.` };
+  }
+
+  APP.sim = {
+    water: createWaterSimulation,
+    granular: createGranularSimulation,
+    cloth: createClothSimulation,
+    tearCloth: async function (opts = {}) {
+      let cloth = APP._activeCloth;
+      if (!cloth || !cloth.entity || !APP.entities?.includes(cloth.entity)) {
+        createClothSimulation({ mode: 'banner' });
+        cloth = APP._activeCloth;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      if (String(opts.action || '').toLowerCase() === 'shred') { cloth.shred(); return { ok: true, message: 'Shredded cloth into strips.' }; }
+      cloth.tearSlice(Number(opts.y_ratio) || 0.45);
+      return { ok: true, message: 'Tore a rip across the cloth.' };
+    },
+    burnCloth: async function (opts = {}) {
+      let cloth = APP._activeCloth;
+      if (!cloth || !cloth.entity || !APP.entities?.includes(cloth.entity)) {
+        createClothSimulation({ mode: 'banner' });
+        cloth = APP._activeCloth;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      cloth.burn(opts);
+      return { ok: true, message: opts.action === 'extinguish' ? 'Extinguished cloth fire.' : 'Ignited cloth fire!' };
+    },
+    setClothTexture: async function (opts = {}) {
+      let cloth = APP._activeCloth;
+      if (!cloth || !cloth.entity || !APP.entities?.includes(cloth.entity)) {
+        createClothSimulation({ mode: 'banner', texture: opts.texture, color: opts.color });
+        return { ok: true, message: `Spawned ${opts.texture || 'linen'} cloth.` };
+      }
+      cloth.setTexture(opts.texture, opts.color);
+      return { ok: true, message: `Changed cloth texture to ${opts.texture || 'linen'}.` };
+    },
+    disintegrate: createDisintegration
+  };
+
+  // ====================================================================
+  // 5. COMPOSABLE AI TOOLS (REST + GEMINI LIVE)
+  // ====================================================================
+  const SIM_AI_TOOLS = [
+    {
+      name: 'simulate_water',
+      description: 'Studio-grade refractive 3D fluid simulation supporting water AND viscous fluids (honey, lava, slime). Supports pool/basin, pouring (with grabbable pitcher + coiling honey), splashing/fountain, waterfall, and spreading 2D floor spill. Interactive with VR hands, mouse/touch wakes, and object buoyancy!',
+      parameters: {
+        type: 'object',
+        properties: {
+          fluid: { type: 'string', description: 'water | honey | lava | slime' },
+          mode: { type: 'string', description: 'pool | pouring | splashing | spreading | waterfall | fountain' },
+          container: { type: 'string', description: 'none | basin | bowl | glass_bowl | cup | glass_cup' },
+          attach_to: { type: 'string', description: 'Entity ID or name (e.g. "latest") to fit fluid inside/on your custom 3D object.' },
+          pour_from: { type: 'string', description: 'Optional entity ID/name to pour a live stream FROM.' },
+          pouring: { type: 'boolean', description: 'True for pouring stream.' },
+          splashing: { type: 'boolean', description: 'True for splashing fountain/mist.' },
+          spreading: { type: 'boolean', description: 'True for spreading 2D floor spill/puddle simulation.' },
+          waterfall: { type: 'boolean', description: 'True for cascading waterfall curtain.' },
+          fountain: { type: 'boolean', description: 'True for upward fountain splashes.' },
+          viscosity: { type: 'number', description: '0.04 (water) to 0.92 (thick honey/lava).' },
+          color: { type: 'string', description: 'Hex color e.g. "#38bdf8", "#d97706".' },
+          glow: { type: 'boolean', description: 'True for glowing fluid.' },
+          radius: { type: 'number', description: 'Optional radius in meters.' },
+          holdable: { type: 'boolean', description: 'True if bowl/cup can be picked up.' }
+        }
+      }
+    },
+    {
+      name: 'simulate_granular',
+      description: 'Realistic micro-grain granular simulation (sand, snow, wet_sand, mud, gold, gravel, ash) with rolling slope grains, hand/mouse trench carving, and a grabbable VR controller emitter funnel.',
+      parameters: {
+        type: 'object',
+        properties: {
+          material: { type: 'string', description: 'sand | snow | wet_sand | mud | gold | gravel | ash' },
+          color: { type: 'string', description: 'Optional hex color.' },
+          emitter: { type: 'boolean', description: 'True (default) to spawn grabbable VR controller emitter funnel.' },
+          pour_from_entity: { type: 'string', description: 'Entity ID/name to pour grains out of.' },
+          pour_on_target: { type: 'string', description: 'Entity ID/name to pour grains onto.' },
+          count: { type: 'number', description: 'Micro-particle count (2500..8000).' }
+        }
+      }
+    },
+    {
+      name: 'simulate_cloth',
+      description: 'Create sub-stepped bend-spring Verlet cloth with realistic PBR textures (linen, silk, denim, velvet, lace, chainmail). Supports banners, draping over objects, stretching between pillars, tearing, and burning!',
+      parameters: {
+        type: 'object',
+        properties: {
+          mode: { type: 'string', description: 'banner | drape | tablecloth' },
+          texture: { type: 'string', description: 'linen | silk | denim | velvet | lace | chainmail' },
+          target: { type: 'string', description: 'Entity ID/name to drape cloth over.' },
+          between_entities: { type: 'array', items: { type: 'string' }, description: 'Two entity IDs/names to hang cloth between.' },
+          color: { type: 'string', description: 'Hex fabric color.' },
+          width: { type: 'number', description: 'Width in meters.' },
+          height: { type: 'number', description: 'Height in meters.' },
+          tearable: { type: 'boolean', description: 'True if pulling/swiping rips it.' },
+          burning: { type: 'boolean', description: 'True to spawn already on fire.' }
+        }
+      }
+    },
+    {
+      name: 'tear_cloth',
+      description: 'Physically rip or shred the active cloth into torn strips.',
+      parameters: { type: 'object', properties: { action: { type: 'string', description: 'slice | shred' }, y_ratio: { type: 'number', description: '0.2..0.8' } } }
+    },
+    {
+      name: 'burn_cloth',
+      description: 'Ignite or extinguish realistic fractal combustion, charring holes, glowing embers, and smoke on the active cloth!',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', description: 'ignite | extinguish' },
+          origin: { type: 'string', description: 'bottom | center | corners | random' },
+          speed: { type: 'number', description: 'Burn speed multiplier (0.5..3.0).' }
+        }
+      }
+    },
+    {
+      name: 'cloth_texture',
+      description: 'Change the active cloth material texture and color live (linen, silk, denim, velvet, lace, chainmail).',
+      parameters: {
+        type: 'object',
+        properties: {
+          texture: { type: 'string', description: 'linen | silk | denim | velvet | lace | chainmail' },
+          color: { type: 'string', description: 'Optional hex color.' }
+        }
+      }
+    },
+    {
+      name: 'disintegrate_object',
+      description: 'Disintegrate any target/latest 3D object into swirling glowing dust & ash particles.',
+      parameters: { type: 'object', properties: { target: { type: 'string', description: 'Entity ID, name, or "latest".' }, color: { type: 'string', description: 'Glow edge hex color.' }, direction: { type: 'string', description: 'bottom_up | top_down' } } }
+    }
+  ];
+
+  const SIM_PROMPT_ADDON = [
+    '',
+    'CREATIVE COMPOSABLE PHYSICS RULES (CRITICAL!):',
+    '- NEVER just call `run_instruction` when the user asks for something creative or customized!',
+    '- Combine `create_procedural_object` WITH `simulate_water` / `simulate_granular` / `simulate_cloth` in the SAME turn!',
+    '- For viscous honey use `simulate_water({ fluid: "honey", mode: "pouring", spreading: true })` or `fluid: "honey", container: "glass_bowl", pouring: true`.',
+    '- For spreading puddles/spills use `simulate_water({ mode: "spreading", pouring: true })`.',
+    '- For snow or wet sand use `simulate_granular({ material: "snow", emitter: true })`.',
+    '- For burning/textured cloth use `simulate_cloth({ texture: "linen" })`, `burn_cloth`, `cloth_texture`, `tear_cloth`.'
+  ].join('\n');
+
+  function registerWithBot() {
+    if (typeof APP.registerBotTool !== 'function') return;
+    const handlers = {
+      simulate_water: (a) => APP.sim.water(a || {}),
+      simulate_granular: (a) => APP.sim.granular(a || {}),
+      simulate_cloth: (a) => APP.sim.cloth(a || {}),
+      tear_cloth: (a) => APP.sim.tearCloth(a || {}),
+      burn_cloth: (a) => APP.sim.burnCloth(a || {}),
+      cloth_texture: (a) => APP.sim.setClothTexture(a || {}),
+      disintegrate_object: (a) => APP.sim.disintegrate(a || {})
+    };
+    for (const decl of SIM_AI_TOOLS) APP.registerBotTool(decl, handlers[decl.name], SIM_PROMPT_ADDON);
+  }
+
+  function wrapAI() {
+    registerWithBot();
+    if (!APP.ai) return;
+
+    if (typeof APP.ai.runTurn === 'function' && !APP.ai._inst2WrappedRunTurnV4) {
+      const origRunTurn = APP.ai.runTurn;
+      APP.ai.runTurn = async function (userText, opts = {}) {
+        const clean = String(userText || '').trim();
+        const isBareCommand = /^(water|rain|snow|lava|stop rain|clear weather|ماء|مطر|ثلج)$/i.test(clean);
+        if (!isBareCommand && APP.bot?.handleCommand) {
+          return await APP.bot.handleCommand(clean, opts);
+        }
+        return await origRunTurn.call(this, userText, opts);
+      };
+      APP.ai._inst2WrappedRunTurnV4 = true;
+    }
+
+    if (typeof APP.ai.chat === 'function' && !APP.ai._inst2WrappedChatV4) {
+      const origChat = APP.ai.chat;
+      APP.ai.chat = async function (opts = {}) {
+        const nextOpts = Object.assign({}, opts);
+        const is3D = Array.isArray(nextOpts.tools) && nextOpts.tools.some((t) => t && (t.name === 'create_procedural_object' || t.name === 'run_instruction'));
+        if (is3D) {
+          const map = new Map(nextOpts.tools.map((t) => [t.name, t]));
+          for (const decl of SIM_AI_TOOLS) map.set(decl.name, decl);
+          nextOpts.tools = Array.from(map.values());
+          nextOpts.systemPrompt = String(nextOpts.systemPrompt || '') + SIM_PROMPT_ADDON;
+
+          const origToolCall = nextOpts.onToolCall;
+          nextOpts.onToolCall = async function (name, args) {
+            if (name === 'simulate_water') return APP.sim.water(args || {});
+            if (name === 'simulate_granular') return APP.sim.granular(args || {});
+            if (name === 'simulate_cloth') return APP.sim.cloth(args || {});
+            if (name === 'tear_cloth') return await APP.sim.tearCloth(args || {});
+            if (name === 'burn_cloth') return await APP.sim.burnCloth(args || {});
+            if (name === 'cloth_texture') return await APP.sim.setClothTexture(args || {});
+            if (name === 'disintegrate_object') return APP.sim.disintegrate(args || {});
+            return typeof origToolCall === 'function' ? await origToolCall(name, args) : { ok: false, error: 'Unknown tool.' };
+          };
+        }
+        const res = await origChat.call(this, nextOpts);
+        if (res?.ok && Array.isArray(res.toolTrace) && res.toolTrace.length) {
+          const names = res.toolTrace.map((t) => t.name).join(' + ');
+          APP.ui?.toast?.(`[AI ${res.modelId || ''}] -> ${names}`, 3800);
+        }
+        return res;
+      };
+      APP.ai._inst2WrappedChatV4 = true;
+    }
+  }
+
+  wrapAI();
+  APP.on?.('modules:loaded', wrapAI);
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 1. Exact Preset Instruction: Water Simulation (Refractive Pool + Pitcher)
+# ----------------------------------------------------------------------
+@ability: interactive_water_sim
+@pin: Water Sim
+@desc: Spawns a refractive caustic water pool with hand/mouse wakes, buoyancy, and movable pitcher.
+@match: water simulation | water sim | ماء | محاكاة ماء
+@code:
+(function () {
+  if (!APP.sim?.water) return { ok: false, error: 'APP.sim not initialized.' };
+  const r = APP.sim.water({ container: 'basin', pouring: true });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 2. Exact Preset Instruction: Water Spill / Spreading Puddle
+# ----------------------------------------------------------------------
+@ability: water_spread_sim
+@pin: Water Spill
+@desc: Spawns a spreading 2D shallow-water spill simulation with movable pouring pitcher.
+@match: water spill | spreading water | puddle | flood
+@code:
+(function () {
+  if (!APP.sim?.water) return { ok: false, error: 'APP.sim not initialized.' };
+  const r = APP.sim.water({ mode: 'spreading', pouring: true });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 3. Exact Preset Instruction: Viscous Honey Pouring Simulation
+# ----------------------------------------------------------------------
+@ability: honey_fluid_sim
+@pin: Honey Sim
+@desc: Spawns thick viscous golden honey pouring with liquid rope coiling and slow spreading.
+@match: honey simulation | honey sim | viscous fluid | عسل
+@code:
+(function () {
+  if (!APP.sim?.water) return { ok: false, error: 'APP.sim not initialized.' };
+  const r = APP.sim.water({ fluid: 'honey', mode: 'spreading', pouring: true });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 4. Exact Preset Instruction: Granular Sand (With Movable Emitter)
+# ----------------------------------------------------------------------
+@ability: granular_sand_sim
+@pin: Granular Sand
+@desc: Spawns realistic rolling micro-grain sand with hand/mouse carving and a grabbable VR emitter.
+@match: granular sand | sand simulation | sand sim | محاكاة رمل
+@code:
+(function () {
+  if (!APP.sim?.granular) return { ok: false, error: 'APP.sim not initialized.' };
+  const r = APP.sim.granular({ material: 'sand', emitter: true });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 5. Exact Preset Instruction: Granular Snow (With Movable Emitter)
+# ----------------------------------------------------------------------
+@ability: granular_snow_sim
+@pin: Granular Snow
+@desc: Spawns clumpy sparkly granular snow with a grabbable VR controller emitter funnel.
+@match: granular snow | snow simulation | snow sim | محاكاة ثلج
+@code:
+(function () {
+  if (!APP.sim?.granular) return { ok: false, error: 'APP.sim not initialized.' };
+  const r = APP.sim.granular({ material: 'snow', emitter: true });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 6. Exact Preset Instruction: Disintegration
+# ----------------------------------------------------------------------
+@ability: disintegrate_object_sim
+@pin: Disintegrate
+@desc: Disintegrates the latest object into swirling dust and glowing particles.
+@match: disintegrate | disintegration | تفكك | تفتيت
+@code:
+(function () {
+  if (!APP.sim?.disintegrate) return { ok: false, error: 'APP.sim not initialized.' };
+  const r = APP.sim.disintegrate({ target: 'latest' });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 7. Exact Preset Instruction: Realistic Cloth Simulation
+# ----------------------------------------------------------------------
+@ability: interactive_cloth_sim
+@pin: Cloth Sim
+@desc: Spawns a realistic woven bend-spring tearable & burnable cloth banner.
+@match: cloth simulation | cloth sim | محاكاة قماش
+@code:
+(function () {
+  if (!APP.sim?.cloth) return { ok: false, error: 'APP.sim not initialized.' };
+  const r = APP.sim.cloth({ mode: 'banner', texture: 'linen', color: '#7f1d1d' });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 8. Exact Preset Instruction: Tear Cloth
+# ----------------------------------------------------------------------
+@ability: tear_cloth_action
+@pin: Tear Cloth
+@desc: Rips or shreds the active cloth into torn strips.
+@match: tear cloth | rip cloth | shred cloth | تمزيق
+@code:
+(async function () {
+  if (!APP.sim?.tearCloth) return { ok: false, error: 'APP.sim not initialized.' };
+  const low = String(typeof command === 'string' ? command : '').toLowerCase();
+  const r = await APP.sim.tearCloth({ action: low.includes('shred') ? 'shred' : 'slice' });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 9. Exact Preset Instruction: Burn Cloth
+# ----------------------------------------------------------------------
+@ability: burn_cloth_action
+@pin: Burn Cloth
+@desc: Ignites realistic fractal fire, glowing embers, charring holes, and smoke on the active cloth.
+@match: burn cloth | ignite cloth | fire cloth | حرق القماش
+@code:
+(async function () {
+  if (!APP.sim?.burnCloth) return { ok: false, error: 'APP.sim not initialized.' };
+  const r = await APP.sim.burnCloth({ origin: 'bottom' });
+  APP.ui?.toast?.('[Instruction] ' + r.message);
+  return r;
+})();
+@end

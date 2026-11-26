@@ -1,0 +1,958 @@
+# ======================================================================
+# visual.txt — Hi-Tech Matrix Simulation VFX & 360/AR Transitions
+# ======================================================================
+
+@ability: visual_world_fx
+@autorun
+@desc: Realistic GLSL Matrix glyph-atlas dissolve/materialization VFX, volumetric LiDAR scan sweeps, 360° equirectangular environments, architectural shader decks, and slow cinematic transitions.
+@match: environment | passthrough | matrix mode | matrix black | construct mode | construct gray | default room | 360 | بيئة ماتريكس | الغرفة البيضاء | الواقع المعزز
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return;
+
+  const scene = APP.scene;
+  const renderer = APP.renderer;
+
+  const ENV_MODES = ['default', 'matrix_black', 'construct_gray'];
+  let currentEnv = 'default';
+  let current360Name = '';
+
+  if (typeof APP._visualCleanup === 'function') {
+    try { APP._visualCleanup(); } catch (_) {}
+  }
+
+  // Fallback 1x1 dark texture so samplers never bind null
+  const emptyTex = new THREE.DataTexture(new Uint8Array([4, 10, 14, 255]), 1, 1, THREE.RGBAFormat);
+  emptyTex.needsUpdate = true;
+
+  // ====================================================================
+  // 0. PROCEDURAL 8x8 CRISP MATRIX GLYPH ATLAS (Eliminates Rectangles!)
+  // ====================================================================
+  function createMatrixGlyphAtlas() {
+    const size = 512;
+    const cells = 8;
+    const cell = size / cells;
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, size, size);
+
+    const glyphs = [
+      'ｱ','ｲ','ｳ','ｴ','ｵ','ｶ','ｷ','ｸ',
+      'ｹ','ｺ','ｻ','ｼ','ｽ','ｾ','ｿ','ﾀ',
+      'ﾁ','ﾂ','ﾃ','ﾄ','ﾅ','ﾆ','ﾇ','ﾈ',
+      'ﾊ','ﾋ','ﾌ','ﾍ','ﾎ','ﾏ','ﾐ','ﾑ',
+      'ﾒ','ﾓ','ﾔ','ﾕ','ﾖ','ﾗ','ﾘ','ﾙ',
+      'ﾚ','ﾛ','ﾜ','ﾝ','0','1','2','3',
+      '4','5','7','8','9','A','F','Z',
+      'Δ','Σ','Ω','Λ','Ξ','Ψ','¥','*'
+    ];
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 42px "MS Gothic", "Yu Gothic", "Courier New", monospace';
+
+    for (let i = 0; i < 64; i++) {
+      const gx = i % cells;
+      const gy = Math.floor(i / cells);
+      const cx = gx * cell + cell * 0.5;
+      const cy = gy * cell + cell * 0.5;
+
+      // Subtle optical bloom + razor-crisp glyph core
+      ctx.save();
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 4;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(glyphs[i], cx, cy);
+      ctx.restore();
+    }
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  const matrixGlyphTex = createMatrixGlyphAtlas();
+
+  function createConstructGridTexture() {
+    const c = document.createElement('canvas');
+    c.width = 512;
+    c.height = 512;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#e5ebf1';
+    ctx.fillRect(0, 0, 512, 512);
+    ctx.strokeStyle = 'rgba(71, 95, 122, 0.28)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(0, 0, 512, 512);
+    ctx.strokeStyle = 'rgba(100, 125, 152, 0.12)';
+    ctx.lineWidth = 1;
+    for (let i = 128; i < 512; i += 128) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(42, 42);
+    tex.anisotropy = 4;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  const constructGridTex = createConstructGridTexture();
+
+  // ====================================================================
+  // 1. CINEMATIC TRANSITION SKY DOME (Real Matrix Glyphs + Slow Sweep)
+  // ====================================================================
+  const skyUniforms = {
+    uTime: { value: 0 },
+    uProgress: { value: 1.0 },
+    uModeA: { value: 0 },
+    uModeB: { value: 0 },
+    uIsAR: { value: 0.0 },
+    uTex360A: { value: emptyTex },
+    uTex360B: { value: emptyTex },
+    uGlyphTex: { value: matrixGlyphTex },
+    uSweepDir: { value: new THREE.Vector3(0.25, 0.92, 0.28).normalize() },
+    uEdgeColA: { value: new THREE.Color(0x00ff9d) },
+    uEdgeColB: { value: new THREE.Color(0x38bdf8) }
+  };
+
+  const skyMat = new THREE.ShaderMaterial({
+    uniforms: skyUniforms,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+    vertexShader: [
+      'varying vec3 vDir;',
+      'void main() {',
+      '  vDir = normalize(position);',
+      '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'uniform float uTime;',
+      'uniform float uProgress;',
+      'uniform float uModeA;',
+      'uniform float uModeB;',
+      'uniform float uIsAR;',
+      'uniform sampler2D uTex360A;',
+      'uniform sampler2D uTex360B;',
+      'uniform sampler2D uGlyphTex;',
+      'uniform vec3 uSweepDir;',
+      'uniform vec3 uEdgeColA;',
+      'uniform vec3 uEdgeColB;',
+      'varying vec3 vDir;',
+      'const float PI = 3.14159265359;',
+
+      'float hash31(vec3 p) {',
+      '  p = fract(p * vec3(443.897, 441.423, 437.195));',
+      '  p += dot(p, p.yzx + 19.19);',
+      '  return fract((p.x + p.y) * p.z);',
+      '}',
+
+      'float noise3(vec3 p) {',
+      '  vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);',
+      '  return mix(',
+      '    mix(mix(hash31(i), hash31(i + vec3(1.0,0.0,0.0)), f.x),',
+      '        mix(hash31(i + vec3(0.0,1.0,0.0)), hash31(i + vec3(1.0,1.0,0.0)), f.x), f.y),',
+      '    mix(mix(hash31(i + vec3(0.0,0.0,1.0)), hash31(i + vec3(1.0,0.0,1.0)), f.x),',
+      '        mix(hash31(i + vec3(0.0,1.0,1.0)), hash31(i + vec3(1.0,1.0,1.0)), f.x), f.y), f.z);',
+      '}',
+
+      'float fbm3(vec3 p) {',
+      '  return 0.55 * noise3(p) + 0.30 * noise3(p * 2.15 + 4.3) + 0.15 * noise3(p * 4.45 - 2.7);',
+      '}',
+
+      'vec3 sampleGlyphLayer(float ang, float elev, float cols, float rows, float speedScale, float t) {',
+      '  float colIdx = floor(ang * cols);',
+      '  float rowIdx = floor(elev * rows);',
+      '  float colRnd = hash31(vec3(colIdx, 7.1, cols));',
+      '  float speed = (0.12 + colRnd * 0.24) * speedScale;',
+      '  vec2 cellUV = vec2(fract(ang * cols), fract(elev * rows));',
+      '  cellUV = clamp(cellUV, 0.06, 0.94);',
+      '  float tick = floor(t * (4.0 + colRnd * 6.0) + rowIdx * 1.37 + colIdx * 0.71);',
+      '  float gIdx = floor(hash31(vec3(colIdx, rowIdx, tick)) * 64.0);',
+      '  vec2 atlasUV = (vec2(mod(gIdx, 8.0), floor(gIdx / 8.0)) + cellUV) / 8.0;',
+      '  float glyph = texture2D(uGlyphTex, atlasUV).r;',
+      '  float stream = fract(elev * (1.8 + colRnd * 1.4) + t * speed + colRnd * 14.0);',
+      '  float head = smoothstep(0.955, 0.998, stream);',
+      '  float tail = pow(smoothstep(0.28, 0.96, stream), 1.8) * 0.72;',
+      '  float colActive = step(0.18, hash31(vec3(colIdx, 13.7, 2.3)));',
+      '  vec3 emerald = vec3(0.0, 0.92, 0.48) * tail;',
+      '  vec3 whiteHead = vec3(0.82, 1.0, 0.92) * head * 1.45;',
+      '  return (emerald + whiteHead) * glyph * colActive;',
+      '}',
+
+      'vec4 sampleMatrixSky(vec3 d, float t) {',
+      '  float ang = atan(d.z, d.x) / (2.0 * PI) + 0.5;',
+      '  float elev = d.y;',
+      '  float horizMask = smoothstep(-0.32, 0.08, elev) * (1.0 - smoothstep(0.62, 0.94, elev));',
+      '  vec3 fg = sampleGlyphLayer(ang, elev, 110.0, 48.0, 1.0, t);',
+      '  vec3 bg = sampleGlyphLayer(ang + 0.013, elev + 0.021, 180.0, 78.0, 0.62, t) * 0.36;',
+      '  vec3 baseVoid = mix(vec3(0.002, 0.010, 0.007), vec3(0.006, 0.028, 0.018), exp(-abs(elev) * 4.2));',
+      '  return vec4(baseVoid + (fg + bg) * horizMask, 1.0);',
+      '}',
+
+      'vec4 sampleEnv(float mode, vec3 d, sampler2D tex360) {',
+      '  if (mode < 0.5) {',
+      '    if (uIsAR > 0.5) return vec4(0.0, 0.0, 0.0, 0.0);',
+      '    float grad = smoothstep(-0.2, 0.85, d.y);',
+      '    return vec4(mix(vec3(0.022, 0.032, 0.052), vec3(0.007, 0.012, 0.022), grad), 1.0);',
+      '  }',
+      '  if (mode < 1.5) {',
+      '    return sampleMatrixSky(d, uTime);',
+      '  }',
+      '  if (mode < 2.5) {',
+      '    float grad = smoothstep(-0.15, 0.85, d.y);',
+      '    return vec4(mix(vec3(0.78, 0.82, 0.87), vec3(0.92, 0.95, 0.98), grad), 1.0);',
+      '  }',
+      '  vec2 eqUv = vec2(atan(d.z, d.x) / (2.0 * PI) + 0.5, asin(clamp(d.y, -1.0, 1.0)) / PI + 0.5);',
+      '  return vec4(texture2D(tex360, eqUv).rgb, 1.0);',
+      '}',
+
+      'void main() {',
+      '  vec3 d = normalize(vDir);',
+      '  vec4 colA = sampleEnv(uModeA, d, uTex360A);',
+      '  vec4 colB = sampleEnv(uModeB, d, uTex360B);',
+      '  if (uProgress >= 0.998) {',
+      '    if (colB.a < 0.01) discard;',
+      '    gl_FragColor = colB;',
+      '    return;',
+      '  }',
+      '  float wave = (dot(d, uSweepDir) * 0.5 + 0.5) * 0.55 + fbm3(d * 5.8 + vec3(0.0, uTime * 0.08, 0.0)) * 0.45;',
+      '  float thresh = mix(-0.14, 1.14, uProgress);',
+      '  float dist = wave - thresh;',
+      '  float mixMask = 1.0 - smoothstep(-0.015, 0.015, dist);',
+      '  float razor = exp(-pow(dist * 75.0, 2.0));',
+      '  float halo = 1.0 - smoothstep(0.0, 0.075, abs(dist));',
+      '  float ang = atan(d.z, d.x) / (2.0 * PI) + 0.5;',
+      '  vec3 seamGlyphs = sampleGlyphLayer(ang, d.y, 130.0, 56.0, 1.2, uTime);',
+      '  vec4 blended = mix(colA, colB, mixMask);',
+      '  vec3 edgeGlow = mix(uEdgeColB, uEdgeColA, razor) * (halo * 0.95 + razor * 2.2) + seamGlyphs * halo * 1.4;',
+      '  float outAlpha = max(blended.a, halo * 0.95);',
+      '  if (outAlpha < 0.01) discard;',
+      '  gl_FragColor = vec4(blended.rgb + edgeGlow, outAlpha);',
+      '}'
+    ].join('\n')
+  });
+
+  const skyDome = new THREE.Mesh(new THREE.SphereGeometry(46, 64, 40), skyMat);
+  skyDome.name = 'APP_ENV_TRANSITION_DOME';
+  skyDome.frustumCulled = false;
+  skyDome.renderOrder = -10;
+  scene.add(skyDome);
+
+  // ====================================================================
+  // 2. ARCHITECTURAL PRECISION SHADER FLOOR DECKS (No Toy GridHelpers!)
+  // ====================================================================
+  const envGroup = new THREE.Group();
+  envGroup.name = 'APP_VISUAL_ENV_GROUP';
+  scene.add(envGroup);
+
+  const arFloor = new THREE.Mesh(
+    new THREE.PlaneGeometry(42, 42),
+    new THREE.ShadowMaterial({ opacity: 0.34 })
+  );
+  arFloor.rotation.x = -Math.PI / 2;
+  arFloor.position.y = 0.001;
+  arFloor.receiveShadow = true;
+  envGroup.add(arFloor);
+
+  function createTechDeckMaterial(baseHex, majorHex, minorHex, pulseSpeed) {
+    const uniforms = {
+      uTime: { value: 0 },
+      uOpacity: { value: 1.0 },
+      uBase: { value: new THREE.Color(baseHex) },
+      uMajor: { value: new THREE.Color(majorHex) },
+      uMinor: { value: new THREE.Color(minorHex) },
+      uPulseSpeed: { value: pulseSpeed }
+    };
+    const mat = new THREE.ShaderMaterial({
+      uniforms,
+      transparent: true,
+      depthWrite: true,
+      vertexShader: 'varying vec3 vWPos; void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vWPos=wp.xyz; gl_Position=projectionMatrix*viewMatrix*wp; }',
+      fragmentShader: [
+        'uniform float uTime; uniform float uOpacity; uniform vec3 uBase; uniform vec3 uMajor; uniform vec3 uMinor; uniform float uPulseSpeed;',
+        'varying vec3 vWPos;',
+        'float gridLine(vec2 p, float scale, float thick){',
+        '  vec2 g = abs(fract(p * scale - 0.5) - 0.5) / (fwidth(p * scale) + 0.0001);',
+        '  float l = min(g.x, g.y);',
+        '  return 1.0 - clamp(l / thick, 0.0, 1.0);',
+        '}',
+        'void main(){',
+        '  float r = length(vWPos.xz);',
+        '  float fade = 1.0 - smoothstep(10.0, 28.0, r);',
+        '  if (fade < 0.01 || uOpacity < 0.01) discard;',
+        '  float gMaj = gridLine(vWPos.xz, 1.0, 1.35);',
+        '  float gMin = gridLine(vWPos.xz, 4.0, 1.0) * 0.42;',
+        '  float pulse = exp(-pow((fract(r * 0.08 - uTime * uPulseSpeed) - 0.5) * 14.0, 2.0)) * 0.55;',
+        '  vec3 col = mix(uBase, uMinor, gMin);',
+        '  col = mix(col, uMajor * (1.0 + pulse), gMaj * 0.85);',
+        '  gl_FragColor = vec4(col, fade * uOpacity);',
+        '}'
+      ].join('\n')
+    });
+    return { mat, uniforms };
+  }
+
+  const studioDeck = createTechDeckMaterial(0x060910, 0x1e4e68, 0x0f1f30, 0.08);
+  const studioFloor = new THREE.Mesh(new THREE.CircleGeometry(30, 64), studioDeck.mat);
+  studioFloor.rotation.x = -Math.PI / 2;
+  envGroup.add(studioFloor);
+
+  const matrixDeck = createTechDeckMaterial(0x020806, 0x00d97e, 0x052e1d, 0.22);
+  const matrixFloor = new THREE.Mesh(new THREE.CircleGeometry(30, 64), matrixDeck.mat);
+  matrixFloor.rotation.x = -Math.PI / 2;
+  matrixFloor.position.y = 0.002;
+  matrixFloor.visible = false;
+  envGroup.add(matrixFloor);
+
+  const constructFloorMat = new THREE.MeshStandardMaterial({
+    map: constructGridTex,
+    color: 0xf1f5f9,
+    roughness: 0.42,
+    metalness: 0.08,
+    transparent: true,
+    opacity: 0
+  });
+  const constructFloor = new THREE.Mesh(new THREE.CircleGeometry(32, 64), constructFloorMat);
+  constructFloor.rotation.x = -Math.PI / 2;
+  constructFloor.receiveShadow = true;
+  constructFloor.visible = false;
+  envGroup.add(constructFloor);
+
+  const envTransition = {
+    active: false,
+    age: 0,
+    duration: 3.4, // Slower, cinematic environment transition
+    fromEnv: 'default',
+    toEnv: 'default'
+  };
+
+  function envNameToShaderMode(name) {
+    if (name === 'matrix_black') return 1;
+    if (name === 'construct_gray') return 2;
+    if (String(name).startsWith('360:')) return 3;
+    return 0;
+  }
+
+  function syncFloorVisibility(progress) {
+    const inAR = APP.xrMode === 'ar' || !!APP.isAR;
+    skyUniforms.uIsAR.value = inAR ? 1.0 : 0.0;
+
+    scene.background = null;
+    if (renderer) renderer.setClearAlpha(inAR ? 0 : 1);
+
+    if (currentEnv === 'default' && inAR && !envTransition.active) {
+      skyDome.visible = false;
+    } else {
+      skyDome.visible = true;
+    }
+
+    arFloor.visible = (currentEnv === 'default' && inAR) || String(currentEnv).startsWith('360:');
+
+    const showStudio = currentEnv === 'default' && !inAR;
+    studioFloor.visible = showStudio;
+    studioDeck.uniforms.uOpacity.value = showStudio ? progress : 0;
+
+    const showMatrix = currentEnv === 'matrix_black';
+    matrixFloor.visible = showMatrix;
+    matrixDeck.uniforms.uOpacity.value = showMatrix ? progress : 0;
+
+    const showConstruct = currentEnv === 'construct_gray';
+    constructFloor.visible = showConstruct;
+    constructFloorMat.opacity = showConstruct ? progress : 0;
+
+    if (currentEnv === 'matrix_black') scene.fog = new THREE.FogExp2(0x000804, 0.026);
+    else if (currentEnv === 'construct_gray') scene.fog = new THREE.FogExp2(0xe2e8f0, 0.018);
+    else scene.fog = null;
+  }
+
+  function beginEnvironmentTransition(nextEnv, tex360) {
+    const prevMode = skyUniforms.uModeB.value;
+    const prevTex = skyUniforms.uTex360B.value;
+
+    skyUniforms.uModeA.value = prevMode;
+    skyUniforms.uTex360A.value = prevTex || emptyTex;
+
+    const nextMode = envNameToShaderMode(nextEnv);
+    skyUniforms.uModeB.value = nextMode;
+    if (tex360) skyUniforms.uTex360B.value = tex360;
+    else if (nextMode !== 3) skyUniforms.uTex360B.value = emptyTex;
+
+    skyUniforms.uSweepDir.value.set((Math.random() - 0.5) * 0.9, 0.85, (Math.random() - 0.5) * 0.9).normalize();
+    skyUniforms.uProgress.value = 0.0;
+    skyDome.visible = true;
+
+    envTransition.active = true;
+    envTransition.age = 0;
+    envTransition.fromEnv = currentEnv;
+    envTransition.toEnv = nextEnv;
+    currentEnv = nextEnv;
+    APP.activeEnv = currentEnv;
+    syncFloorVisibility(0.05);
+    APP.emit?.('visual:env_changed', currentEnv);
+    APP.toolbar?.syncState?.();
+  }
+
+  async function resolveImageUrl(query) {
+    const key = String(query || '').replace(/\.[^.]+$/, '').toLowerCase().trim();
+    if (!key) return null;
+    if (APP.importedImages) {
+      const exact = APP.importedImages.get(key);
+      if (exact) return exact.url;
+      for (const rec of APP.importedImages.values()) {
+        if (rec.cleanName.includes(key)) return rec.url;
+      }
+    }
+    const probes = [`./assets/${key}.jpg`, `./assets/${key}.jpeg`, `./assets/${key}.png`, `./assets/${key}.webp`, `./${key}.jpg`, `./${key}.png`];
+    for (const p of probes) {
+      try {
+        const h = await fetch(p, { method: 'HEAD' });
+        if (h.ok) return p;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  async function set360Environment(nameOrUrl) {
+    let url = String(nameOrUrl || '').trim();
+    if (!url.startsWith('http') && !url.startsWith('blob:') && !url.startsWith('./') && !url.startsWith('data:')) {
+      const resolved = await resolveImageUrl(url);
+      if (!resolved) return { ok: false, error: `360 image "${nameOrUrl}" not found in /assets/ or imported images.` };
+      url = resolved;
+    }
+    try {
+      const tex = await new THREE.TextureLoader().loadAsync(url);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      current360Name = String(nameOrUrl);
+      beginEnvironmentTransition('360:' + current360Name, tex);
+      return { ok: true, env: currentEnv };
+    } catch (e) {
+      return { ok: false, error: 'Failed to load 360 image: ' + e.message };
+    }
+  }
+
+  function setEnvironment(mode) {
+    const clean = String(mode || 'default').toLowerCase().trim();
+    if (clean.startsWith('360:')) {
+      set360Environment(clean.slice(4));
+      return clean;
+    }
+    let target = 'default';
+    if (ENV_MODES.includes(clean)) target = clean;
+    else if (clean.includes('matrix')) target = 'matrix_black';
+    else if (clean.includes('construct') || clean.includes('gray') || clean.includes('white')) target = 'construct_gray';
+
+    if (target !== currentEnv || envTransition.active) {
+      beginEnvironmentTransition(target, null);
+    } else {
+      syncFloorVisibility(1.0);
+    }
+    return currentEnv;
+  }
+
+  function cycleEnvironment() {
+    const idx = ENV_MODES.indexOf(currentEnv);
+    return setEnvironment(ENV_MODES[(idx + 1) % ENV_MODES.length]);
+  }
+
+  // ====================================================================
+  // 3. HI-TECH PBR MATRIX CODE RECONSTRUCTION / DISSOLVE SHADER
+  // ====================================================================
+  function patchMaterialWithMatrixShader(mat) {
+    if (!mat || typeof mat.onBeforeCompile !== 'function') return null;
+    if (mat.userData && mat.userData.proMatrixUniforms) {
+      return mat.userData.proMatrixUniforms;
+    }
+
+    const uniforms = {
+      uDissolve: { value: 0.0 },
+      uDissolveMode: { value: 0.0 },
+      uMinY: { value: 0.0 },
+      uMaxY: { value: 1.0 },
+      uTime: { value: 0.0 },
+      uMatrixGreen: { value: new THREE.Color(0x00ff95) },
+      uMatrixCyan: { value: new THREE.Color(0x38bdf8) },
+      uGlyphTex: { value: matrixGlyphTex }
+    };
+
+    const prevCompile = mat.onBeforeCompile;
+    const prevKey = typeof mat.customProgramCacheKey === 'function' ? mat.customProgramCacheKey() : '';
+
+    mat.customProgramCacheKey = function () {
+      return (prevKey ? prevKey + '|' : '') + 'wxr_pro_matrix_v4';
+    };
+
+    mat.onBeforeCompile = function (shader, r) {
+      if (prevCompile && prevCompile !== mat.onBeforeCompile) {
+        try { prevCompile.call(mat, shader, r); } catch (_) {}
+      }
+
+      shader.uniforms.uDissolve = uniforms.uDissolve;
+      shader.uniforms.uDissolveMode = uniforms.uDissolveMode;
+      shader.uniforms.uMinY = uniforms.uMinY;
+      shader.uniforms.uMaxY = uniforms.uMaxY;
+      shader.uniforms.uTime = uniforms.uTime;
+      shader.uniforms.uMatrixGreen = uniforms.uMatrixGreen;
+      shader.uniforms.uMatrixCyan = uniforms.uMatrixCyan;
+      shader.uniforms.uGlyphTex = uniforms.uGlyphTex;
+
+      shader.vertexShader = shader.vertexShader
+        .replace('void main() {', 'varying vec3 vProMtxPos;\nvoid main() {')
+        .replace(
+          '#include <project_vertex>',
+          '#include <project_vertex>\nvProMtxPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+        );
+
+      const fragHeader = [
+        'uniform float uDissolve;',
+        'uniform float uDissolveMode;',
+        'uniform float uMinY;',
+        'uniform float uMaxY;',
+        'uniform float uTime;',
+        'uniform vec3 uMatrixGreen;',
+        'uniform vec3 uMatrixCyan;',
+        'uniform sampler2D uGlyphTex;',
+        'varying vec3 vProMtxPos;',
+        'float proHash(vec3 p) {',
+        '  p = fract(p * vec3(443.897, 441.423, 437.195));',
+        '  p += dot(p, p.yzx + 19.19);',
+        '  return fract((p.x + p.y) * p.z);',
+        '}',
+        'float proNoise(vec3 p) {',
+        '  vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);',
+        '  return mix(',
+        '    mix(mix(proHash(i), proHash(i + vec3(1.0,0.0,0.0)), f.x),',
+        '        mix(proHash(i + vec3(0.0,1.0,0.0)), proHash(i + vec3(1.0,1.0,0.0)), f.x), f.y),',
+        '    mix(mix(proHash(i + vec3(0.0,0.0,1.0)), proHash(i + vec3(1.0,0.0,1.0)), f.x),',
+        '        mix(proHash(i + vec3(0.0,1.0,1.0)), proHash(i + vec3(1.0,1.0,1.0)), f.x), f.y), f.z);',
+        '}',
+        'float proFbm(vec3 p) { return 0.58 * proNoise(p) + 0.28 * proNoise(p * 2.3) + 0.14 * proNoise(p * 4.9); }',
+        'float proMicroGrid(vec3 p, float s) {',
+        '  vec3 f = abs(fract(p * s) - 0.5);',
+        '  float d = min(min(f.x, f.y), f.z);',
+        '  return 1.0 - smoothstep(0.45, 0.5, d);',
+        '}',
+        'float proSampleObjGlyph(vec3 wp, float t) {',
+        '  vec2 uv = vec2(wp.x + wp.z, wp.y) * 28.0;',
+        '  vec2 id = floor(uv);',
+        '  vec2 cell = clamp(fract(uv), 0.08, 0.92);',
+        '  float tick = floor(t * 7.0 + id.x * 0.7 + id.y * 1.3);',
+        '  float gi = floor(proHash(vec3(id, tick)) * 64.0);',
+        '  vec2 aUV = (vec2(mod(gi, 8.0), floor(gi / 8.0)) + cell) / 8.0;',
+        '  return texture2D(uGlyphTex, aUV).r;',
+        '}',
+        'void main() {'
+      ].join('\n');
+
+      const fragDiscard = [
+        '#include <clipping_planes_fragment>',
+        'float proSeam = 0.0;',
+        'float proHoloBand = 0.0;',
+        'float proGrid = 0.0;',
+        'float proGlyph = 0.0;',
+        'if (uDissolve > 0.002) {',
+        '  float hSpan = max(0.04, uMaxY - uMinY);',
+        '  float hNorm = clamp((vProMtxPos.y - uMinY) / hSpan, 0.0, 1.0);',
+        '  float n = proFbm(vProMtxPos * 14.0 + vec3(0.0, uTime * 0.55, 0.0));',
+        '  proGrid = proMicroGrid(vProMtxPos, 38.0);',
+        '  proGlyph = proSampleObjGlyph(vProMtxPos, uTime);',
+        '  if (uDissolveMode < 0.5) {',
+        '    float scanY = mix(-0.18, 1.18, 1.0 - uDissolve);',
+        '    float delta = (hNorm + (n - 0.5) * 0.14) - scanY;',
+        '    if (delta > 0.16) discard;',
+        '    if (delta > 0.015 && proGlyph < 0.18 && proGrid < 0.25) discard;',
+        '    proHoloBand = smoothstep(0.16, 0.0, max(0.0, delta)) * step(0.01, delta);',
+        '    proSeam = 1.0 - smoothstep(0.0, 0.032, abs(delta));',
+        '  } else {',
+        '    float field = n * 0.62 + (1.0 - hNorm) * 0.38;',
+        '    float thresh = mix(-0.10, 1.10, uDissolve);',
+        '    float delta = field - thresh;',
+        '    if (delta < 0.0) discard;',
+        '    proHoloBand = (1.0 - smoothstep(0.0, 0.14, delta));',
+        '    proSeam = 1.0 - smoothstep(0.0, 0.045, delta);',
+        '  }',
+        '}'
+      ].join('\n');
+
+      const fragColor = [
+        'if (uDissolve > 0.002 && (proSeam > 0.005 || proHoloBand > 0.005)) {',
+        '  vec3 holoCol = mix(uMatrixGreen, uMatrixCyan, proGrid * 0.6);',
+        '  vec3 codeGlow = holoCol * (proGlyph * 1.45 + proGrid * 0.95) * proHoloBand;',
+        '  vec3 razorEdge = mix(uMatrixCyan, vec3(0.88, 1.0, 0.96), pow(proSeam, 2.0)) * (proSeam * 2.4);',
+        '  gl_FragColor.rgb = mix(gl_FragColor.rgb, holoCol * 0.25, clamp(proHoloBand * 0.75, 0.0, 0.85));',
+        '  gl_FragColor.rgb += codeGlow + razorEdge;',
+        '}',
+        '#include <dithering_fragment>'
+      ].join('\n');
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace('void main() {', fragHeader)
+        .replace('#include <clipping_planes_fragment>', fragDiscard)
+        .replace('#include <dithering_fragment>', fragColor);
+    };
+
+    mat.userData = mat.userData || {};
+    mat.userData.proMatrixUniforms = uniforms;
+    mat.needsUpdate = true;
+    return uniforms;
+  }
+
+  function collectAndPatchUniforms(rootObj, opts) {
+    if (!rootObj) return [];
+    const list = [];
+    const clonedMap = new Map();
+
+    rootObj.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(rootObj);
+    const minY = isFinite(box.min.y) ? box.min.y : 0;
+    const maxY = isFinite(box.max.y) && box.max.y > minY ? box.max.y : minY + 1;
+
+    rootObj.traverse((node) => {
+      if (!node.isMesh || !node.material) return;
+      const mats = Array.isArray(node.material) ? node.material : [node.material];
+      const out = [];
+      for (let i = 0; i < mats.length; i++) {
+        let m = mats[i];
+        if (!m) continue;
+        if (!m.userData || m.userData.proMatrixOwner !== rootObj.uuid) {
+          if (clonedMap.has(m)) {
+            m = clonedMap.get(m);
+          } else {
+            const c = m.clone();
+            c.userData = Object.assign({}, m.userData || {}, { proMatrixOwner: rootObj.uuid });
+            clonedMap.set(m, c);
+            m = c;
+          }
+        }
+        const u = patchMaterialWithMatrixShader(m);
+        if (u) {
+          u.uMinY.value = minY;
+          u.uMaxY.value = maxY;
+          if (typeof opts.mode === 'number') u.uDissolveMode.value = opts.mode;
+          if (typeof opts.progress === 'number') u.uDissolve.value = opts.progress;
+          list.push(u);
+        }
+        out.push(m);
+      }
+      node.material = Array.isArray(node.material) ? out : out[0];
+    });
+    return list;
+  }
+
+  // ====================================================================
+  // 4. VOLUMETRIC LIDAR SCAN RING + FINE OPTICAL MICRO-FILAMENTS
+  // ====================================================================
+  const activeAnims = [];
+  const activeBeams = [];
+  const activeSparkBursts = [];
+
+  function spawnVolumetricScanner(centerPos, radius, minY, maxY, reverse, duration) {
+    const r = Math.max(0.14, radius * 1.12);
+    const geo = new THREE.CylinderGeometry(r, r, 0.11, 56, 1, true);
+    const uniforms = { uProgress: { value: 0.0 }, uColor: { value: new THREE.Color(0x00ff9d) } };
+    const mat = new THREE.ShaderMaterial({
+      uniforms,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: [
+        'uniform float uProgress; uniform vec3 uColor; varying vec2 vUv;',
+        'void main() {',
+        '  float band = exp(-pow((vUv.y - 0.5) * 6.0, 2.0));',
+        '  float razor = exp(-pow((vUv.y - 0.5) * 34.0, 2.0));',
+        '  float fade = sin(uProgress * 3.14159265);',
+        '  vec3 col = mix(uColor, vec3(0.88, 1.0, 0.96), razor);',
+        '  gl_FragColor = vec4(col, (band * 0.28 + razor * 0.92) * fade);',
+        '}'
+      ].join('\n')
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(centerPos.x, reverse ? maxY : minY, centerPos.z);
+    scene.add(mesh);
+    activeBeams.push({ mesh, uniforms, age: 0, duration: duration || 2.6, minY, maxY, reverse: !!reverse });
+  }
+
+  function spawnOpticalFilaments(centerPos, sizeVec, isDissolve, duration) {
+    const count = 96;
+    const positions = new Float32Array(count * 3);
+    const phases = new Float32Array(count);
+    const speeds = new Float32Array(count);
+    const spreadX = Math.max(0.18, sizeVec.x * 0.72);
+    const spreadY = Math.max(0.20, sizeVec.y * 0.85);
+    const spreadZ = Math.max(0.18, sizeVec.z * 0.72);
+
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = centerPos.x + (Math.random() - 0.5) * spreadX;
+      positions[i * 3 + 1] = centerPos.y + (Math.random() - 0.5) * spreadY;
+      positions[i * 3 + 2] = centerPos.z + (Math.random() - 0.5) * spreadZ;
+      phases[i] = Math.random() * 6.283;
+      speeds[i] = (isDissolve ? 0.16 : 0.12) + Math.random() * 0.24;
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+
+    const uniforms = {
+      uAlpha: { value: 1.0 },
+      uTime: { value: 0.0 },
+      uSize: { value: 8.5 * (window.devicePixelRatio || 1) }
+    };
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      vertexShader: [
+        'attribute float aPhase; uniform float uSize; varying float vPhase;',
+        'void main() {',
+        '  vPhase = aPhase; vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+        '  gl_PointSize = clamp(uSize / max(0.35, -mv.z), 1.5, 7.5);',
+        '  gl_Position = projectionMatrix * mv;',
+        '}'
+      ].join('\n'),
+      fragmentShader: [
+        'uniform float uAlpha; uniform float uTime; varying float vPhase;',
+        'void main() {',
+        '  float d = length(gl_PointCoord - vec2(0.5)) * 2.0; if (d > 1.0) discard;',
+        '  float core = pow(1.0 - d, 3.2);',
+        '  float twinkle = 0.6 + 0.4 * sin(uTime * 10.0 + vPhase);',
+        '  vec3 col = mix(vec3(0.0, 0.95, 0.62), vec3(0.85, 1.0, 0.96), core);',
+        '  gl_FragColor = vec4(col, core * twinkle * uAlpha);',
+        '}'
+      ].join('\n')
+    });
+
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    scene.add(pts);
+    activeSparkBursts.push({ points: pts, uniforms, speeds, phases, isDissolve: !!isDissolve, age: 0, duration: duration || 2.6 });
+  }
+
+  function materializeObject(obj, opts) {
+    if (!obj) return;
+    const options = opts || {};
+    const duration = options.duration || 2.8;
+    obj.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(obj);
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    const minY = isFinite(box.min.y) ? box.min.y : 0;
+    const maxY = isFinite(box.max.y) && box.max.y > minY ? box.max.y : minY + 0.5;
+    const radius = Math.max(0.22, Math.max(size.x, size.z) * 0.65);
+
+    const uniformsList = collectAndPatchUniforms(obj, { mode: 0.0, progress: 1.0 });
+    spawnVolumetricScanner(center, radius, minY, maxY, false, duration);
+    spawnOpticalFilaments(center, size, false, duration);
+
+    activeAnims.push({ obj, uniformsList, mode: 0, age: 0, duration, onComplete: options.onComplete });
+  }
+
+  function dissolveObject(obj, opts) {
+    if (!obj) return;
+    const options = opts || {};
+    const duration = options.duration || 2.5;
+    const removeOnDone = options.removeOnDone !== false;
+    obj.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(obj);
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    const minY = isFinite(box.min.y) ? box.min.y : 0;
+    const maxY = isFinite(box.max.y) && box.max.y > minY ? box.max.y : minY + 0.5;
+    const radius = Math.max(0.22, Math.max(size.x, size.z) * 0.65);
+
+    const uniformsList = collectAndPatchUniforms(obj, { mode: 1.0, progress: 0.0 });
+    spawnVolumetricScanner(center, radius, minY, maxY, true, duration);
+    spawnOpticalFilaments(center, size, true, duration);
+
+    activeAnims.push({
+      obj,
+      uniformsList,
+      mode: 1,
+      age: 0,
+      duration,
+      onComplete: function () {
+        if (removeOnDone) {
+          if (obj.parent) obj.parent.remove(obj);
+          APP.disposeObject3D?.(obj);
+        }
+        if (typeof options.onComplete === 'function') options.onComplete();
+      }
+    });
+  }
+
+  function applyDissolveShader(rootObj, modeOrOpts, extraOpts) {
+    if (typeof modeOrOpts === 'string') {
+      if (modeOrOpts.toLowerCase() === 'dissolve') {
+        dissolveObject(rootObj, Object.assign({ removeOnDone: false }, extraOpts || {}));
+      } else {
+        materializeObject(rootObj, extraOpts || {});
+      }
+      return;
+    }
+    return collectAndPatchUniforms(rootObj, modeOrOpts || {});
+  }
+
+  function dissolveAndRemove(rootObj, onComplete) {
+    dissolveObject(rootObj, { removeOnDone: false, onComplete });
+  }
+
+  // ====================================================================
+  // 5. PER-FRAME UPDATE
+  // ====================================================================
+  function update(dt, elapsed) {
+    const delta = Math.min(0.05, dt || 0.016);
+    const now = elapsed || (performance.now() * 0.001);
+
+    if (APP.headPos) skyDome.position.copy(APP.headPos);
+    skyUniforms.uTime.value = now;
+    studioDeck.uniforms.uTime.value = now;
+    matrixDeck.uniforms.uTime.value = now;
+
+    if (envTransition.active) {
+      envTransition.age += delta;
+      const t = Math.min(1, envTransition.age / envTransition.duration);
+      const eased = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      skyUniforms.uProgress.value = eased;
+      syncFloorVisibility(eased);
+      if (t >= 1) {
+        envTransition.active = false;
+        skyUniforms.uProgress.value = 1.0;
+        syncFloorVisibility(1.0);
+      }
+    }
+
+    for (let i = activeAnims.length - 1; i >= 0; i--) {
+      const a = activeAnims[i];
+      a.age += delta;
+      const t = Math.min(1, a.age / a.duration);
+      const val = a.mode === 0 ? 1.0 - t : t;
+      for (let j = 0; j < a.uniformsList.length; j++) {
+        a.uniformsList[j].uDissolve.value = val;
+        a.uniformsList[j].uTime.value = now;
+      }
+      if (t >= 1) {
+        activeAnims.splice(i, 1);
+        if (typeof a.onComplete === 'function') {
+          try { a.onComplete(); } catch (_) {}
+        }
+      }
+    }
+
+    for (let i = activeBeams.length - 1; i >= 0; i--) {
+      const b = activeBeams[i];
+      b.age += delta;
+      const t = Math.min(1, b.age / b.duration);
+      b.uniforms.uProgress.value = t;
+      b.mesh.position.y = b.reverse
+        ? THREE.MathUtils.lerp(b.maxY, b.minY, t)
+        : THREE.MathUtils.lerp(b.minY, b.maxY, t);
+      if (t >= 1) {
+        scene.remove(b.mesh);
+        b.mesh.geometry.dispose();
+        b.mesh.material.dispose();
+        activeBeams.splice(i, 1);
+      }
+    }
+
+    for (let i = activeSparkBursts.length - 1; i >= 0; i--) {
+      const s = activeSparkBursts[i];
+      s.age += delta;
+      const t = Math.min(1, s.age / s.duration);
+      s.uniforms.uTime.value = now;
+      s.uniforms.uAlpha.value = Math.sin(t * Math.PI);
+      const posAttr = s.points.geometry.getAttribute('position');
+      const arr = posAttr.array;
+      for (let k = 0; k < s.speeds.length; k++) {
+        const k3 = k * 3;
+        const ph = s.phases[k] + now * 2.4;
+        arr[k3] += Math.sin(ph) * 0.09 * delta;
+        arr[k3 + 1] += (s.isDissolve ? -s.speeds[k] : s.speeds[k]) * delta;
+        arr[k3 + 2] += Math.cos(ph) * 0.09 * delta;
+      }
+      posAttr.needsUpdate = true;
+      if (t >= 1) {
+        scene.remove(s.points);
+        s.points.geometry.dispose();
+        s.points.material.dispose();
+        activeSparkBursts.splice(i, 1);
+      }
+    }
+  }
+
+  const unsubFrame = APP.onUpdate ? APP.onUpdate(update) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(update);
+  const unsubXRStart = APP.on ? APP.on('xr:start', () => syncFloorVisibility(1.0)) : null;
+  const unsubXREnd = APP.on ? APP.on('xr:end', () => syncFloorVisibility(1.0)) : null;
+
+  APP._visualCleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame();
+    else APP.frameHooks?.delete(update);
+    if (typeof unsubXRStart === 'function') unsubXRStart();
+    if (typeof unsubXREnd === 'function') unsubXREnd();
+    if (skyDome.parent) skyDome.parent.remove(skyDome);
+    if (envGroup.parent) envGroup.parent.remove(envGroup);
+    skyDome.geometry.dispose();
+    skyMat.dispose();
+    studioDeck.mat.dispose();
+    matrixDeck.mat.dispose();
+    constructFloorMat.dispose();
+    matrixGlyphTex.dispose();
+    constructGridTex.dispose();
+    emptyTex.dispose();
+  };
+
+  APP.applyDissolveShader = applyDissolveShader;
+  APP.materializeObject = materializeObject;
+  APP.dissolveObject = dissolveObject;
+  APP.visual = {
+    ENV_MODES,
+    setEnvironment,
+    set360Environment,
+    cycleEnvironment,
+    getEnvironment: () => currentEnv,
+    onXRModeChange: () => syncFloorVisibility(1.0),
+    applyDissolveShader,
+    dissolveAndRemove,
+    materializeObject,
+    dissolveObject,
+    update
+  };
+
+  syncFloorVisibility(1.0);
+
+  APP.registerAbilityHandler?.('visual_world_fx', async function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('360')) {
+      const q = low.replace(/.*360\s*(photo|picture|image|env|environment|to|of)?\s*/i, '').trim() || 'forest';
+      const r = await set360Environment(q);
+      return r.ok ? { ok: true, message: 'Transitioned to 360: ' + q } : r;
+    }
+    if (low.includes('matrix') || low.includes('ماتريكس')) return { ok: true, message: 'Env: ' + setEnvironment('matrix_black') };
+    if (low.includes('construct') || low.includes('gray') || low.includes('البيضاء')) return { ok: true, message: 'Env: ' + setEnvironment('construct_gray') };
+    if (low.includes('passthrough') || low.includes('default') || low.includes('الواقع')) return { ok: true, message: 'Env: ' + setEnvironment('default') };
+    return { ok: true, message: 'Env: ' + cycleEnvironment() };
+  });
+})();
+@end
