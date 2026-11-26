@@ -1,0 +1,904 @@
+======================================================================
+
+instruction2.txt — Master Realism Engine (PBR, Blending, Occlusion,
+
+Glass/Metal, SSS, Caustics, Volumetric Fog,
+
+Micro-Particles, Wetness, Heat Distortion,
+
+Motion Blur, Parallax Depth & Edge Wear)
+
+======================================================================
+
+@ability: realism_master_engine @autorun @pin: Realism FX @desc: Automatically
+upgrades every 3D creation with realistic PBR blending, weathered metal,
+refractive blurred glass, crevice/contact occlusion, SSS, caustics, volumetric
+fog, micro-particles, surface wetness, heat distortion, motion blur, parallax
+depth, and edge wear. @match: realism | realistic | wet surfaces | dry surfaces
+| surface wetness | volumetric fog | fog on | fog off | heat distortion |
+caustics | micro particles | realistic glass | realistic metal | الواقعية |
+واقعي | ضباب | مطر على الأسطح | زجاج | معدن @code: (function () { const APP =
+window.APP || (window.APP = {}); const THREE = APP.THREE; if (!THREE ||
+!APP.scene || !APP.renderer) return;
+
+if (typeof APP._inst2RealismCleanup === 'function') { try {
+APP.inst2RealismCleanup(); } catch () {} }
+
+const scene = APP.scene; const renderer = APP.renderer;
+
+// ==================================================================== // 1.
+REALISM STATE & SHADOW UPGRADE (NO CARTOONY HARD SHADOWS) //
+==================================================================== const cfg =
+{ enabled: true, wetness: 0.16, // 0..1 global surface wetness (auto-boosts when
+rain/water active) fogEnabled: true, particlesEnabled: true, heatDistortion:
+true, motionBlur: true, parallaxScale: 0.022, edgeWear: 0.62,
+causticsStrength: 0.85 };
+
+renderer.shadowMap.enabled = true; renderer.shadowMap.type =
+THREE.PCFSoftShadowMap; renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+
+if (APP.dirLight) { APP.dirLight.castShadow = true; if (APP.dirLight.shadow) {
+APP.dirLight.shadow.mapSize.set(2048, 2048); APP.dirLight.shadow.camera.near
+= 0.15; APP.dirLight.shadow.camera.far = 14; APP.dirLight.shadow.camera.left =
+-3.8; APP.dirLight.shadow.camera.right = 3.8; APP.dirLight.shadow.camera.top
+= 3.8; APP.dirLight.shadow.camera.bottom = -3.8; APP.dirLight.shadow.bias =
+-0.00035; APP.dirLight.shadow.normalBias = 0.018; APP.dirLight.shadow.radius
+= 3.5; } }
+
+// Subtle cool sky bounce light to eliminate flat black shadow undersides const
+bounceLight = new THREE.DirectionalLight(0x88b8ff, 0.32);
+bounceLight.position.set(-2.5, -1.2, -2.0); scene.add(bounceLight);
+
+// ==================================================================== // 2.
+PROCEDURAL SOFT CONTACT SHADOW DECAL TEXTURE //
+==================================================================== function
+createContactShadowTex() { const c = document.createElement('canvas'); c.width
+= 128; c.height = 128; const ctx = c.getContext('2d'); const g =
+ctx.createRadialGradient(64, 64, 4, 64, 64, 62); g.addColorStop(0,
+'rgba(0, 0, 0, 0.56)'); g.addColorStop(0.45, 'rgba(0, 0, 0, 0.24)');
+g.addColorStop(1, 'rgba(0, 0, 0, 0.0)'); ctx.fillStyle = g;
+ctx.fillRect(0, 0, 128, 128); const tex = new THREE.CanvasTexture(c);
+tex.needsUpdate = true; return tex; } const contactShadowTex =
+createContactShadowTex();
+
+// ==================================================================== // 3.
+SHARED GLOBAL UNIFORMS (UPDATED LIVE EVERY FRAME) //
+==================================================================== const
+sharedUniforms = { uNxrTime: { value: 0 }, uNxrWetness: { value: cfg.wetness },
+uNxrParallax: { value: cfg.parallaxScale }, uNxrEdgeWear: { value: cfg.edgeWear
+}, uNxrCausticsGlobal: { value: cfg.causticsStrength }, uNxrLightDir: { value:
+new THREE.Vector3(0.45, 0.82, 0.35).normalize() } };
+
+// ==================================================================== // 4.
+ARCHETYPE DETECTION + MASTER PBR SHADER INJECTION //
+==================================================================== function
+detectMaterialArchetype(mat, meshName, entityName) { const label = ${meshName ||
+''} ${entityName || ''} ${mat.name || ''}.toLowerCase(); const col = mat.color ?
+mat.color : new THREE.Color(0xffffff); const hsl = {}; col.getHSL(hsl);
+
+if (/\b(glass|crystal|ice|lens|window|bottle|diamond|gem|water|transparent|visor)\b/i.test(label) ||
+    (mat.transparent && mat.opacity < 0.88 && mat.opacity > 0.08) ||
+    (mat.transmission && mat.transmission > 0.2)) {
+  return 'glass';
+}
+if (/\b(metal|steel|iron|gold|silver|chrome|brass|copper|bronze|armor|blade|sword|gun|robot|chassis|mech|coin)\b/i.test(label) ||
+    (mat.metalness !== undefined && mat.metalness >= 0.58)) {
+  return 'metal';
+}
+if (/\b(skin|flesh|face|hand|ear|leaf|leaves|foliage|plant|flower|petal|wax|candle|jade|fruit|apple|grape|coral|jelly|organic|mushroom)\b/i.test(label)) {
+  return 'sss';
+}
+if (/\b(stone|rock|wood|bark|brick|wall|ground|sand|fur|cloth|leather|fabric|ceramic)\b/i.test(label)) {
+  return 'rough_organic';
+}
+// Heuristic fallback: warm saturated or green mid-roughness objects benefit from subtle SSS or micro-grain
+if (hsl.s > 0.28 && (hsl.h < 0.14 || (hsl.h > 0.22 && hsl.h < 0.44)) && (mat.metalness || 0) < 0.25) {
+  return 'sss';
+}
+return 'standard_real';
+
+}
+
+function inferSSSColor(mat, meshName, entityName) { const label = ${meshName ||
+''} ${entityName || ''}.toLowerCase(); if
+(/\b(leaf|leaves|foliage|plant|moss|jade|fern|grass|tree)\b/i.test(label))
+return new THREE.Color(0x4ade80); if
+(/\b(wax|candle|amber|honey)\b/i.test(label)) return new THREE.Color(0xfbbf24);
+if (/\b(ice|crystal|snow)\b/i.test(label)) return new THREE.Color(0x7dd3fc); if
+(mat.color) { const c = mat.color.clone(); c.lerp(new
+THREE.Color(0xff4d2e), 0.48); return c; } return new THREE.Color(0xff6b4a); }
+
+const NXR_GLSL_HELPERS = [ 'float nxrHash(vec3 p) {', ' p = fract(p * 0.3183099
++ vec3(0.1, 0.2, 0.3));', ' p *= 17.0;', ' return fract(p.x * p.y * p.z * (p.x +
+p.y + p.z));', '}', 'float nxrNoise(vec3 x) {', ' vec3 i = floor(x); vec3 f =
+fract(x); f = f * f * (3.0 - 2.0 * f);', ' return mix(', ' mix(mix(nxrHash(i +
+vec3(0,0,0)), nxrHash(i + vec3(1,0,0)), f.x),', ' mix(nxrHash(i + vec3(0,1,0)),
+nxrHash(i + vec3(1,1,0)), f.x), f.y),', ' mix(mix(nxrHash(i + vec3(0,0,1)),
+nxrHash(i + vec3(1,0,1)), f.x),', ' mix(nxrHash(i + vec3(0,1,1)), nxrHash(i +
+vec3(1,1,1)), f.x), f.y), f.z);', '}', 'float nxrFbm(vec3 p) {', ' float v
+= 0.0; float a = 0.5;', ' for (int i = 0; i < 3; i++) { v += a * nxrNoise(p); p
+*= 2.07; a *= 0.5; }', ' return v;', '}', 'float nxrCausticPattern(vec2 uv,
+float t) {', ' vec2 p = mod(uv * 6.28318, 6.28318) - 250.0;', ' vec2 i = p;
+float c = 1.0; float inten = 0.005;', ' for (int n = 0; n < 3; n++) {', ' float
+tn = t * (1.0 - (3.2 / float(n + 1)));', ' i = p + vec2(cos(tn - i.x) + sin(tn +
+i.y), sin(tn - i.y) + cos(tn + i.x));', ' c += 1.0 / length(vec2(p.x / (sin(i.x
++ tn) / inten), p.y / (cos(i.y + tn) / inten)));', ' }', ' c /= 3.0; c = 1.17 -
+pow(c, 1.4);', ' return pow(abs(c), 7.5);', '}' ].join('\n');
+
+function upgradeMaterialRealistic(mat, archetype, meshName, entityName) { if
+(!mat || mat.isShaderMaterial || mat.userData?.nxrSkip) return mat; if
+(mat.userData?.nxrRealUpgraded && mat.userData?.nxrArchetype === archetype)
+return mat;
+
+// Replace flat basic/lambert/phong materials with MeshPhysicalMaterial
+let targetMat = mat;
+if (!mat.isMeshStandardMaterial) {
+  targetMat = new THREE.MeshPhysicalMaterial({
+    color: mat.color ? mat.color.clone() : new THREE.Color(0xcbd5e1),
+    map: mat.map || null,
+    transparent: !!mat.transparent,
+    opacity: mat.opacity !== undefined ? mat.opacity : 1.0,
+    side: mat.side !== undefined ? mat.side : THREE.FrontSide,
+    roughness: 0.45,
+    metalness: 0.1
+  });
+} else if (!(targetMat instanceof THREE.MeshPhysicalMaterial)) {
+  const pm = new THREE.MeshPhysicalMaterial();
+  THREE.MeshStandardMaterial.prototype.copy.call(pm, targetMat);
+  targetMat = pm;
+}
+
+targetMat.envMap = APP.cubeRenderTarget?.texture || APP.roomEnvTexture || scene.environment || null;
+targetMat.envMapIntensity = archetype === 'metal' ? 1.85 : archetype === 'glass' ? 2.1 : 1.25;
+
+let modeId = 0; // 0:standard, 1:metal, 2:glass, 3:sss, 4:rough_organic
+let sssStrength = 0.0;
+let sssCol = new THREE.Color(0xff5533);
+
+if (archetype === 'metal') {
+  modeId = 1;
+  targetMat.metalness = Math.max(0.86, targetMat.metalness || 0.90);
+  targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.28, 0.14, 0.44);
+  targetMat.clearcoat = 0.18;
+  targetMat.clearcoatRoughness = 0.25;
+} else if (archetype === 'glass') {
+  modeId = 2;
+  targetMat.transmission = 0.94;
+  targetMat.ior = 1.52;
+  targetMat.thickness = 0.28;
+  targetMat.roughness = Math.max(0.11, Math.min(0.24, targetMat.roughness || 0.15)); // Blurred distortion behind glass
+  targetMat.metalness = 0.0;
+  targetMat.reflectivity = 0.96;
+  targetMat.clearcoat = 1.0;
+  targetMat.clearcoatRoughness = 0.06;
+  targetMat.attenuationDistance = 1.4;
+  if (targetMat.color) targetMat.attenuationColor = targetMat.color.clone().lerp(new THREE.Color(0xdcf6ff), 0.65);
+} else if (archetype === 'sss') {
+  modeId = 3;
+  sssStrength = 0.85;
+  sssCol = inferSSSColor(targetMat, meshName, entityName);
+  targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.46, 0.28, 0.72);
+  targetMat.metalness = Math.min(0.08, targetMat.metalness || 0.0);
+  targetMat.sheen = 0.35;
+  targetMat.sheenRoughness = 0.55;
+  targetMat.sheenColor = sssCol.clone();
+} else if (archetype === 'rough_organic') {
+  modeId = 4;
+  targetMat.roughness = Math.max(0.55, targetMat.roughness || 0.74);
+  targetMat.metalness = Math.min(0.12, targetMat.metalness || 0.02);
+} else {
+  targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.44, 0.18, 0.82);
+}
+
+const localVelUniform = { value: new THREE.Vector3(0, 0, 0) };
+const modeUniform = { value: modeId };
+const sssUniform = { value: sssStrength };
+const sssColUniform = { value: sssCol };
+
+targetMat.userData = targetMat.userData || {};
+targetMat.userData.nxrRealUpgraded = true;
+targetMat.userData.nxrArchetype = archetype;
+targetMat.userData.nxrLocalVel = localVelUniform;
+
+targetMat.customProgramCacheKey = () => `nxr_realism_v2_${modeId}`;
+targetMat.onBeforeCompile = function (shader) {
+  shader.uniforms.uNxrTime = sharedUniforms.uNxrTime;
+  shader.uniforms.uNxrWetness = sharedUniforms.uNxrWetness;
+  shader.uniforms.uNxrParallax = sharedUniforms.uNxrParallax;
+  shader.uniforms.uNxrEdgeWear = sharedUniforms.uNxrEdgeWear;
+  shader.uniforms.uNxrCausticsGlobal = sharedUniforms.uNxrCausticsGlobal;
+  shader.uniforms.uNxrLightDir = sharedUniforms.uNxrLightDir;
+  shader.uniforms.uNxrLocalVel = localVelUniform;
+  shader.uniforms.uNxrMode = modeUniform;
+  shader.uniforms.uNxrSSSStrength = sssUniform;
+  shader.uniforms.uNxrSSSColor = sssColUniform;
+
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', [
+      '#include <common>',
+      'uniform vec3 uNxrLocalVel;',
+      'attribute float aNxrCrevice;',
+      'attribute float aNxrEdge;',
+      'varying vec3 vNxrLPos;',
+      'varying vec3 vNxrLNorm;',
+      'varying vec3 vNxrWPos;',
+      'varying vec3 vNxrWNorm;',
+      'varying float vNxrCrevice;',
+      'varying float vNxrEdge;',
+      'varying float vNxrMotionTrail;'
+    ].join('\n'))
+    .replace('#include <begin_vertex>', [
+      '#include <begin_vertex>',
+      'vNxrLPos = position;',
+      'vNxrLNorm = objectNormal;',
+      'vNxrCrevice = aNxrCrevice;',
+      'vNxrEdge = aNxrEdge;',
+      'vNxrMotionTrail = 0.0;',
+      'float nxrVLen = length(uNxrLocalVel);',
+      'if (nxrVLen > 0.35) {',
+      '  vec3 nxrVDir = uNxrLocalVel / nxrVLen;',
+      '  float nxrBack = max(0.0, -dot(normalize(objectNormal), nxrVDir));',
+      '  float nxrStretch = min(0.18, (nxrVLen - 0.35) * 0.045) * nxrBack;',
+      '  transformed -= nxrVDir * nxrStretch;',
+      '  vNxrMotionTrail = nxrBack * clamp((nxrVLen - 0.35) * 0.35, 0.0, 0.85);',
+      '}'
+    ].join('\n'))
+    .replace('#include <project_vertex>', [
+      '#include <project_vertex>',
+      'vec4 nxrWp = modelMatrix * vec4( transformed, 1.0 );',
+      'vNxrWPos = nxrWp.xyz;',
+      'vNxrWNorm = normalize( mat3( modelMatrix ) * objectNormal );'
+    ].join('\n'));
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', [
+      '#include <common>',
+      'uniform float uNxrTime;',
+      'uniform float uNxrWetness;',
+      'uniform float uNxrParallax;',
+      'uniform float uNxrEdgeWear;',
+      'uniform float uNxrCausticsGlobal;',
+      'uniform vec3 uNxrLightDir;',
+      'uniform float uNxrMode;',
+      'uniform float uNxrSSSStrength;',
+      'uniform vec3 uNxrSSSColor;',
+      'varying vec3 vNxrLPos;',
+      'varying vec3 vNxrLNorm;',
+      'varying vec3 vNxrWPos;',
+      'varying vec3 vNxrWNorm;',
+      'varying float vNxrCrevice;',
+      'varying float vNxrEdge;',
+      'varying float vNxrMotionTrail;',
+      NXR_GLSL_HELPERS
+    ].join('\n'))
+    .replace('#include <color_fragment>', [
+      '#include <color_fragment>',
+      'vec3 nxrVDirW = normalize(cameraPosition - vNxrWPos);',
+      'vec3 nxrNW = normalize(vNxrWNorm);',
+      'vec3 nxrPLoc = vNxrLPos;',
+      // 3-step Parallax Depth offset for surface micro-details
+      'vec3 nxrViewTan = nxrVDirW - nxrNW * dot(nxrVDirW, nxrNW);',
+      'float nxrH0 = nxrFbm(nxrPLoc * 22.0);',
+      'nxrPLoc -= nxrViewTan * (1.0 - nxrH0) * uNxrParallax;',
+      'float nxrH1 = nxrFbm(nxrPLoc * 22.0);',
+      'nxrPLoc -= nxrViewTan * (1.0 - nxrH1) * (uNxrParallax * 0.5);',
+      'float nxrHeight = nxrFbm(nxrPLoc * 22.0);',
+      // Fine scratches + micro grain
+      'float nxrScratchA = smoothstep(0.76, 0.94, nxrNoise(vec3(nxrPLoc.x * 46.0 + nxrPLoc.y * 6.0, nxrPLoc.y * 8.0, nxrPLoc.z * 46.0)));',
+      'float nxrScratchB = smoothstep(0.78, 0.95, nxrNoise(vec3(nxrPLoc.z * 42.0, nxrPLoc.x * 12.0 - nxrPLoc.y * 28.0, nxrPLoc.y * 9.0)));',
+      'float nxrScratches = max(nxrScratchA, nxrScratchB);',
+      'float nxrRustNoise = nxrFbm(nxrPLoc * 9.5 + vec3(3.1, 1.7, 5.4));',
+      'float nxrRustMask = (uNxrMode > 0.5 && uNxrMode < 1.5) ? smoothstep(0.54, 0.78, nxrRustNoise + vNxrCrevice * 0.35) : 0.0;',
+      // Edge Wear (exposed bright metal / chipped paint along worn edges)
+      'float nxrCurv = clamp(vNxrEdge + length(fwidth(nxrNW)) * 2.2, 0.0, 1.0);',
+      'float nxrWearNoise = nxrFbm(nxrPLoc * 16.0);',
+      'float nxrEdgeMask = (uNxrMode < 1.5 || uNxrMode > 3.5) ? smoothstep(0.56, 0.82, nxrCurv * 0.85 + nxrWearNoise * 0.42) * uNxrEdgeWear : 0.0;',
+      // Surface Wetness: droplets, puddles on upward surfaces & darkened wet porosity
+      'float nxrUp = clamp(nxrNW.y * 0.5 + 0.5, 0.0, 1.0);',
+      'float nxrDropNoise = nxrNoise(vNxrWPos * 55.0 + vec3(0.0, uNxrTime * 0.45, 0.0));',
+      'float nxrDroplet = smoothstep(0.74, 0.90, nxrDropNoise) * clamp(uNxrWetness * 1.4, 0.0, 1.0);',
+      'float nxrPuddleNoise = nxrFbm(vNxrWPos * 3.8);',
+      'float nxrWetPatch = clamp(uNxrWetness * (0.45 + 0.85 * nxrUp * nxrPuddleNoise), 0.0, 1.0);',
+      // Natural Corner & Contact Occlusion
+      'float nxrCrev = clamp(vNxrCrevice, 0.0, 1.0);',
+      'float nxrAO = 1.0 - nxrCrev * 0.66;',
+      'if (uNxrMode > 0.5 && uNxrMode < 1.5) {',
+      '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.36, 0.14, 0.05), nxrRustMask * 0.78);',
+      '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.84, 0.89, 0.95), nxrScratches * 0.45);',
+      '} else if (uNxrMode < 0.5 || uNxrMode > 3.5) {',
+      '  diffuseColor.rgb *= mix(0.84, 1.12, nxrHeight);',
+      '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.76, 0.80, 0.86), nxrEdgeMask * 0.62);',
+      '} else if (uNxrMode > 2.5 && uNxrMode < 3.5) {',
+      '  diffuseColor.rgb *= mix(0.90, 1.08, nxrHeight);',
+      '}',
+      'diffuseColor.rgb *= mix(1.0, 0.62, nxrWetPatch * 0.68);',
+      'diffuseColor.rgb *= nxrAO;'
+    ].join('\n'))
+    .replace('#include <roughnessmap_fragment>', [
+      '#include <roughnessmap_fragment>',
+      'if (uNxrMode > 0.5 && uNxrMode < 1.5) {',
+      '  roughnessFactor = mix(roughnessFactor, 0.88, nxrRustMask * 0.85);',
+      '  roughnessFactor = mix(roughnessFactor, 0.12, nxrScratches * 0.65);',
+      '} else {',
+      '  roughnessFactor = clamp(roughnessFactor + (nxrHeight - 0.5) * 0.24, 0.06, 0.96);',
+      '  roughnessFactor = mix(roughnessFactor, 0.18, nxrEdgeMask * 0.65);',
+      '}',
+      'roughnessFactor = mix(roughnessFactor, 0.05, max(nxrWetPatch * 0.72, nxrDroplet * 0.92));'
+    ].join('\n'))
+    .replace('#include <metalnessmap_fragment>', [
+      '#include <metalnessmap_fragment>',
+      'if (uNxrMode > 0.5 && uNxrMode < 1.5) {',
+      '  metalnessFactor = mix(metalnessFactor, 0.16, nxrRustMask * 0.82);',
+      '} else if (uNxrMode < 0.5 || uNxrMode > 3.5) {',
+      '  metalnessFactor = mix(metalnessFactor, 0.88, nxrEdgeMask * 0.72);',
+      '}'
+    ].join('\n'))
+    .replace('#include <normal_fragment_maps>', [
+      '#include <normal_fragment_maps>',
+      'float nxrBumpE = nxrFbm(nxrPLoc * 22.0 + vec3(0.08, 0.0, 0.0)) - nxrHeight;',
+      'float nxrBumpN = nxrFbm(nxrPLoc * 22.0 + vec3(0.0, 0.08, 0.0)) - nxrHeight;',
+      'float nxrBumpZ = nxrFbm(nxrPLoc * 22.0 + vec3(0.0, 0.0, 0.08)) - nxrHeight;',
+      'vec3 nxrMicroW = vec3(nxrBumpE, nxrBumpN, nxrBumpZ) * (uNxrMode > 1.5 && uNxrMode < 2.5 ? 0.55 : 2.1);',
+      'if (nxrDroplet > 0.1) {',
+      '  nxrMicroW += vec3(sin(vNxrWPos.x * 80.0), 0.0, cos(vNxrWPos.z * 80.0)) * nxrDroplet * 0.35;',
+      '}',
+      'normal = normalize(normal + (viewMatrix * vec4(nxrMicroW, 0.0)).xyz);'
+    ].join('\n'))
+    .replace('#include <lights_fragment_end>', [
+      '#include <lights_fragment_end>',
+      'reflectedLight.indirectDiffuse *= nxrAO;',
+      'reflectedLight.indirectSpecular *= mix(0.32, 1.0, nxrAO);',
+      // Subsurface Scattering (SSS) wrap + back-translucency
+      'if (uNxrSSSStrength > 0.01) {',
+      '  vec3 nxrHBack = normalize(uNxrLightDir + nxrNW * 0.45);',
+      '  float nxrBackScatter = pow(clamp(dot(nxrVDirW, -nxrHBack), 0.0, 1.0), 2.6);',
+      '  float nxrWrap = max(0.0, (dot(nxrNW, uNxrLightDir) + 0.55) / 1.55);',
+      '  reflectedLight.directDiffuse += uNxrSSSColor * (nxrBackScatter * 0.75 + nxrWrap * 0.24) * uNxrSSSStrength;',
+      '}',
+      // Caustics on glass, water, and wet upward surfaces
+      'float nxrCausticsVis = (uNxrMode > 1.5 && uNxrMode < 2.5) ? 0.65 : (nxrWetPatch * nxrUp * 0.72);',
+      'if (nxrCausticsVis > 0.02 && uNxrCausticsGlobal > 0.01) {',
+      '  float nxrCVal = nxrCausticPattern(vNxrWPos.xz * 0.45 + vNxrWPos.y * 0.12, uNxrTime * 0.9);',
+      '  reflectedLight.directDiffuse += vec3(0.45, 0.88, 1.0) * nxrCVal * nxrCausticsVis * uNxrCausticsGlobal * 0.95;',
+      '}',
+      // Motion Blur directional trail sheen on fast objects
+      'if (vNxrMotionTrail > 0.02) {',
+      '  reflectedLight.directSpecular += diffuseColor.rgb * vNxrMotionTrail * 0.45;',
+      '}'
+    ].join('\n'));
+};
+
+targetMat.needsUpdate = true;
+return targetMat;
+
+}
+
+// ==================================================================== // 5.
+GEOMETRY OCCLUSION (CORNERS, GAPS, CONTACTS) & EDGE WEAR BAKER //
+==================================================================== function
+bakeCreviceAndEdgeAttributes(group) { group.updateMatrixWorld(true); const
+invGroup = group.matrixWorld.clone().invert(); const meshes = []; const
+meshBoxes = [];
+
+group.traverse((c) => {
+  if (c.isMesh && c.geometry && !c.userData?.nxrDecal) {
+    if (!c.geometry.attributes.normal) c.geometry.computeVertexNormals();
+    c.geometry.computeBoundingBox();
+    const boxG = c.geometry.boundingBox.clone();
+    const relM = invGroup.clone().multiply(c.matrixWorld);
+    boxG.applyMatrix4(relM);
+    meshes.push({ mesh: c, relM, boxG });
+    meshBoxes.push(boxG);
+  }
+});
+
+const vPos = new THREE.Vector3();
+const vNorm = new THREE.Vector3();
+const closest = new THREE.Vector3();
+
+for (let mi = 0; mi < meshes.length; mi++) {
+  const { mesh, relM, boxG } = meshes[mi];
+  const geo = mesh.geometry;
+  const posAttr = geo.attributes.position;
+  const normAttr = geo.attributes.normal;
+  if (!posAttr) continue;
+
+  const count = posAttr.count;
+  const crevArr = new Float32Array(count);
+  const edgeArr = new Float32Array(count);
+  const boxCenter = new THREE.Vector3();
+  boxG.getCenter(boxCenter);
+  const boxSize = new THREE.Vector3();
+  boxG.getSize(boxSize);
+  const minYGroup = meshes.reduce((m, x) => Math.min(m, x.boxG.min.y), Infinity);
+
+  const stride = count > 9000 ? 3 : 1;
+
+  for (let i = 0; i < count; i++) {
+    if (stride > 1 && i % stride !== 0) {
+      crevArr[i] = crevArr[i - 1] || 0;
+      edgeArr[i] = edgeArr[i - 1] || 0;
+      continue;
+    }
+    vPos.fromBufferAttribute(posAttr, i).applyMatrix4(relM);
+    if (normAttr) vNorm.fromBufferAttribute(normAttr, i).transformDirection(relM).normalize();
+    else vNorm.set(0, 1, 0);
+
+    // 1. Contact occlusion near sibling meshes (seams, joints, gaps)
+    let occ = 0;
+    for (let oi = 0; oi < meshBoxes.length; oi++) {
+      if (oi === mi) continue;
+      const ob = meshBoxes[oi];
+      ob.clampPoint(vPos, closest);
+      const d = vPos.distanceTo(closest);
+      if (d < 0.085) {
+        occ = Math.max(occ, (1.0 - d / 0.085) * 0.92);
+      }
+    }
+
+    // 2. Ground contact occlusion near bottom of entity
+    const floorDist = vPos.y - minYGroup;
+    if (floorDist < 0.065) {
+      occ = Math.max(occ, (1.0 - Math.max(0, floorDist) / 0.065) * 0.55);
+    }
+
+    // 3. Local concavity vs outer exposed edge wear
+    const outDir = vPos.clone().sub(boxCenter);
+    const radLen = outDir.length() || 1;
+    outDir.divideScalar(radLen);
+    const alignment = vNorm.dot(outDir);
+    if (alignment < 0.15) occ = Math.max(occ, (0.15 - alignment) * 0.55);
+
+    // Exposed corners & high-normal divergence => Edge Wear
+    const nx = Math.abs(vPos.x - boxCenter.x) / Math.max(0.01, boxSize.x * 0.5);
+    const ny = Math.abs(vPos.y - boxCenter.y) / Math.max(0.01, boxSize.y * 0.5);
+    const nz = Math.abs(vPos.z - boxCenter.z) / Math.max(0.01, boxSize.z * 0.5);
+    const cornerScore = THREE.MathUtils.clamp((nx + ny + nz - 1.45) * 0.72, 0, 1);
+
+    crevArr[i] = THREE.MathUtils.clamp(occ, 0, 1);
+    edgeArr[i] = cornerScore;
+  }
+
+  geo.setAttribute('aNxrCrevice', new THREE.BufferAttribute(crevArr, 1));
+  geo.setAttribute('aNxrEdge', new THREE.BufferAttribute(edgeArr, 1));
+}
+
+}
+
+// ==================================================================== // 6.
+HEAT DISTORTION SHELL, CAUSTICS FLOOR DECAL & CONTACT SHADOWS //
+==================================================================== function
+createHeatNormalTex() { const size = 128; const c =
+document.createElement('canvas'); c.width = size; c.height = size; const ctx =
+c.getContext('2d'); const img = ctx.createImageData(size, size); for (let y = 0;
+y < size; y++) { for (let x = 0; x < size; x++) { const u = (x / size) * Math.PI
+* 2; const v = (y / size) * Math.PI * 2; const dx = Math.sin(u * 4 + Math.cos(v
+* 3)) * 0.5 + 0.5; const dy = Math.cos(v * 5 + Math.sin(u * 3)) * 0.5 + 0.5;
+const idx = (y * size + x) * 4; img.data[idx] = Math.round(dx * 255);
+img.data[idx + 1] = Math.round(dy * 255); img.data[idx + 2] = 255; img.data[idx
++ 3] = 255; } } ctx.putImageData(img, 0, 0); const tex = new
+THREE.CanvasTexture(c); tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+tex.needsUpdate = true; return tex; } const heatNormalTex =
+createHeatNormalTex();
+
+const heatShells = []; function attachHeatDistortionIfHot(ent) { if
+(!cfg.heatDistortion || !ent || !ent.group) return; if
+(ent.group.getObjectByName('NXR_HeatDistortion')) return;
+
+const label = `${ent.name || ''} ${ent.category || ''}`.toLowerCase();
+let isHot = ent.category === 'torch' || /\b(fire|flame|torch|lava|magma|furnace|forge|candle|burner|rocket|engine|thruster)\b/i.test(label);
+let hotLocalPos = new THREE.Vector3(0, 0.58, 0);
+
+if (!isHot) {
+  ent.group.traverse((c) => {
+    if (c.isMesh && c.material?.emissive) {
+      const eCol = c.material.emissive;
+      if ((c.material.emissiveIntensity || 0) > 1.2 && eCol.r > 0.55 && eCol.g < 0.75) {
+        isHot = true;
+        hotLocalPos.copy(c.position);
+      }
+    }
+  });
+}
+if (!isHot) return;
+
+const heatMat = new THREE.MeshPhysicalMaterial({
+  transmission: 1.0,
+  ior: 1.045,
+  thickness: 0.08,
+  roughness: 0.03,
+  metalness: 0.0,
+  transparent: true,
+  opacity: 0.99,
+  normalMap: heatNormalTex,
+  normalScale: new THREE.Vector2(0.18, 0.24),
+  depthWrite: false,
+  side: THREE.DoubleSide
+});
+heatMat.userData.nxrSkip = true;
+
+const isFloorLava = /lava/i.test(label);
+const geo = isFloorLava
+  ? new THREE.PlaneGeometry(8, 8, 1, 1)
+  : new THREE.CylinderGeometry(0.16, 0.11, 0.44, 16, 1, true);
+const heatMesh = new THREE.Mesh(geo, heatMat);
+heatMesh.name = 'NXR_HeatDistortion';
+heatMesh.userData.nxrDecal = true;
+if (isFloorLava) {
+  heatMesh.rotation.x = -Math.PI / 2;
+  heatMesh.position.set(0, 0.22, 0);
+} else {
+  heatMesh.position.copy(hotLocalPos).add(new THREE.Vector3(0, 0.14, 0));
+}
+ent.group.add(heatMesh);
+heatShells.push({ mesh: heatMesh, mat: heatMat, ent });
+
+}
+
+const causticDecals = []; function attachCausticsIfRefractive(ent, hasGlass) {
+if (!hasGlass && !/\b(water|glass|crystal|pool|aquarium)\b/i.test(ent.name ||
+'')) return; if (ent.group.getObjectByName('NXR_CausticsProjector')) return;
+
+const cMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  uniforms: { uTime: sharedUniforms.uNxrTime },
+  vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: [
+    'uniform float uTime;',
+    'varying vec2 vUv;',
+    NXR_GLSL_HELPERS,
+    'void main() {',
+    '  float d = length(vUv - 0.5) * 2.0;',
+    '  float mask = pow(max(0.0, 1.0 - d), 1.8);',
+    '  float c = nxrCausticPattern(vUv * 1.4, uTime * 0.95);',
+    '  gl_FragColor = vec4(vec3(0.45, 0.90, 1.0) * c * 1.25, mask * clamp(c * 1.4, 0.0, 0.85));',
+    '}'
+  ].join('\n')
+});
+const cMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.85), cMat);
+cMesh.name = 'NXR_CausticsProjector';
+cMesh.userData.nxrDecal = true;
+cMesh.rotation.x = -Math.PI / 2;
+cMesh.position.set(0, 0.012, 0);
+ent.group.add(cMesh);
+causticDecals.push(cMesh);
+
+}
+
+function attachSoftContactShadow(ent) { if (!ent || !ent.group || ent.category
+=== 'world_fx' || ent.category === 'portal' || ent.category === 'board' ||
+ent.isPen) return; if (ent.group.getObjectByName('NXR_ContactShadow')) return;
+
+ent.group.updateMatrixWorld(true);
+const box = new THREE.Box3().setFromObject(ent.group);
+if (box.isEmpty()) return;
+const size = new THREE.Vector3();
+box.getSize(size);
+const span = Math.max(0.24, Math.min(2.2, Math.max(size.x, size.z) * 1.55));
+
+const sMat = new THREE.MeshBasicMaterial({
+  map: contactShadowTex,
+  transparent: true,
+  opacity: 0.72,
+  depthWrite: false
+});
+sMat.userData.nxrSkip = true;
+
+const sMesh = new THREE.Mesh(new THREE.PlaneGeometry(span, span), sMat);
+sMesh.name = 'NXR_ContactShadow';
+sMesh.userData.nxrDecal = true;
+sMesh.rotation.x = -Math.PI / 2;
+sMesh.position.set(0, 0.004, 0);
+ent.group.add(sMesh);
+
+}
+
+// ==================================================================== // 7.
+ENTITY REALISM PROCESSOR (RUNS ON EVERY CREATION) //
+==================================================================== function
+enhanceEntityRealism(ent) { if (!cfg.enabled || !ent || !ent.group) return; if
+(ent.category === 'board' || ent.category === 'portal') return;
+
+let hasGlass = false;
+bakeCreviceAndEdgeAttributes(ent.group);
+
+ent.group.traverse((c) => {
+  if (!c.isMesh || c.userData?.nxrDecal || !c.material) return;
+  const mats = Array.isArray(c.material) ? c.material : [c.material];
+  const nextMats = mats.map((m) => {
+    const arch = detectMaterialArchetype(m, c.name, ent.name);
+    if (arch === 'glass') hasGlass = true;
+    return upgradeMaterialRealistic(m, arch, c.name, ent.name);
+  });
+  c.material = Array.isArray(c.material) ? nextMats : nextMats[0];
+  c.castShadow = true;
+  c.receiveShadow = true;
+});
+
+attachHeatDistortionIfHot(ent);
+attachCausticsIfRefractive(ent, hasGlass);
+attachSoftContactShadow(ent);
+ent.meta = ent.meta || {};
+ent.meta.nxrPrevPos = ent.group.position.clone();
+
+}
+
+// ==================================================================== // 8.
+VOLUMETRIC FOG SHAFTS & MICRO-PARTICLES (DUST, POLLEN, ASH) //
+==================================================================== const
+atmosGroup = new THREE.Group(); atmosGroup.name = 'NXR_VolumetricAtmos';
+scene.add(atmosGroup);
+
+// Volumetric scattering cone (works in AR Passthrough & VR!) const fogShaftMat
+= new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side:
+THREE.DoubleSide, blending: THREE.AdditiveBlending, uniforms: { uTime:
+sharedUniforms.uNxrTime }, vertexShader: [ 'varying vec2 vUv; varying vec3
+vNormV; varying vec3 vPosV;', 'void main() {', ' vUv = uv;', ' vec4 mv =
+modelViewMatrix * vec4(position, 1.0);', ' vPosV = -mv.xyz;', ' vNormV =
+normalize(normalMatrix * normal);', ' gl_Position = projectionMatrix * mv;', '}'
+].join('\n'), fragmentShader: [ 'uniform float uTime;', 'varying vec2 vUv;
+varying vec3 vNormV; varying vec3 vPosV;', 'void main() {', ' float edgeFade =
+pow(abs(dot(normalize(vNormV), normalize(vPosV))), 1.8);', ' float vFade =
+smoothstep(0.0, 0.25, vUv.y) * (1.0 - smoothstep(0.65, 1.0, vUv.y));', ' float
+rays = 0.65 + 0.35 * sin(vUv.x * 31.415 + uTime * 0.45) * cos(vUv.x * 18.8 +
+uTime * 0.3);', ' float a = edgeFade * vFade * rays * 0.055;', ' gl_FragColor =
+vec4(0.76, 0.88, 1.0, a);', '}' ].join('\n') }); const fogCone = new
+THREE.Mesh(new THREE.CylinderGeometry(0.95, 2.8, 4.6, 28, 1, true),
+fogShaftMat); fogCone.position.set(0.4, 2.1, -0.6);
+fogCone.rotation.set(0.25, 0, -0.22); atmosGroup.add(fogCone);
+
+// Micro-Particles: floating dust motes, warm pollen, and reactive ash const
+MP_COUNT = 340; const mpPos = new Float32Array(MP_COUNT * 3); const mpKind = new
+Float32Array(MP_COUNT); // 0=dust, 1=pollen, 2=ash const mpPhase = new
+Float32Array(MP_COUNT); for (let i = 0; i < MP_COUNT; i++) { mpPos[i * 3] =
+(Math.random() - 0.5) * 6.5; mpPos[i * 3 + 1] = 0.1 + Math.random() * 2.9;
+mpPos[i * 3 + 2] = (Math.random() - 0.5) * 6.5; mpKind[i] = i % 5 === 0 ? 1.0 :
+(i % 7 === 0 ? 2.0 : 0.0); mpPhase[i] = Math.random() * 6.283; } const mpGeo =
+new THREE.BufferGeometry(); mpGeo.setAttribute('position', new
+THREE.BufferAttribute(mpPos, 3)); mpGeo.setAttribute('aKind', new
+THREE.BufferAttribute(mpKind, 1)); mpGeo.setAttribute('aPhase', new
+THREE.BufferAttribute(mpPhase, 1));
+
+const mpMat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false,
+blending: THREE.AdditiveBlending, uniforms: { uTime: sharedUniforms.uNxrTime,
+uSize: { value: 18.0 * (window.devicePixelRatio || 1) } }, vertexShader: [
+'attribute float aKind; attribute float aPhase;', 'uniform float uTime; uniform
+float uSize;', 'varying float vKind; varying float vTwinkle;', 'void main() {',
+' vKind = aKind;', ' vTwinkle = 0.5 + 0.5 * sin(uTime * 2.2 + aPhase);', ' vec4
+mv = modelViewMatrix * vec4(position, 1.0);', ' gl_PointSize = clamp((uSize /
+max(0.35, -mv.z)) * (aKind > 1.5 ? 1.15 : 0.85), 1.5, 11.0);', ' gl_Position =
+projectionMatrix * mv;', '}' ].join('\n'), fragmentShader: [ 'varying float
+vKind; varying float vTwinkle;', 'void main() {', ' float d =
+length(gl_PointCoord - 0.5) * 2.0;', ' if (d > 1.0) discard;', ' float a =
+pow(1.0 - d, 2.4) * (0.28 + 0.36 * vTwinkle);', ' vec3 col = vKind > 1.5 ?
+vec3(1.0, 0.52, 0.22) : (vKind > 0.5 ? vec3(0.95, 0.88, 0.52) :
+vec3(0.84, 0.92, 1.0));', ' gl_FragColor = vec4(col, a);', '}' ].join('\n') });
+const mpPoints = new THREE.Points(mpGeo, mpMat); mpPoints.frustumCulled = false;
+atmosGroup.add(mpPoints);
+
+// ==================================================================== // 9.
+REALISTIC BLENDING HELPERS & HOOKS FOR AI / PROCEDURAL CREATIONS //
+==================================================================== const
+origCraftMat = APP.craft.mat; APP.craft.mat = function realisticCraftMat(color
+= 0x38bdf8, opts = {}) { const base = origCraftMat(color, opts); const hint =
+opts.type || opts.material || ''; const arch = detectMaterialArchetype(base,
+hint, ''); return upgradeMaterialRealistic(base, arch, hint, ''); };
+
+// Organic limb/part blender: smoothly tapers & blends between two points
+instead of raw cylinder sticks APP.craft.blendLimb = function blendLimb(pStart,
+pEnd, rStart = 0.05, rEnd = 0.03, mat, curveBow = null) { const a =
+pStart.isVector3 ? pStart : new THREE.Vector3(pStart[0], pStart[1], pStart[2]);
+const b = pEnd.isVector3 ? pEnd : new THREE.Vector3(pEnd[0], pEnd[1], pEnd[2]);
+const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5); if
+(curveBow) mid.add(curveBow.isVector3 ? curveBow : new
+THREE.Vector3(curveBow[0], curveBow[1], curveBow[2])); const curve = new
+THREE.QuadraticBezierCurve3(a, mid, b); const segs = 20, radSegs = 14; const pts
+= curve.getPoints(segs); const frames = curve.computeFrenetFrames(segs, false);
+const positions = [], normals = [], uvs = [], indices = [];
+
+for (let i = 0; i <= segs; i++) {
+  const t = i / segs;
+  const r = THREE.MathUtils.lerp(rStart, rEnd, t) * (1.0 + Math.sin(t * Math.PI) * 0.14);
+  const p = pts[i], N = frames.normals[i], B = frames.binormals[i];
+  for (let j = 0; j <= radSegs; j++) {
+    const theta = (j / radSegs) * Math.PI * 2;
+    const cos = Math.cos(theta), sin = Math.sin(theta);
+    const nx = cos * N.x + sin * B.x;
+    const ny = cos * N.y + sin * B.y;
+    const nz = cos * N.z + sin * B.z;
+    positions.push(p.x + r * nx, p.y + r * ny, p.z + r * nz);
+    normals.push(nx, ny, nz);
+    uvs.push(j / radSegs, t);
+  }
+}
+for (let i = 0; i < segs; i++) {
+  for (let j = 0; j < radSegs; j++) {
+    const idxA = i * (radSegs + 1) + j;
+    const idxB = (i + 1) * (radSegs + 1) + j;
+    const idxC = (i + 1) * (radSegs + 1) + (j + 1);
+    const idxD = i * (radSegs + 1) + (j + 1);
+    indices.push(idxA, idxB, idxD, idxB, idxC, idxD);
+  }
+}
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+geo.setIndex(indices);
+return new THREE.Mesh(geo, mat || APP.craft.mat(0x94a3b8));
+
+};
+
+// Inject realism prompt directive into APP.ai.chat so AI crafts blended,
+sculpted geometry const REALISM_AI_PROMPT = [ '', 'REALISTIC 3D SCULPTING &
+MATERIAL RULES (CRITICAL):', '- NEVER build cartoony toys by just sticking raw
+primitive spheres and cylinders together!', '- Use APP.craft.lathe(points2D, 28)
+for organic/sculpted silhouettes, APP.craft.blendLimb(p1, p2, r1, r2, mat) for
+tapered organic joints/limbs, APP.craft.organicSphere(...) for natural shapes,
+and APP.craft.bevelBox(...) for chamfered mechanical parts.', '- Overlap joints
+cleanly and name meshes semantically (metal_frame, glass_visor, skin_head,
+leaf_crown, wax_body, stone_base, fire_core) so the Realism Engine applies
+weathered metal, blurred refractive glass, SSS, occlusion, caustics, and edge
+wear automatically!' ].join('\n');
+
+if (APP.ai && typeof APP.ai.chat === 'function' && !APP.ai._nxrWrappedChat) {
+const origChat = APP.ai.chat; APP.ai.chat = async function (opts = {}) { const
+nextOpts = Object.assign({}, opts); if (Array.isArray(nextOpts.tools) &&
+nextOpts.tools.some((t) => t && t.name === 'create_procedural_object')) {
+nextOpts.systemPrompt = String(nextOpts.systemPrompt || '') + REALISM_AI_PROMPT;
+} return await origChat(nextOpts); }; APP.ai._nxrWrappedChat = true; }
+
+// Hook entity creation + upgrade all existing entities const unsubCreate =
+APP.on('entity:created', (ent) => enhanceEntityRealism(ent)); if
+(Array.isArray(APP.entities)) { for (const ent of APP.entities)
+enhanceEntityRealism(ent); }
+
+// ==================================================================== // 10.
+FRAME LOOP: REFLECTIONS, WETNESS, HEAT, MOTION BLUR, PARTICLES //
+==================================================================== let
+lastCubeUpdate = 0; const tmpDelta = new THREE.Vector3(); const tmpLocalVel =
+new THREE.Vector3(); const tmpInvQuat = new THREE.Quaternion();
+
+function updateRealism(dt, elapsed) { const delta = Math.min(0.05, dt || 0.016);
+const now = elapsed || (performance.now() * 0.001);
+sharedUniforms.uNxrTime.value = now;
+
+// 1. Dynamic environmental wetness boost if rain or water FX active
+const hasRainOrWater = (APP.entities || []).some((e) => e && e.category === 'world_fx' && /rain|water/i.test(e.name || ''));
+const targetWet = hasRainOrWater ? Math.max(cfg.wetness, 0.82) : cfg.wetness;
+sharedUniforms.uNxrWetness.value += (targetWet - sharedUniforms.uNxrWetness.value) * Math.min(1, delta * 2.5);
+
+if (APP.dirLight) {
+  sharedUniforms.uNxrLightDir.value.copy(APP.dirLight.position).normalize();
+}
+
+// 2. Volumetric fog & atmosphere tracking around user
+const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+atmosGroup.visible = cfg.enabled;
+fogCone.visible = cfg.fogEnabled;
+mpPoints.visible = cfg.particlesEnabled;
+if (cfg.fogEnabled && !APP.isAR) {
+  if (!scene.fog) scene.fog = new THREE.FogExp2(0x091320, 0.045);
+} else if (APP.isAR && scene.fog) {
+  scene.fog = null;
+}
+
+if (cfg.fogEnabled) {
+  fogCone.position.set(hp.x + 0.5, hp.y + 0.6, hp.z - 0.9);
+}
+
+// 3. Animate micro-particles (dust, pollen, rising ash)
+if (cfg.particlesEnabled) {
+  const arr = mpGeo.attributes.position.array;
+  for (let i = 0; i < MP_COUNT; i++) {
+    const i3 = i * 3;
+    const kind = mpKind[i];
+    const ph = mpPhase[i] + now * 0.65;
+    arr[i3] += Math.sin(ph) * 0.08 * delta;
+    arr[i3 + 1] += (kind > 1.5 ? 0.14 : Math.cos(ph * 0.7) * 0.04) * delta;
+    arr[i3 + 2] += Math.cos(ph * 0.8) * 0.08 * delta;
+    if (Math.abs(arr[i3] - hp.x) > 3.5 || Math.abs(arr[i3 + 2] - hp.z) > 3.5 || arr[i3 + 1] > 3.2 || arr[i3 + 1] < 0.05) {
+      arr[i3] = hp.x + (Math.random() - 0.5) * 5.8;
+      arr[i3 + 1] = kind > 1.5 ? 0.2 : (0.15 + Math.random() * 2.5);
+      arr[i3 + 2] = hp.z + (Math.random() - 0.5) * 5.8;
+    }
+  }
+  mpGeo.attributes.position.needsUpdate = true;
+}
+
+// 4. Animate Heat Distortion UV flow
+if (cfg.heatDistortion) {
+  heatNormalTex.offset.y -= delta * 0.85;
+  heatNormalTex.offset.x = Math.sin(now * 2.2) * 0.08;
+}
+
+// 5. Update entity Motion Blur velocities + dynamic contact shadow height fade
+const ents = APP.entities || [];
+for (let i = 0; i < ents.length; i++) {
+  const e = ents[i];
+  if (!e || !e.group || !e.group.parent) continue;
+
+  if (cfg.motionBlur && e.meta?.nxrPrevPos) {
+    tmpDelta.subVectors(e.group.position, e.meta.nxrPrevPos).divideScalar(Math.max(0.004, delta));
+    e.meta.nxrPrevPos.copy(e.group.position);
+    tmpInvQuat.copy(e.group.quaternion).invert();
+    tmpLocalVel.copy(tmpDelta).applyQuaternion(tmpInvQuat);
+    e.group.traverse((c) => {
+      if (c.isMesh && c.material?.userData?.nxrLocalVel) {
+        c.material.userData.nxrLocalVel.value.lerp(tmpLocalVel, 0.35);
+      }
+    });
+  }
+
+  const cs = e.group.getObjectByName('NXR_ContactShadow');
+  if (cs) {
+    const lift = Math.max(0, e.group.position.y);
+    cs.position.y = -lift + 0.004;
+    cs.material.opacity = Math.max(0, 0.72 - lift * 0.9);
+    cs.visible = cs.material.opacity > 0.03;
+  }
+}
+
+// 6. Real-time environment reflection probe (throttled & non-XR guarded)
+if (!renderer.xr.isPresenting && APP.cubeCamera && now - lastCubeUpdate > 0.35) {
+  lastCubeUpdate = now;
+  try {
+    APP.cubeCamera.position.copy(hp).add(new THREE.Vector3(0, 0, -0.8));
+    APP.cubeCamera.update(renderer, scene);
+  } catch (_) {}
+}
+
+}
+
+const unsubFrame = APP.onUpdate ? APP.onUpdate(updateRealism) : null; if
+(!unsubFrame && APP.frameHooks) APP.frameHooks.add(updateRealism);
+
+// ==================================================================== // 11.
+CLEANUP & CONTROLS API //
+====================================================================
+APP._inst2RealismCleanup = function () { if (typeof unsubFrame === 'function')
+unsubFrame(); else APP.frameHooks?.delete(updateRealism); if (typeof unsubCreate
+=== 'function') unsubCreate(); if (bounceLight.parent)
+bounceLight.parent.remove(bounceLight); if (atmosGroup.parent)
+atmosGroup.parent.remove(atmosGroup); for (const h of heatShells) { if
+(h.mesh.parent) h.mesh.parent.remove(h.mesh); h.mat.dispose();
+h.mesh.geometry.dispose(); } for (const c of causticDecals) { if (c.parent)
+c.parent.remove(c); c.material.dispose(); c.geometry.dispose(); }
+contactShadowTex.dispose(); heatNormalTex.dispose(); scene.fog = null; };
+
+APP.realism = { config: cfg, enhanceEntity: enhanceEntityRealism,
+setWetness(val) { cfg.wetness = THREE.MathUtils.clamp(Number(val), 0, 1);
+sharedUniforms.uNxrWetness.value = cfg.wetness; return cfg.wetness; },
+setFog(val) { cfg.fogEnabled = !!val; if (!cfg.fogEnabled) scene.fog = null;
+return cfg.fogEnabled; }, setParticles(val) { cfg.particlesEnabled = !!val;
+return cfg.particlesEnabled; }, applyMaterialPreset(targetQuery, archetype) {
+const ent = APP.findEntity ? APP.findEntity(targetQuery || 'latest') : null; if
+(!ent || !ent.group) return { ok: false, error: 'Target entity not found.' };
+ent.group.traverse((c) => { if (c.isMesh && !c.userData?.nxrDecal && c.material)
+{ c.material = upgradeMaterialRealistic(c.material, archetype, c.name,
+ent.name); } }); if (archetype === 'glass') attachCausticsIfRefractive(ent,
+true); return { ok: true, message: Applied realistic ${archetype} shader to
+${ent.name}. }; } };
+
+APP.registerAbilityHandler?.('realism_master_engine', function (text) { const
+low = String(text || '').toLowerCase(); if (low.includes('wet') ||
+low.includes('رطب')) { APP.realism.setWetness(0.88); APP.ui?.toast?.('Surface
+Wetness: HIGH (droplets & puddles active)'); return { ok: true }; } if
+(low.includes('dry') || low.includes('جاف')) { APP.realism.setWetness(0.0);
+APP.ui?.toast?.('Surface Wetness: DRY'); return { ok: true }; } if
+(low.includes('fog off')) { APP.realism.setFog(false);
+APP.ui?.toast?.('Volumetric Fog: OFF'); return { ok: true }; } if
+(low.includes('fog')) { APP.realism.setFog(true); APP.ui?.toast?.('Volumetric
+Fog: ON'); return { ok: true }; } if (low.includes('glass') ||
+low.includes('زجاج')) { const r = APP.realism.applyMaterialPreset('latest',
+'glass'); APP.ui?.toast?.(r.message || r.error); return r; } if
+(low.includes('metal') || low.includes('معدن')) { const r =
+APP.realism.applyMaterialPreset('latest', 'metal'); APP.ui?.toast?.(r.message ||
+r.error); return r; } // Re-upgrade all current entities in scene (APP.entities
+|| []).forEach((e) => enhanceEntityRealism(e)); APP.ui?.toast?.('Realism Engine
+active across all 3D creations!'); return { ok: true }; });
+
+APP.ui?.toast?.('Realism Engine (instruction2.txt) loaded!', 3200); })(); @end
