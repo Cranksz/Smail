@@ -1,0 +1,1149 @@
+# ======================================================================
+# bot.txt — 3D Sphere Robot, Cubic-Bezier IK Tentacle & Gemini Live API
+# Load Priority: 4 (runs after toolbar.txt, before instruction1.txt)
+# ======================================================================
+
+@ability: robot_companion_sphere
+@autorun
+@match: robot | bot | tentacle | grab | hand me | give me | show me | release | drop | الروبوت | امسك | اعطني | اترك
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) {
+    console.warn('[bot.txt] APP.THREE or APP.scene missing.');
+    return;
+  }
+
+  const scene = APP.scene;
+
+  // ====================================================================
+  // 1. 3D ROBOT SPHERE + 12-SEGMENT CUBIC-BEZIER IK TENTACLE RIG
+  // ====================================================================
+  const botRoot = new THREE.Group();
+  botRoot.name = 'APP_ROBOT_SPHERE';
+  botRoot.position.set(0.42, 1.48, -1.05);
+  scene.add(botRoot);
+
+  // Main body sphere group (hovering & tilting independently of world tentacle)
+  const bodyGroup = new THREE.Group();
+  botRoot.add(bodyGroup);
+
+  const shellMat = new THREE.MeshStandardMaterial({
+    color: 0x1e2b3e,
+    metalness: 0.86,
+    roughness: 0.22
+  });
+  const shellMesh = new THREE.Mesh(new THREE.SphereGeometry(0.145, 32, 24), shellMat);
+  shellMesh.castShadow = true;
+  bodyGroup.add(shellMesh);
+
+  // Inner audio-reactive energy core visible through equatorial seam
+  const coreMat = new THREE.MeshStandardMaterial({
+    color: 0x0ea5e9,
+    emissive: 0x1ee3cf,
+    emissiveIntensity: 1.1,
+    roughness: 0.18,
+    metalness: 0.2
+  });
+  const seamRing = new THREE.Mesh(new THREE.TorusGeometry(0.146, 0.008, 12, 48), coreMat);
+  seamRing.rotation.x = Math.PI / 2;
+  bodyGroup.add(seamRing);
+
+  // Rotating dual holographic halo rings
+  const haloMat1 = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.72,
+    blending: THREE.AdditiveBlending
+  });
+  const haloRing1 = new THREE.Mesh(new THREE.TorusGeometry(0.205, 0.0045, 10, 56), haloMat1);
+  haloRing1.rotation.x = Math.PI * 0.42;
+  bodyGroup.add(haloRing1);
+
+  const haloMat2 = new THREE.MeshBasicMaterial({
+    color: 0x2dd4bf,
+    transparent: true,
+    opacity: 0.55,
+    blending: THREE.AdditiveBlending
+  });
+  const haloRing2 = new THREE.Mesh(new THREE.TorusGeometry(0.235, 0.0035, 10, 56), haloMat2);
+  haloRing2.rotation.y = Math.PI * 0.3;
+  bodyGroup.add(haloRing2);
+
+  // Sleek Optic Visor / Eye (rotates smoothly to track user or target)
+  const eyePivot = new THREE.Group();
+  bodyGroup.add(eyePivot);
+
+  const visorHousing = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.058, 0.064, 0.036, 24),
+    new THREE.MeshStandardMaterial({ color: 0x0a101b, metalness: 0.9, roughness: 0.15 })
+  );
+  visorHousing.rotation.x = Math.PI / 2;
+  visorHousing.position.z = 0.132;
+  eyePivot.add(visorHousing);
+
+  const opticMat = new THREE.MeshStandardMaterial({
+    color: 0x67e8f9,
+    emissive: 0x22d3ee,
+    emissiveIntensity: 1.8,
+    roughness: 0.1
+  });
+  const opticLens = new THREE.Mesh(new THREE.SphereGeometry(0.042, 20, 16), opticMat);
+  opticLens.scale.set(1, 1, 0.45);
+  opticLens.position.z = 0.146;
+  eyePivot.add(opticLens);
+
+  // Subtle PointLight for robot glow
+  const botLight = new THREE.PointLight(0x38bdf8, 0.55, 2.2);
+  botLight.position.set(0, 0, 0.15);
+  bodyGroup.add(botLight);
+
+  // 12-Segment Tapered Robotic Tentacle (placed in scene world space for smooth IK)
+  const TENTACLE_SEGMENTS = 12;
+  const tentacleGroup = new THREE.Group();
+  tentacleGroup.name = 'APP_ROBOT_TENTACLE';
+  scene.add(tentacleGroup);
+
+  const segMatDark = new THREE.MeshStandardMaterial({ color: 0x162235, metalness: 0.85, roughness: 0.25 });
+  const segMatGlow = new THREE.MeshStandardMaterial({
+    color: 0x2dd4bf,
+    emissive: 0x0ea5e9,
+    emissiveIntensity: 0.9,
+    roughness: 0.25
+  });
+
+  const segments = [];
+  for (let i = 0; i < TENTACLE_SEGMENTS; i++) {
+    const t = i / (TENTACLE_SEGMENTS - 1);
+    const radius = THREE.MathUtils.lerp(0.032, 0.012, t);
+    const segGroup = new THREE.Group();
+
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius * 0.88, radius, 0.055, 14),
+      segMatDark
+    );
+    body.rotation.x = Math.PI / 2;
+    segGroup.add(body);
+
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(radius * 0.98, radius * 0.18, 8, 18),
+      segMatGlow
+    );
+    segGroup.add(ring);
+
+    tentacleGroup.add(segGroup);
+    segments.push(segGroup);
+  }
+
+  // 3-Prong Mechanical Gripper Claw at tip
+  const clawGroup = new THREE.Group();
+  tentacleGroup.add(clawGroup);
+
+  const palmMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.018, 0.014, 0.028, 14),
+    segMatDark
+  );
+  palmMesh.rotation.x = Math.PI / 2;
+  clawGroup.add(palmMesh);
+
+  const prongs = [];
+  for (let p = 0; p < 3; p++) {
+    const pivot = new THREE.Group();
+    pivot.rotation.z = (p / 3) * Math.PI * 2;
+    const fingerPivot = new THREE.Group();
+    fingerPivot.position.set(0.016, 0, 0.012);
+
+    const finger1 = new THREE.Mesh(
+      new THREE.BoxGeometry(0.008, 0.009, 0.038),
+      segMatDark
+    );
+    finger1.position.set(0.004, 0, 0.019);
+    const tipGlow = new THREE.Mesh(
+      new THREE.SphereGeometry(0.0055, 10, 10),
+      segMatGlow
+    );
+    tipGlow.position.set(-0.002, 0, 0.039);
+
+    fingerPivot.add(finger1, tipGlow);
+    pivot.add(fingerPivot);
+    clawGroup.add(pivot);
+    prongs.push(fingerPivot);
+  }
+
+  // Holographic Show Beam Cone (visible during tentacle_show)
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.24,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  });
+  const showBeam = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.55, 24, 1, true), beamMat);
+  showBeam.rotation.x = -Math.PI / 2;
+  showBeam.position.z = 0.30;
+  showBeam.visible = false;
+  clawGroup.add(showBeam);
+
+  // ====================================================================
+  // 2. ROBOT STATE, CUBIC-BEZIER IK & TENTACLE ACTIONS
+  // ====================================================================
+  let botEnabled = true;
+  let audioEnergy = 0; // Reactive glow 0..1
+  let clawClosure = 0.2; // 0 = wide open, 1 = closed
+  let clawTargetClosure = 0.2;
+
+  const state = {
+    mode: 'idle', // 'idle' | 'grabbing' | 'holding' | 'handing' | 'showing'
+    targetObj: null,
+    heldObj: null,
+    heldRadius: 0.12,
+    hoverTargetPos: new THREE.Vector3(0.42, 1.48, -1.05),
+    tipTargetPos: new THREE.Vector3(0.42, 1.18, -1.05),
+    currentTipPos: new THREE.Vector3(0.42, 1.18, -1.05),
+    showTimer: 0,
+    grabProgress: 0
+  };
+
+  // Reusable math vectors (zero per-frame allocations)
+  const vP0 = new THREE.Vector3();
+  const vC1 = new THREE.Vector3();
+  const vC2 = new THREE.Vector3();
+  const vP3 = new THREE.Vector3();
+  const vPt = new THREE.Vector3();
+  const vNext = new THREE.Vector3();
+  const vObjCenter = new THREE.Vector3();
+  const vObjSize = new THREE.Vector3();
+  const tmpBox = new THREE.Box3();
+  const tmpVecA = new THREE.Vector3();
+  const tmpVecB = new THREE.Vector3();
+
+  function getEntityObject3D(target) {
+    if (!target) return null;
+    if (target.isObject3D) return target;
+    if (target.mesh && target.mesh.isObject3D) return target.mesh;
+    const entities = Array.isArray(APP.entities) ? APP.entities : [];
+    if (typeof target === 'string') {
+      const low = target.toLowerCase().trim();
+      if (!low || low === 'latest' || low === 'last' || low === 'it' || low === 'that') {
+        const last = entities[entities.length - 1];
+        return last ? (last.mesh || last) : null;
+      }
+      for (let i = entities.length - 1; i >= 0; i--) {
+        const e = entities[i];
+        const obj = e && (e.mesh || e);
+        if (!obj) continue;
+        const name = String(e.name || obj.name || '').toLowerCase();
+        const id = String(e.id || obj.uuid || '').toLowerCase();
+        if (name.includes(low) || id === low) return obj;
+      }
+    }
+    return null;
+  }
+
+  function getEntityRecord(obj) {
+    if (!obj || !Array.isArray(APP.entities)) return null;
+    return APP.entities.find((e) => e === obj || (e && e.mesh === obj)) || null;
+  }
+
+  function computeObjCenterAndRadius(obj) {
+    obj.updateMatrixWorld(true);
+    tmpBox.setFromObject(obj);
+    if (tmpBox.isEmpty()) {
+      obj.getWorldPosition(vObjCenter);
+      return { center: vObjCenter.clone(), radius: 0.12 };
+    }
+    tmpBox.getCenter(vObjCenter);
+    tmpBox.getSize(vObjSize);
+    const radius = Math.max(0.06, Math.min(0.32, Math.max(vObjSize.x, vObjSize.z) * 0.45));
+    return { center: vObjCenter.clone(), radius };
+  }
+
+  function releaseHeldEntity() {
+    if (state.heldObj) {
+      const rec = getEntityRecord(state.heldObj);
+      if (rec) rec.heldByBot = false;
+      state.heldObj.userData = state.heldObj.userData || {};
+      state.heldObj.userData.heldByBot = false;
+      state.heldObj = null;
+    }
+  }
+
+  function tentacle_release() {
+    releaseHeldEntity();
+    state.mode = 'idle';
+    state.targetObj = null;
+    clawTargetClosure = 0.05;
+    showBeam.visible = false;
+    return { ok: true, message: 'Tentacle released object and returned to idle.' };
+  }
+
+  function tentacle_grab(target) {
+    if (!botEnabled) setEnabled(true);
+    const obj = getEntityObject3D(target);
+    if (!obj) {
+      return { ok: false, error: 'Could not find target object to grab: ' + String(target || '') };
+    }
+    releaseHeldEntity();
+    state.mode = 'grabbing';
+    state.targetObj = obj;
+    state.grabProgress = 0;
+    clawTargetClosure = 0.0;
+    showBeam.visible = false;
+    return { ok: true, message: 'Extending robotic tentacle to grab ' + (obj.name || 'object') + '.' };
+  }
+
+  function tentacle_hand_to_user(target) {
+    if (!botEnabled) setEnabled(true);
+    let obj = getEntityObject3D(target);
+    if (!obj && state.heldObj) obj = state.heldObj;
+    if (!obj) {
+      return { ok: false, error: 'No target object found to hand to user.' };
+    }
+    if (state.heldObj !== obj) {
+      releaseHeldEntity();
+      state.targetObj = obj;
+      const info = computeObjCenterAndRadius(obj);
+      state.heldObj = obj;
+      state.heldRadius = info.radius;
+      const rec = getEntityRecord(obj);
+      if (rec) rec.heldByBot = true;
+      obj.userData = obj.userData || {};
+      obj.userData.heldByBot = true;
+    }
+    state.mode = 'handing';
+    clawTargetClosure = 0.85;
+    showBeam.visible = false;
+    return { ok: true, message: 'Bringing ' + (obj.name || 'object') + ' directly to your hand.' };
+  }
+
+  function tentacle_show(target) {
+    if (!botEnabled) setEnabled(true);
+    const obj = getEntityObject3D(target);
+    if (!obj) {
+      return { ok: false, error: 'No target object found to showcase.' };
+    }
+    if (state.heldObj && state.heldObj !== obj) {
+      // Do not interrupt active carry unless explicitly told
+    } else {
+      releaseHeldEntity();
+    }
+    state.mode = 'showing';
+    state.targetObj = obj;
+    state.showTimer = 5.5;
+    clawTargetClosure = 0.25;
+    showBeam.visible = true;
+    return { ok: true, message: 'Showcasing ' + (obj.name || 'object') + ' with holographic beam.' };
+  }
+
+  function evalCubicBezier(p0, c1, c2, p3, t, out) {
+    const u = 1 - t;
+    const tt = t * t;
+    const uu = u * u;
+    const uuu = uu * u;
+    const ttt = tt * t;
+    out.set(0, 0, 0)
+      .addScaledVector(p0, uuu)
+      .addScaledVector(c1, 3 * uu * t)
+      .addScaledVector(c2, 3 * u * tt)
+      .addScaledVector(p3, ttt);
+    return out;
+  }
+
+  function updateTentacleIK(dt, elapsed) {
+    // Anchor p0 at underside socket of robot sphere
+    vP0.set(0, -0.14, 0);
+    botRoot.localToWorld(vP0);
+
+    // Smoothly move currentTipPos toward tipTargetPos
+    const tipLerp = 1 - Math.exp(-10 * dt);
+    state.currentTipPos.lerp(state.tipTargetPos, tipLerp);
+    vP3.copy(state.currentTipPos);
+
+    // Control point c1 drops smoothly downward from sphere socket
+    const dist = vP0.distanceTo(vP3);
+    vC1.copy(vP0).add(new THREE.Vector3(0, -Math.max(0.16, dist * 0.42), 0));
+
+    // Control point c2 curves organically toward target claw angle
+    tmpVecA.subVectors(vP3, vP0).normalize();
+    vC2.copy(vP3).addScaledVector(tmpVecA, -Math.max(0.12, dist * 0.34));
+    vC2.y += Math.sin(elapsed * 2.1) * 0.03 + 0.06;
+
+    // Place and orient 12 tapered segments along Bezier curve
+    for (let i = 0; i < TENTACLE_SEGMENTS; i++) {
+      const t = i / TENTACLE_SEGMENTS;
+      const tNext = (i + 1) / TENTACLE_SEGMENTS;
+      evalCubicBezier(vP0, vC1, vC2, vP3, t, vPt);
+      evalCubicBezier(vP0, vC1, vC2, vP3, tNext, vNext);
+      segments[i].position.copy(vPt);
+      segments[i].lookAt(vNext);
+    }
+
+    // Orient claw at vP3 looking along final curve tangent (or at target during show)
+    clawGroup.position.copy(vP3);
+    if (state.mode === 'showing' && state.targetObj) {
+      const info = computeObjCenterAndRadius(state.targetObj);
+      clawGroup.lookAt(info.center);
+      const beamDist = Math.max(0.15, Math.min(0.85, vP3.distanceTo(info.center)));
+      showBeam.scale.set(1, 1, beamDist / 0.55);
+      showBeam.position.z = beamDist * 0.52;
+    } else {
+      evalCubicBezier(vP0, vC1, vC2, vP3, 0.9, tmpVecB);
+      tmpVecA.subVectors(vP3, tmpVecB).normalize();
+      if (tmpVecA.lengthSq() > 0.001) {
+        clawGroup.lookAt(tmpVecB.copy(vP3).add(tmpVecA));
+      }
+    }
+
+    // Animate 3 mechanical claw prongs
+    clawClosure += (clawTargetClosure - clawClosure) * Math.min(1, dt * 10);
+    const openAngle = THREE.MathUtils.lerp(0.62, -0.14, clawClosure);
+    for (let p = 0; p < prongs.length; p++) {
+      prongs[p].rotation.y = openAngle;
+    }
+  }
+
+  function updateRobot(dt, elapsed) {
+    if (!botEnabled) return;
+    const delta = Math.min(0.05, dt || 0.016);
+    const now = elapsed || (performance.now() * 0.001);
+
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    const flatFwd = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+    if (flatFwd.lengthSq() < 0.01) flatFwd.set(0, 0, -1);
+    const right = new THREE.Vector3().crossVectors(flatFwd, new THREE.Vector3(0, 1, 0)).normalize();
+
+    // Update target behavior by mode
+    if (state.mode === 'idle') {
+      state.hoverTargetPos.copy(hp)
+        .addScaledVector(flatFwd, 0.92)
+        .addScaledVector(right, 0.44);
+      state.hoverTargetPos.y = hp.y + 0.05 + Math.sin(now * 1.8) * 0.04;
+
+      state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(
+        Math.sin(now * 1.4) * 0.05,
+        -0.30 + Math.cos(now * 1.7) * 0.03,
+        0.04
+      ));
+      eyePivot.lookAt(hp);
+    } else if (state.mode === 'grabbing') {
+      if (!state.targetObj || !state.targetObj.parent) {
+        tentacle_release();
+      } else {
+        const info = computeObjCenterAndRadius(state.targetObj);
+        state.hoverTargetPos.copy(info.center).add(new THREE.Vector3(0.22, 0.36, 0.18));
+        state.tipTargetPos.copy(info.center);
+        eyePivot.lookAt(info.center);
+
+        if (state.currentTipPos.distanceTo(info.center) < 0.14) {
+          state.grabProgress += delta;
+          clawTargetClosure = 0.88;
+          if (state.grabProgress > 0.25) {
+            state.heldObj = state.targetObj;
+            state.heldRadius = info.radius;
+            const rec = getEntityRecord(state.heldObj);
+            if (rec) rec.heldByBot = true;
+            state.heldObj.userData = state.heldObj.userData || {};
+            state.heldObj.userData.heldByBot = true;
+            state.mode = 'holding';
+          }
+        }
+      }
+    } else if (state.mode === 'holding') {
+      if (!state.heldObj || !state.heldObj.parent) {
+        tentacle_release();
+      } else {
+        state.hoverTargetPos.copy(hp).addScaledVector(flatFwd, 0.86).addScaledVector(right, 0.34);
+        state.hoverTargetPos.y = hp.y + 0.08 + Math.sin(now * 1.6) * 0.025;
+        state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(-0.08, -0.32, 0.16));
+        eyePivot.lookAt(hp);
+      }
+    } else if (state.mode === 'handing') {
+      if (!state.heldObj || !state.heldObj.parent) {
+        tentacle_release();
+      } else {
+        // Fly directly in front of user & extend tentacle toward nearest user hand or chest
+        state.hoverTargetPos.copy(hp).addScaledVector(flatFwd, 0.62);
+        state.hoverTargetPos.y = Math.max(0.85, hp.y - 0.05);
+
+        let handAnchor = null;
+        let handGrabbing = false;
+        const hands = APP.hands || {};
+        for (const k of Object.keys(hands)) {
+          const h = hands[k];
+          if (!h) continue;
+          const pos = h.indexTip || h.wrist || h.gripPos;
+          if (pos) {
+            if (!handAnchor || pos.distanceTo(state.currentTipPos) < handAnchor.distanceTo(state.currentTipPos)) {
+              handAnchor = pos;
+            }
+            if ((h.pinching || h.selecting || h.squeezing) && pos.distanceTo(state.currentTipPos) < 0.22) {
+              handGrabbing = true;
+            }
+          }
+        }
+
+        if (handAnchor && handAnchor.distanceTo(hp) < 1.1) {
+          state.tipTargetPos.copy(handAnchor).addScaledVector(flatFwd, -0.05);
+        } else {
+          state.tipTargetPos.copy(hp).addScaledVector(flatFwd, 0.42);
+          state.tipTargetPos.y = Math.max(0.75, hp.y - 0.22);
+        }
+
+        eyePivot.lookAt(hp);
+
+        // Auto-transfer/release when user grabs/pinches it or core grabber claims it
+        const rec = getEntityRecord(state.heldObj);
+        if (handGrabbing || (rec && rec.grabbedByHand)) {
+          tentacle_release();
+        }
+      }
+    } else if (state.mode === 'showing') {
+      if (!state.targetObj || !state.targetObj.parent) {
+        tentacle_release();
+      } else {
+        const info = computeObjCenterAndRadius(state.targetObj);
+        state.hoverTargetPos.copy(info.center)
+          .addScaledVector(right, 0.42)
+          .add(new THREE.Vector3(0, 0.34 + Math.sin(now * 2.0) * 0.03, 0.16));
+        state.tipTargetPos.copy(info.center)
+          .addScaledVector(right, 0.22)
+          .add(new THREE.Vector3(0, 0.10, 0.12));
+        eyePivot.lookAt(info.center);
+
+        state.showTimer -= delta;
+        if (state.showTimer <= 0) {
+          tentacle_release();
+        }
+      }
+    }
+
+    // Smooth flight toward hoverTargetPos
+    botRoot.position.lerp(state.hoverTargetPos, 1 - Math.exp(-5.2 * delta));
+
+    // Update Bezier tentacle
+    updateTentacleIK(delta, now);
+
+    // Move physically held object with the gripper claw tip
+    if (state.heldObj && (state.mode === 'holding' || state.mode === 'handing')) {
+      const forwardDir = new THREE.Vector3(0, 0, 1).applyQuaternion(clawGroup.quaternion);
+      tmpVecA.copy(clawGroup.position).addScaledVector(forwardDir, 0.045 + state.heldRadius * 0.35);
+      // Offset by object's local bounding center difference if needed
+      state.heldObj.position.lerp(tmpVecA, 1 - Math.exp(-16 * delta));
+      const rec = getEntityRecord(state.heldObj);
+      if (rec && rec.velocity) rec.velocity.set(0, 0, 0);
+    }
+
+    // Audio-reactive core glow & rotating halo rings
+    const targetEnergy = (APP.botSpeaking || APP.ttsSpeaking)
+      ? 0.55 + Math.abs(Math.sin(now * 16.0)) * 0.45
+      : (APP.micLevel || 0);
+    audioEnergy += (targetEnergy - audioEnergy) * Math.min(1, delta * 12);
+
+    coreMat.emissiveIntensity = 0.85 + audioEnergy * 2.2;
+    opticMat.emissiveIntensity = 1.4 + audioEnergy * 1.8;
+    botLight.intensity = 0.5 + audioEnergy * 1.1;
+
+    const haloScale = 1 + audioEnergy * 0.14;
+    haloRing1.scale.setScalar(haloScale);
+    haloRing1.rotation.z = now * 1.1;
+    haloRing2.rotation.x = now * 0.85;
+    haloRing2.rotation.y = now * 0.65;
+  }
+
+  function setEnabled(val) {
+    botEnabled = !!val;
+    botRoot.visible = botEnabled;
+    tentacleGroup.visible = botEnabled;
+    if (!botEnabled) {
+      tentacle_release();
+      disconnectLive();
+    }
+    if (typeof APP.emit === 'function') APP.emit('bot:state_changed', botEnabled);
+    return botEnabled;
+  }
+
+  // ====================================================================
+  // 3. TOOL DECLARATIONS (Shared by Gemini Live WS & REST Turn Loop)
+  // ====================================================================
+  const BOT_TOOLS = [
+    {
+      name: 'create_procedural_object',
+      description: 'Create and materialize any custom 3D Three.js object in the Mixed Reality scene using APP.craft helpers or THREE geometries.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Short object name (e.g. dragon, glowing sword, neon chair).' },
+          js_code: {
+            type: 'string',
+            description: 'JavaScript body receiving (APP, group, THREE, V3). Add meshes to group. Use APP.craft.mat/organicSphere/lathe/tube/bevelBox or THREE primitives.'
+          },
+          holdable: { type: 'boolean', description: 'True if the user can pick up and hold the object.' }
+        },
+        required: ['name', 'js_code']
+      }
+    },
+    {
+      name: 'tentacle_grab',
+      description: 'Make the robot sphere fly to a scene object and physically grab/hold it with its robotic tentacle.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'Name or "latest" for the most recently spawned object.' }
+        },
+        required: ['target']
+      }
+    },
+    {
+      name: 'tentacle_hand_to_user',
+      description: 'Grab an object and bring it directly in front of the user, extending the tentacle until the user pinches/grabs it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'Name or "latest" for the target object.' }
+        },
+        required: ['target']
+      }
+    },
+    {
+      name: 'tentacle_show',
+      description: 'Fly beside an object and point the robotic tentacle + holographic beam at it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', description: 'Name or "latest" for the object to showcase.' }
+        },
+        required: ['target']
+      }
+    },
+    {
+      name: 'tentacle_release',
+      description: 'Open the robotic tentacle claw and release any held object back into world physics.',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: 'Optional reason for releasing.' }
+        }
+      }
+    },
+    {
+      name: 'run_instruction',
+      description: 'Run a matching prescripted ability from instruction*.txt (e.g. make a pen, toggle drawing gravity).',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Natural-language instruction phrase to execute.' }
+        },
+        required: ['command']
+      }
+    },
+    {
+      name: 'spawn_repo_asset',
+      description: 'Spawn a .glb/.gltf model, image, or video asset from the GitHub repository /assets/ or imported tray.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Asset name in English or Arabic (e.g. cat, dog, car).' }
+        },
+        required: ['name']
+      }
+    }
+  ];
+
+  async function executeToolCall(name, args) {
+    const a = args || {};
+    if (name === 'create_procedural_object') {
+      if (typeof APP.createProcedural !== 'function') {
+        return { ok: false, error: 'APP.createProcedural is not initialized.' };
+      }
+      const res = await APP.createProcedural(a.js_code, {
+        name: a.name || 'AI Creation',
+        holdable: a.holdable !== false
+      });
+      if (res && res.ok && res.entity) {
+        tentacle_show(res.entity);
+      }
+      return res;
+    }
+    if (name === 'tentacle_grab') return tentacle_grab(a.target || 'latest');
+    if (name === 'tentacle_hand_to_user') return tentacle_hand_to_user(a.target || 'latest');
+    if (name === 'tentacle_show') return tentacle_show(a.target || 'latest');
+    if (name === 'tentacle_release') return tentacle_release();
+    if (name === 'run_instruction') {
+      if (typeof APP.runInstructionMatch === 'function') {
+        const res = await APP.runInstructionMatch(a.command || '');
+        return res || { ok: false, error: 'No matching instruction found for: ' + a.command };
+      }
+      return { ok: false, error: 'Instruction runner unavailable.' };
+    }
+    if (name === 'spawn_repo_asset') {
+      if (typeof APP.spawnAssetByName === 'function') {
+        return await APP.spawnAssetByName(a.name || '');
+      }
+      return { ok: false, error: 'Repo asset spawner unavailable.' };
+    }
+    return { ok: false, error: 'Unknown tool: ' + name };
+  }
+
+  function buildSystemPrompt() {
+    const mode = APP.execMode || 'ai_instructions';
+    const instSummary = (mode === 'ai_instructions' && typeof APP.getInstructionSummaryForAI === 'function')
+      ? APP.getInstructionSummaryForAI()
+      : '';
+
+    const base = [
+      'You are the AI brain inside a floating 3D Sphere Robot with an articulated robotic tentacle in a WebXR Mixed Reality studio.',
+      'You can see the scene via periodic camera frames and act through tool calls.',
+      'CRITICAL RULES:',
+      '1. NEVER say "I cannot make that" or refuse a 3D creation request. ALWAYS use `create_procedural_object` with Three.js (`THREE` + `APP.craft`) to sculpt detailed multi-part 3D objects! If `create_procedural_object` returns an error, inspect the error and call it again with fixed code.',
+      '2. Inside `js_code`, use `(APP, group, THREE, V3)` — create meshes and `group.add(...)`. Available helpers: `APP.craft.mat(color, opts)`, `APP.craft.organicSphere(r, segs, fn)`, `APP.craft.lathe(pts, segs)`, `APP.craft.tube(pts, r, segs)`, `APP.craft.bevelBox(w, h, d, r)`.',
+      '3. For `tentacle_grab`, `tentacle_hand_to_user`, `tentacle_show`, `tentacle_release`, use your physical robotic tentacle.',
+      '4. If a user asks to spawn a repo asset (cat, dog, etc.), call `spawn_repo_asset`.',
+      '5. Keep spoken/text replies concise, helpful, and in the user language (English or Arabic).'
+    ];
+
+    if (mode === 'ai_instructions' && instSummary) {
+      base.push(
+        '',
+        'ACTIVE INSTRUCTION MODULES (Rules & Creative Reference):',
+        instSummary,
+        'IMPORTANT: Use these instructions as rules and creative inspiration. When the user asks to "make" or "اصنع" something (even if a sample recipe exists, like a fire torch), sculpt an ORIGINAL, creative, richer Three.js version via `create_procedural_object` rather than just running the static prefab, while honoring physics/holdability/pen/gravity rules!'
+      );
+    }
+
+    return base.join('\n');
+  }
+
+  // ====================================================================
+  // 4. GEMINI LIVE API WEBSOCKET (16kHz PCM Mic -> 24kHz PCM Playback + Vision)
+  // ====================================================================
+  let liveWS = null;
+  let liveConnected = false;
+  let audioCtx = null;
+  let micStream = null;
+  let micWorkletNode = null;
+  let micScriptNode = null;
+  let visionTimer = null;
+  let nextPlayTime = 0;
+  const activePlaySources = new Set();
+
+  function floatTo16BitPCMBase64(float32, inputSampleRate) {
+    const targetRate = 16000;
+    const ratio = inputSampleRate / targetRate;
+    const outLen = Math.max(1, Math.floor(float32.length / ratio));
+    const buf = new ArrayBuffer(outLen * 2);
+    const view = new DataView(buf);
+    let sumSq = 0;
+
+    for (let i = 0; i < outLen; i++) {
+      const idx = Math.min(float32.length - 1, Math.floor(i * ratio));
+      const s = Math.max(-1, Math.min(1, float32[idx]));
+      sumSq += s * s;
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    APP.micLevel = Math.min(1, Math.sqrt(sumSq / outLen) * 5.0);
+
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function stopLiveAudioPlayback() {
+    activePlaySources.forEach((src) => {
+      try { src.stop(); } catch (_) {}
+    });
+    activePlaySources.clear();
+    nextPlayTime = audioCtx ? audioCtx.currentTime : 0;
+    APP.botSpeaking = false;
+  }
+
+  function playPCM24kBase64(b64) {
+    if (!audioCtx || !b64) return;
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
+    }
+    const bin = atob(b64);
+    const sampleCount = Math.floor(bin.length / 2);
+    if (sampleCount <= 0) return;
+
+    const floatBuf = new Float32Array(sampleCount);
+    for (let i = 0; i < sampleCount; i++) {
+      const lo = bin.charCodeAt(i * 2);
+      const hi = bin.charCodeAt(i * 2 + 1);
+      let val = (hi << 8) | lo;
+      if (val >= 0x8000) val -= 0x10000;
+      floatBuf[i] = val / 32768;
+    }
+
+    const audioBuf = audioCtx.createBuffer(1, sampleCount, 24000);
+    audioBuf.getChannelData(0).set(floatBuf);
+
+    const src = audioCtx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(audioCtx.destination);
+
+    const now = audioCtx.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now + 0.02;
+    src.start(nextPlayTime);
+    nextPlayTime += audioBuf.duration;
+
+    APP.botSpeaking = true;
+    activePlaySources.add(src);
+    src.onended = function () {
+      activePlaySources.delete(src);
+      if (activePlaySources.size === 0) {
+        APP.botSpeaking = false;
+      }
+    };
+  }
+
+  async function startMicStreamingForLive() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AC();
+    }
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
+    });
+    const source = audioCtx.createMediaStreamSource(micStream);
+
+    // Try modern AudioWorklet first, fallback cleanly to ScriptProcessorNode
+    let usedWorklet = false;
+    if (audioCtx.audioWorklet && typeof Blob !== 'undefined') {
+      try {
+        const workletCode = [
+          'class PCM16Cap extends AudioWorkletProcessor {',
+          '  process(inputs) {',
+          '    const ch = inputs[0] && inputs[0][0];',
+          '    if (ch) this.port.postMessage(ch);',
+          '    return true;',
+          '  }',
+          '}',
+          'registerProcessor("wxr-pcm16-cap", PCM16Cap);'
+        ].join('\n');
+        const blobUrl = URL.createObjectURL(new Blob([workletCode], { type: 'application/javascript' }));
+        await audioCtx.audioWorklet.addModule(blobUrl);
+        URL.revokeObjectURL(blobUrl);
+        micWorkletNode = new AudioWorkletNode(audioCtx, 'wxr-pcm16-cap');
+        micWorkletNode.port.onmessage = function (ev) {
+          if (!liveWS || liveWS.readyState !== 1) return;
+          if (APP.botSpeaking) return; // Gate TTS echo
+          const b64 = floatTo16BitPCMBase64(ev.data, audioCtx.sampleRate);
+          liveWS.send(JSON.stringify({
+            realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: b64 } }
+          }));
+        };
+        source.connect(micWorkletNode);
+        micWorkletNode.connect(audioCtx.destination);
+        usedWorklet = true;
+      } catch (_) {}
+    }
+
+    if (!usedWorklet) {
+      micScriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
+      micScriptNode.onaudioprocess = function (e) {
+        if (!liveWS || liveWS.readyState !== 1) return;
+        if (APP.botSpeaking) return;
+        const b64 = floatTo16BitPCMBase64(e.inputBuffer.getChannelData(0), audioCtx.sampleRate);
+        liveWS.send(JSON.stringify({
+          realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: b64 } }
+        }));
+      };
+      source.connect(micScriptNode);
+      micScriptNode.connect(audioCtx.destination);
+    }
+  }
+
+  function stopMicStreamingForLive() {
+    if (micWorkletNode) { try { micWorkletNode.disconnect(); } catch (_) {} micWorkletNode = null; }
+    if (micScriptNode) { try { micScriptNode.disconnect(); } catch (_) {} micScriptNode = null; }
+    if (micStream) {
+      micStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
+      micStream = null;
+    }
+    APP.micLevel = 0;
+  }
+
+  async function connectLive(enableMicStream) {
+    if (!APP.ai) return { ok: false, error: 'APP.ai unavailable.' };
+    const model = APP.ai.getSelectedModel();
+    if (!model.supportsLiveWS) {
+      return { ok: false, error: 'Selected model "' + model.id + '" is not a Gemini Live WebSocket model.' };
+    }
+    const apiKey = APP.ai.getKey('gemini');
+    if (!apiKey) {
+      return { ok: false, error: 'Missing Google AI Studio API key (AIza...) for ' + model.id + '.' };
+    }
+
+    disconnectLive();
+
+    const wsUrl = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' +
+      encodeURIComponent(apiKey);
+
+    return new Promise((resolve) => {
+      try {
+        liveWS = new WebSocket(wsUrl);
+      } catch (e) {
+        resolve({ ok: false, error: 'WebSocket init error: ' + e.message });
+        return;
+      }
+
+      let settled = false;
+      liveWS.onopen = function () {
+        const setupPayload = {
+          setup: {
+            model: 'models/' + model.id,
+            generationConfig: {
+              responseModalities: ['AUDIO']
+            },
+            systemInstruction: { parts: [{ text: buildSystemPrompt() }] },
+            tools: [{ functionDeclarations: BOT_TOOLS }],
+            inputAudioTranscription: {},
+            outputAudioTranscription: {}
+          }
+        };
+        liveWS.send(JSON.stringify(setupPayload));
+      };
+
+      liveWS.onmessage = async function (evt) {
+        let msg;
+        try {
+          const text = typeof evt.data === 'string' ? evt.data : await evt.data.text();
+          msg = JSON.parse(text);
+        } catch (_) { return; }
+
+        if (msg.setupComplete) {
+          liveConnected = true;
+          if (typeof APP.emit === 'function') APP.emit('status', 'Gemini Live Connected (' + model.id + ')');
+          if (enableMicStream) {
+            startMicStreamingForLive().catch((err) => {
+              if (typeof APP.emit === 'function') APP.emit('status', 'Live Mic Error: ' + err.message);
+            });
+          }
+          visionTimer = setInterval(() => {
+            if (!liveWS || liveWS.readyState !== 1) return;
+            const b64 = typeof APP.captureVisionFrame === 'function' ? APP.captureVisionFrame() : APP.latestVisionB64;
+            if (b64) {
+              const clean = String(b64).replace(/^data:image\/\w+;base64,/, '');
+              liveWS.send(JSON.stringify({
+                realtimeInput: { video: { mimeType: 'image/jpeg', data: clean } }
+              }));
+            }
+          }, 1500);
+
+          if (!settled) { settled = true; resolve({ ok: true }); }
+          return;
+        }
+
+        if (msg.serverContent) {
+          if (msg.serverContent.interrupted) {
+            stopLiveAudioPlayback();
+          }
+          const turn = msg.serverContent.modelTurn;
+          if (turn && Array.isArray(turn.parts)) {
+            for (const part of turn.parts) {
+              if (part.inlineData && part.inlineData.mimeType && part.inlineData.mimeType.startsWith('audio/pcm')) {
+                playPCM24kBase64(part.inlineData.data);
+              }
+              if (part.text && typeof APP.emit === 'function') {
+                APP.emit('status', 'Bot: ' + part.text.slice(0, 120));
+              }
+            }
+          }
+          if (msg.serverContent.outputTranscription && msg.serverContent.outputTranscription.text) {
+            if (typeof APP.emit === 'function') APP.emit('status', 'Bot: ' + msg.serverContent.outputTranscription.text.slice(0, 120));
+          }
+        }
+
+        if (msg.toolCall && Array.isArray(msg.toolCall.functionCalls)) {
+          const responses = [];
+          for (const fc of msg.toolCall.functionCalls) {
+            const out = await executeToolCall(fc.name, fc.args || {});
+            responses.push({ id: fc.id, name: fc.name, response: out || { ok: true } });
+          }
+          if (liveWS && liveWS.readyState === 1) {
+            liveWS.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
+          }
+        }
+      };
+
+      liveWS.onerror = function () {
+        if (!settled) { settled = true; resolve({ ok: false, error: 'Gemini Live WebSocket connection failed. Check API key or quota.' }); }
+      };
+
+      liveWS.onclose = function (ev) {
+        liveConnected = false;
+        stopMicStreamingForLive();
+        if (visionTimer) { clearInterval(visionTimer); visionTimer = null; }
+        if (!settled) {
+          settled = true;
+          resolve({ ok: false, error: 'Gemini Live closed (' + ev.code + ' ' + (ev.reason || '') + ')' });
+        }
+      };
+    });
+  }
+
+  function disconnectLive() {
+    liveConnected = false;
+    stopMicStreamingForLive();
+    stopLiveAudioPlayback();
+    if (visionTimer) { clearInterval(visionTimer); visionTimer = null; }
+    if (liveWS) {
+      try { liveWS.close(); } catch (_) {}
+      liveWS = null;
+    }
+  }
+
+  async function sendLiveText(text) {
+    if (!liveConnected || !liveWS || liveWS.readyState !== 1) {
+      const res = await connectLive(false);
+      if (!res.ok) throw new Error(res.error);
+    }
+    liveWS.send(JSON.stringify({
+      clientContent: {
+        turns: [{ role: 'user', parts: [{ text: String(text) }] }],
+        turnComplete: true
+      }
+    }));
+  }
+
+  // ====================================================================
+  // 5. TURN-BASED MULTIMODAL AI HANDLER (Non-WebSocket Free Models)
+  // ====================================================================
+  const chatHistory = [];
+
+  function speakBrowserTTS(text) {
+    if (!text || !window.speechSynthesis) return;
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(String(text).slice(0, 320));
+      u.lang = /[\u0600-\u06FF]/.test(text) ? 'ar-SA' : (APP.lang || 'en-US');
+      APP.botSpeaking = true;
+      u.onend = () => { APP.botSpeaking = false; };
+      u.onerror = () => { APP.botSpeaking = false; };
+      window.speechSynthesis.speak(u);
+    } catch (_) {
+      APP.botSpeaking = false;
+    }
+  }
+
+  async function handleCommand(userText) {
+    if (!APP.ai || typeof APP.ai.getSelectedModel !== 'function') {
+      return { ok: false, error: 'AI module (ai_models.txt) is not loaded.' };
+    }
+    const model = APP.ai.getSelectedModel();
+
+    // If Gemini Live model is selected, route through Live WebSocket
+    if (model.supportsLiveWS && !model.supportsRest) {
+      try {
+        await sendLiveText(userText);
+        return { ok: true, text: '(Sent to Gemini Live session)' };
+      } catch (e) {
+        if (typeof APP.emit === 'function') APP.emit('status', 'Gemini Live Error: ' + e.message);
+        return { ok: false, error: e.message };
+      }
+    }
+
+    // Turn-based REST call through the exact selected free model
+    const visionB64 = model.supportsVision && typeof APP.captureVisionFrame === 'function'
+      ? APP.captureVisionFrame()
+      : APP.latestVisionB64;
+
+    chatHistory.push({ role: 'user', content: String(userText) });
+    if (chatHistory.length > 10) chatHistory.splice(0, chatHistory.length - 10);
+
+    if (typeof APP.emit === 'function') {
+      APP.emit('status', 'Thinking with ' + model.id + '...');
+    }
+
+    const res = await APP.ai.chat({
+      systemPrompt: buildSystemPrompt(),
+      messages: chatHistory,
+      tools: BOT_TOOLS,
+      imageB64: visionB64 || undefined,
+      onToolCall: executeToolCall,
+      maxSteps: 6
+    });
+
+    if (!res.ok) {
+      if (typeof APP.emit === 'function') APP.emit('status', 'AI Error: ' + res.error);
+      return res;
+    }
+
+    const replyText = res.text || (res.toolTrace && res.toolTrace.length ? 'Done.' : 'Ready.');
+    chatHistory.push({ role: 'assistant', content: replyText });
+    if (typeof APP.emit === 'function') APP.emit('status', 'Bot: ' + replyText.slice(0, 120));
+    speakBrowserTTS(replyText);
+    return res;
+  }
+
+  // ====================================================================
+  // 6. LIFECYCLE HOOKS & EXPORTS
+  // ====================================================================
+  if (typeof APP.onUpdate === 'function') {
+    APP.onUpdate(updateRobot);
+  }
+
+  if (typeof APP.on === 'function') {
+    // Automatically showcase newly created objects when robot is idle
+    APP.on('entity:created', function (ent) {
+      if (!botEnabled) return;
+      if (state.mode === 'idle' && ent) {
+        tentacle_show(ent);
+      }
+    });
+    APP.on('bot:toggle', function () {
+      setEnabled(!botEnabled);
+    });
+  }
+
+  APP.bot = {
+    root: botRoot,
+    tentacleGroup,
+    isEnabled: () => botEnabled,
+    setEnabled,
+    toggle: () => setEnabled(!botEnabled),
+    tentacle_grab,
+    tentacle_hand_to_user,
+    tentacle_show,
+    tentacle_release,
+    connectLive,
+    disconnectLive,
+    isLiveConnected: () => liveConnected,
+    sendLiveText,
+    handleCommand,
+    update: updateRobot
+  };
+
+  // Voice / text ability matching for direct tentacle commands
+  if (typeof APP.registerAbilityHandler === 'function') {
+    APP.registerAbilityHandler('robot_companion_sphere', function (text) {
+      const low = String(text || '').toLowerCase();
+      if (low.includes('release') || low.includes('drop') || low.includes('اترك')) {
+        return tentacle_release();
+      }
+      if (low.includes('hand me') || low.includes('give me') || low.includes('اعطني')) {
+        return tentacle_hand_to_user('latest');
+      }
+      if (low.includes('grab') || low.includes('امسك')) {
+        return tentacle_grab('latest');
+      }
+      if (low.includes('show') || low.includes('ارني')) {
+        return tentacle_show('latest');
+      }
+      if (low.includes('off') || low.includes('hide')) {
+        setEnabled(false);
+        return { ok: true, message: 'Robot sphere disabled.' };
+      }
+      setEnabled(true);
+      return { ok: true, message: 'Robot sphere active.' };
+    });
+  }
+})();
+@end
