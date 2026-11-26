@@ -1,0 +1,1207 @@
+# ======================================================================
+# toolbar.txt — 2D HUD + 3D Spatial VR Toolbar + GitHub NL Editor
+# Load Priority: 3 (runs after visual.txt, before bot.txt & instructions)
+# ======================================================================
+
+@ability: toolbar_hud_and_github
+@autorun
+@match: toolbar | vr menu | spatial menu | github editor | edit scripts | open menu | القائمة | محرر جيتهب
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) {
+    console.warn('[toolbar.txt] APP.THREE or APP.scene missing.');
+    return;
+  }
+
+  const LS_GH_PREFIX = 'wxrmr_gh_v1_';
+  const GH_STORAGE = {
+    owner: LS_GH_PREFIX + 'owner',
+    repo: LS_GH_PREFIX + 'repo',
+    branch: LS_GH_PREFIX + 'branch',
+    pat: LS_GH_PREFIX + 'pat'
+  };
+
+  function lsGet(k, fb) {
+    try { const v = localStorage.getItem(k); return v !== null ? v : fb; } catch (_) { return fb; }
+  }
+  function lsSet(k, v) {
+    try {
+      if (v === null || v === undefined || v === '') localStorage.removeItem(k);
+      else localStorage.setItem(k, String(v));
+    } catch (_) {}
+  }
+
+  // Auto-guess GitHub owner/repo if hosted on *.github.io/<repo>/
+  function detectDefaultRepo() {
+    let defOwner = lsGet(GH_STORAGE.owner, '');
+    let defRepo = lsGet(GH_STORAGE.repo, '');
+    const defBranch = lsGet(GH_STORAGE.branch, 'main');
+    if (!defOwner && window.location.hostname.endsWith('.github.io')) {
+      defOwner = window.location.hostname.split('.')[0] || '';
+      const segs = window.location.pathname.split('/').filter(Boolean);
+      if (!defRepo && segs.length > 0) defRepo = segs[0];
+    }
+    return { owner: defOwner, repo: defRepo, branch: defBranch || 'main', pat: lsGet(GH_STORAGE.pat, '') };
+  }
+
+  // ====================================================================
+  // 1. 2D RESPONSIVE BOTTOM HUD (Phone / Desktop)
+  // ====================================================================
+  let hudRoot = null;
+  let pinContainer = null;
+  let cmdInput = null;
+
+  function injectHUDStyles() {
+    if (document.getElementById('wxrmr-toolbar-style')) return;
+    const style = document.createElement('style');
+    style.id = 'wxrmr-toolbar-style';
+    style.textContent = [
+      '#wxrmr-hud{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);width:min(96vw,840px);z-index:8800;pointer-events:none;font-family:system-ui,-apple-system,sans-serif;color:#eaf2ff;}',
+      '#wxrmr-hud-inner{pointer-events:auto;background:rgba(10,16,28,0.84);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(90,150,220,0.34);border-radius:16px;padding:8px 10px;box-shadow:0 12px 34px rgba(0,0,0,0.45);display:flex;flex-direction:column;gap:7px;}',
+      '.hud-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}',
+      '.hud-pins{display:flex;align-items:center;gap:6px;overflow-x:auto;padding-bottom:2px;scrollbar-width:thin;}',
+      '.hud-btn{background:#15243b;color:#dcecff;border:1px solid #2b4770;border-radius:10px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s;}',
+      '.hud-btn:hover{background:#1e3456;}',
+      '.hud-btn.active{background:#0f766e;border-color:#2dd4bf;color:#ecfeff;}',
+      '.hud-btn.warn{background:#5b1e28;border-color:#f87171;color:#fee2e2;}',
+      '.hud-seg{display:inline-flex;background:#09111e;border:1px solid #263f63;border-radius:10px;overflow:hidden;}',
+      '.hud-seg button{background:transparent;color:#9bb6d6;border:none;padding:6px 9px;font-size:11px;font-weight:700;cursor:pointer;}',
+      '.hud-seg button.active{background:#1d4ed8;color:#ffffff;}',
+      '.hud-input-wrap{display:flex;gap:6px;flex:1;min-width:200px;}',
+      '#wxrmr-cmd-input{flex:1;background:#08101c;color:#f1f7ff;border:1px solid #29446b;border-radius:10px;padding:7px 10px;font-size:13px;outline:none;}',
+      '#wxrmr-cmd-input:focus{border-color:#38bdf8;}',
+      '.hud-status{font-size:11px;color:#8fb2d9;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;}',
+      '.hud-chip{background:#11263c;color:#7ef7d4;border:1px solid #23596d;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;}',
+      '.hud-chip:hover{background:#183755;}',
+      '/* GitHub Editor Modal */',
+      '#gh-ed-backdrop{position:fixed;inset:0;background:rgba(4,8,16,0.82);backdrop-filter:blur(8px);z-index:9950;display:none;align-items:center;justify-content:center;padding:10px;font-family:system-ui,-apple-system,sans-serif;color:#eaf2ff;}',
+      '#gh-ed-backdrop.open{display:flex;}',
+      '#gh-ed-card{width:min(96vw,880px);max-height:92vh;overflow-y:auto;background:#0c1322;border:1px solid #2d4b75;border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:10px;box-shadow:0 24px 64px rgba(0,0,0,0.7);}',
+      '.gh-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;}',
+      '.gh-inp,.gh-sel,.gh-txt{width:100%;box-sizing:border-box;background:#070d18;color:#eff6ff;border:1px solid #29456b;border-radius:9px;padding:8px 10px;font-size:12px;}',
+      '.gh-txt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;min-height:210px;line-height:1.4;resize:vertical;}',
+      '.gh-diff{background:#060b14;border:1px solid #223857;border-radius:9px;padding:8px;max-height:150px;overflow:auto;font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap;}',
+      '.gh-log{font-size:12px;color:#7dd3fc;background:#0a1829;border:1px solid #1e3b5c;border-radius:8px;padding:7px 10px;}',
+      '.gh-commits{max-height:150px;overflow-y:auto;border:1px solid #213756;border-radius:9px;background:#070d18;padding:6px;display:flex;flex-direction:column;gap:5px;}',
+      '.gh-commit-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 7px;border-radius:7px;background:#0d192c;font-size:11px;}'
+    ].join('');
+    document.head.appendChild(style);
+  }
+
+  function buildHUD() {
+    if (hudRoot || !document.body) return;
+    injectHUDStyles();
+
+    hudRoot = document.createElement('div');
+    hudRoot.id = 'wxrmr-hud';
+    hudRoot.innerHTML = [
+      '<div id="wxrmr-hud-inner">',
+      '  <div class="hud-row">',
+      '    <div class="hud-seg" id="hud-mode-seg" title="Execution Mode">',
+      '      <button type="button" data-mode="ai">AI</button>',
+      '      <button type="button" data-mode="instructions">Instructions</button>',
+      '      <button type="button" data-mode="ai_instructions">AI+Inst</button>',
+      '    </div>',
+      '    <button type="button" class="hud-btn" id="hud-mic-btn">Mic: OFF</button>',
+      '    <button type="button" class="hud-btn" id="hud-bot-btn">Bot: ON</button>',
+      '    <button type="button" class="hud-btn" id="hud-grav-btn">Draw Gravity: OFF</button>',
+      '    <button type="button" class="hud-btn" id="hud-env-btn">Env: default</button>',
+      '    <button type="button" class="hud-btn" id="hud-vrmenu-btn">3D Menu</button>',
+      '    <button type="button" class="hud-btn" id="hud-ai-btn">AI Models</button>',
+      '    <button type="button" class="hud-btn" id="hud-gh-btn">GitHub .txt</button>',
+      '    <button type="button" class="hud-btn warn" id="hud-clear-btn">Clear</button>',
+      '  </div>',
+      '  <div class="hud-pins" id="hud-pin-chips"></div>',
+      '  <div class="hud-row">',
+      '    <div class="hud-input-wrap">',
+      '      <input id="wxrmr-cmd-input" type="text" placeholder="Type command (e.g. make a pen, spawn cat, make a fire torch)..." />',
+      '      <button type="button" class="hud-btn active" id="hud-send-btn">Run</button>',
+      '    </div>',
+      '  </div>',
+      '  <div class="hud-status">',
+      '    <span id="hud-status-left">Ready</span>',
+      '    <span id="hud-status-right"></span>',
+      '  </div>',
+      '</div>'
+    ].join('');
+    document.body.appendChild(hudRoot);
+
+    pinContainer = hudRoot.querySelector('#hud-pin-chips');
+    cmdInput = hudRoot.querySelector('#wxrmr-cmd-input');
+
+    // Mode switch handlers
+    hudRoot.querySelectorAll('#hud-mode-seg button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (typeof APP.setExecMode === 'function') APP.setExecMode(btn.dataset.mode);
+        syncHUDState();
+      });
+    });
+
+    hudRoot.querySelector('#hud-mic-btn').addEventListener('click', () => {
+      if (typeof APP.toggleMic === 'function') APP.toggleMic();
+      syncHUDState();
+    });
+
+    hudRoot.querySelector('#hud-bot-btn').addEventListener('click', () => {
+      if (APP.bot && typeof APP.bot.toggle === 'function') APP.bot.toggle();
+      else if (typeof APP.emit === 'function') APP.emit('bot:toggle');
+      syncHUDState();
+    });
+
+    hudRoot.querySelector('#hud-grav-btn').addEventListener('click', () => {
+      const next = !APP.drawingGravity;
+      if (typeof APP.setDrawingGravity === 'function') APP.setDrawingGravity(next);
+      else {
+        APP.drawingGravity = next;
+        if (typeof APP.emit === 'function') APP.emit('drawing:gravity_changed', next);
+      }
+      syncHUDState();
+    });
+
+    hudRoot.querySelector('#hud-env-btn').addEventListener('click', () => {
+      if (APP.visual && typeof APP.visual.cycleEnvironment === 'function') {
+        APP.visual.cycleEnvironment();
+      }
+      syncHUDState();
+    });
+
+    hudRoot.querySelector('#hud-vrmenu-btn').addEventListener('click', () => {
+      vrMenu.toggle();
+    });
+
+    hudRoot.querySelector('#hud-ai-btn').addEventListener('click', () => {
+      if (APP.ai && typeof APP.ai.openPanel === 'function') APP.ai.openPanel();
+    });
+
+    hudRoot.querySelector('#hud-gh-btn').addEventListener('click', () => {
+      openGitHubEditor();
+    });
+
+    hudRoot.querySelector('#hud-clear-btn').addEventListener('click', () => {
+      if (typeof APP.clearAll === 'function') APP.clearAll();
+      setStatus('Cleared scene entities.');
+    });
+
+    function submitTextCmd() {
+      const txt = (cmdInput.value || '').trim();
+      if (!txt) return;
+      cmdInput.value = '';
+      if (typeof APP.executeCommand === 'function') {
+        APP.executeCommand(txt);
+      }
+    }
+    hudRoot.querySelector('#hud-send-btn').addEventListener('click', submitTextCmd);
+    cmdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitTextCmd();
+      }
+    });
+
+    renderPinChips();
+    syncHUDState();
+  }
+
+  function setStatus(msg) {
+    if (!hudRoot) return;
+    const el = hudRoot.querySelector('#hud-status-left');
+    if (el) el.textContent = String(msg || '');
+  }
+
+  function getPinnedAbilities() {
+    if (typeof APP.getPinnedAbilities === 'function') {
+      return APP.getPinnedAbilities();
+    }
+    if (Array.isArray(APP.abilities)) {
+      return APP.abilities.filter((a) => a && a.pin);
+    }
+    return [];
+  }
+
+  function renderPinChips() {
+    if (!pinContainer) return;
+    const pins = getPinnedAbilities();
+    pinContainer.innerHTML = '';
+    if (pins.length === 0) {
+      const hint = document.createElement('span');
+      hint.style.cssText = 'font-size:11px;color:#7390b3;';
+      hint.textContent = 'Pinned @pin abilities appear here automatically.';
+      pinContainer.appendChild(hint);
+      return;
+    }
+    for (const ab of pins) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'hud-chip';
+      chip.textContent = ab.label || ab.id;
+      chip.title = (ab.file || '') + ' — ' + (ab.matchRaw || ab.id);
+      chip.addEventListener('click', () => {
+        if (typeof APP.runAbilityById === 'function') {
+          APP.runAbilityById(ab.id, ab.samplePhrase || ab.label || ab.id);
+        } else if (typeof APP.executeCommand === 'function') {
+          APP.executeCommand(ab.samplePhrase || ab.id);
+        }
+      });
+      pinContainer.appendChild(chip);
+    }
+  }
+
+  function syncHUDState() {
+    if (!hudRoot) return;
+    const mode = APP.execMode || 'ai_instructions';
+    hudRoot.querySelectorAll('#hud-mode-seg button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.mode === mode);
+    });
+
+    const micBtn = hudRoot.querySelector('#hud-mic-btn');
+    const micOn = !!APP.micActive;
+    micBtn.textContent = 'Mic: ' + (micOn ? 'ON' : 'OFF');
+    micBtn.classList.toggle('active', micOn);
+
+    const botBtn = hudRoot.querySelector('#hud-bot-btn');
+    const botOn = APP.bot ? !!APP.bot.isEnabled() : true;
+    botBtn.textContent = 'Bot: ' + (botOn ? 'ON' : 'OFF');
+    botBtn.classList.toggle('active', botOn);
+
+    const gravBtn = hudRoot.querySelector('#hud-grav-btn');
+    const gravOn = !!APP.drawingGravity;
+    gravBtn.textContent = 'Draw Gravity: ' + (gravOn ? 'ON' : 'OFF');
+    gravBtn.classList.toggle('active', gravOn);
+
+    const envBtn = hudRoot.querySelector('#hud-env-btn');
+    const env = APP.visual ? APP.visual.getEnvironment() : 'default';
+    envBtn.textContent = 'Env: ' + env;
+
+    const right = hudRoot.querySelector('#hud-status-right');
+    if (right) {
+      const m = APP.ai && APP.ai.getSelectedModel ? APP.ai.getSelectedModel() : null;
+      right.textContent = m ? ('Model: ' + m.id) : '';
+    }
+
+    if (vrMenu && vrMenu.isVisible()) {
+      vrMenu.redraw();
+    }
+  }
+
+  // ====================================================================
+  // 2. 3D SPATIAL VR TOOLBAR (Draggable, Minimizable Orb, Paginated,
+  //    Interactive via Controller Raycast Laser AND Hand-Poke)
+  // ====================================================================
+  const vrMenu = (function createVRMenu() {
+    const root = new THREE.Group();
+    root.name = 'APP_SPATIAL_VR_TOOLBAR';
+    root.position.set(-0.42, 1.32, -0.95);
+    root.visible = false;
+    APP.scene.add(root);
+
+    const PANEL_W = 0.72;
+    const PANEL_H = 0.50;
+
+    // Minimized glowing orb
+    const orbGroup = new THREE.Group();
+    orbGroup.visible = false;
+    const orbMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.055, 24, 24),
+      new THREE.MeshStandardMaterial({
+        color: 0x1ee3cf,
+        emissive: 0x0ea5e9,
+        emissiveIntensity: 0.9,
+        roughness: 0.2,
+        metalness: 0.4
+      })
+    );
+    orbMesh.name = 'vr_menu_orb';
+    const orbRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.075, 0.005, 10, 36),
+      new THREE.MeshBasicMaterial({ color: 0x6ef3d6, transparent: true, opacity: 0.8 })
+    );
+    orbGroup.add(orbMesh, orbRing);
+    root.add(orbGroup);
+
+    // Expanded panel container
+    const panelGroup = new THREE.Group();
+    root.add(panelGroup);
+
+    // Subtle dark glass backing frame
+    const backMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(PANEL_W + 0.024, PANEL_H + 0.024, 0.014),
+      new THREE.MeshStandardMaterial({
+        color: 0x0b1322,
+        roughness: 0.45,
+        metalness: 0.35
+      })
+    );
+    backMesh.position.z = -0.009;
+    panelGroup.add(backMesh);
+
+    // Interactive CanvasTexture screen
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 712;
+    const ctx = canvas.getContext('2d');
+    const panelTex = new THREE.CanvasTexture(canvas);
+    panelTex.colorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
+    panelTex.needsUpdate = true;
+
+    const screenMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(PANEL_W, PANEL_H),
+      new THREE.MeshBasicMaterial({ map: panelTex, transparent: true })
+    );
+    screenMesh.name = 'vr_menu_screen';
+    panelGroup.add(screenMesh);
+
+    // Top drag handle bar above the panel
+    const dragBar = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, 0.028, 0.018),
+      new THREE.MeshStandardMaterial({
+        color: 0x2dd4bf,
+        emissive: 0x0d9488,
+        emissiveIntensity: 0.65,
+        roughness: 0.3
+      })
+    );
+    dragBar.position.set(0, PANEL_H * 0.5 + 0.024, 0);
+    dragBar.name = 'vr_menu_dragbar';
+    panelGroup.add(dragBar);
+
+    let minimized = false;
+    let currentPage = 0;
+    let hitZones = [];
+    let hoveredId = null;
+    let lastClickTime = 0;
+
+    // Drag state
+    let draggingHandKey = null;
+    const dragOffset = new THREE.Vector3();
+    const raycaster = new THREE.Raycaster();
+    const tmpVec = new THREE.Vector3();
+    const tmpLocal = new THREE.Vector3();
+
+    function getPages() {
+      const pages = [];
+
+      // Page 0: Core Controls
+      const mode = APP.execMode || 'ai_instructions';
+      const env = APP.visual ? APP.visual.getEnvironment() : 'default';
+      const botOn = APP.bot ? !!APP.bot.isEnabled() : true;
+      pages.push({
+        title: 'CORE CONTROLS (1)',
+        items: [
+          {
+            id: 'mode_ai',
+            label: 'Mode: AI Only',
+            active: mode === 'ai',
+            action: () => { if (APP.setExecMode) APP.setExecMode('ai'); }
+          },
+          {
+            id: 'mode_inst',
+            label: 'Mode: Instructions',
+            active: mode === 'instructions',
+            action: () => { if (APP.setExecMode) APP.setExecMode('instructions'); }
+          },
+          {
+            id: 'mode_mix',
+            label: 'Mode: AI + Inst',
+            active: mode === 'ai_instructions',
+            action: () => { if (APP.setExecMode) APP.setExecMode('ai_instructions'); }
+          },
+          {
+            id: 'mic',
+            label: 'Mic: ' + (APP.micActive ? 'ON' : 'OFF'),
+            active: !!APP.micActive,
+            action: () => { if (APP.toggleMic) APP.toggleMic(); }
+          },
+          {
+            id: 'bot',
+            label: 'Robot: ' + (botOn ? 'ON' : 'OFF'),
+            active: botOn,
+            action: () => { if (APP.bot && APP.bot.toggle) APP.bot.toggle(); }
+          },
+          {
+            id: 'grav',
+            label: 'Draw Gravity: ' + (APP.drawingGravity ? 'ON' : 'OFF'),
+            active: !!APP.drawingGravity,
+            action: () => {
+              if (APP.setDrawingGravity) APP.setDrawingGravity(!APP.drawingGravity);
+              else APP.drawingGravity = !APP.drawingGravity;
+            }
+          },
+          {
+            id: 'env',
+            label: 'Env: ' + env,
+            active: env !== 'default',
+            action: () => { if (APP.visual) APP.visual.cycleEnvironment(); }
+          },
+          {
+            id: 'clear',
+            label: 'Clear Scene',
+            warn: true,
+            action: () => { if (APP.clearAll) APP.clearAll(); }
+          }
+        ]
+      });
+
+      // Subsequent pages: @pin abilities (6 per page)
+      const pins = getPinnedAbilities();
+      const perPage = 6;
+      const pinPageCount = Math.max(1, Math.ceil(pins.length / perPage));
+      for (let p = 0; p < pinPageCount; p++) {
+        const slice = pins.slice(p * perPage, (p + 1) * perPage);
+        pages.push({
+          title: 'PINNED ABILITIES (' + (p + 2) + ')',
+          items: slice.map((ab) => ({
+            id: 'pin_' + ab.id,
+            label: ab.label || ab.id,
+            active: false,
+            action: () => {
+              if (APP.runAbilityById) APP.runAbilityById(ab.id, ab.samplePhrase || ab.label || ab.id);
+              else if (APP.executeCommand) APP.executeCommand(ab.samplePhrase || ab.id);
+            }
+          }))
+        });
+      }
+
+      return pages;
+    }
+
+    function drawRoundedRect(x, y, w, h, r, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 3; ctx.stroke(); }
+    }
+
+    function redraw() {
+      const pages = getPages();
+      if (currentPage >= pages.length) currentPage = 0;
+      const page = pages[currentPage];
+      hitZones = [];
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawRoundedRect(6, 6, canvas.width - 12, canvas.height - 12, 28, '#0b1424', '#38bdf8');
+
+      // Header bar
+      ctx.fillStyle = '#6ef3d6';
+      ctx.font = 'bold 30px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(page.title, 34, 54);
+
+      // Minimize button in top-right
+      const minRect = { x: canvas.width - 190, y: 24, w: 158, h: 54 };
+      drawRoundedRect(
+        minRect.x, minRect.y, minRect.w, minRect.h, 14,
+        hoveredId === 'minimize' ? '#254a78' : '#162c49', '#5eead4'
+      );
+      ctx.fillStyle = '#e0f2fe';
+      ctx.font = 'bold 22px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Minimize', minRect.x + minRect.w / 2, minRect.y + minRect.h / 2);
+      hitZones.push({
+        id: 'minimize',
+        u0: minRect.x / canvas.width,
+        u1: (minRect.x + minRect.w) / canvas.width,
+        v0: 1 - (minRect.y + minRect.h) / canvas.height,
+        v1: 1 - minRect.y / canvas.height,
+        action: () => setMinimized(true)
+      });
+
+      // Grid of buttons (2 columns x 4 rows)
+      const cols = 2;
+      const padX = 34;
+      const startY = 104;
+      const gapX = 22;
+      const gapY = 20;
+      const btnW = (canvas.width - padX * 2 - gapX) / cols;
+      const btnH = 112;
+
+      if (page.items.length === 0) {
+        ctx.fillStyle = '#89a7c9';
+        ctx.font = '26px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('No @pin abilities loaded yet.', canvas.width / 2, 330);
+      } else {
+        page.items.forEach((item, idx) => {
+          const col = idx % cols;
+          const row = Math.floor(idx / cols);
+          const bx = padX + col * (btnW + gapX);
+          const by = startY + row * (btnH + gapY);
+
+          const isHover = hoveredId === item.id;
+          let bg = '#15253e';
+          let border = '#335785';
+          if (item.active) { bg = '#0f766e'; border = '#2dd4bf'; }
+          if (item.warn) { bg = '#611f2b'; border = '#f87171'; }
+          if (isHover) { bg = item.warn ? '#852938' : '#244675'; border = '#7dd3fc'; }
+
+          drawRoundedRect(bx, by, btnW, btnH, 18, bg, border);
+          ctx.fillStyle = '#f0f7ff';
+          ctx.font = 'bold 28px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(String(item.label).slice(0, 22), bx + btnW / 2, by + btnH / 2);
+
+          hitZones.push({
+            id: item.id,
+            u0: bx / canvas.width,
+            u1: (bx + btnW) / canvas.width,
+            v0: 1 - (by + btnH) / canvas.height,
+            v1: 1 - by / canvas.height,
+            action: item.action
+          });
+        });
+      }
+
+      // Pagination footer
+      const footY = canvas.height - 82;
+      const prevRect = { x: 34, y: footY, w: 180, h: 56 };
+      const nextRect = { x: canvas.width - 214, y: footY, w: 180, h: 56 };
+
+      drawRoundedRect(
+        prevRect.x, prevRect.y, prevRect.w, prevRect.h, 14,
+        hoveredId === 'prev' ? '#234672' : '#13243b', '#3b679e'
+      );
+      drawRoundedRect(
+        nextRect.x, nextRect.y, nextRect.w, nextRect.h, 14,
+        hoveredId === 'next' ? '#234672' : '#13243b', '#3b679e'
+      );
+
+      ctx.fillStyle = '#dcecff';
+      ctx.font = 'bold 24px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('< Prev', prevRect.x + prevRect.w / 2, prevRect.y + prevRect.h / 2);
+      ctx.fillText('Next >', nextRect.x + nextRect.w / 2, nextRect.y + nextRect.h / 2);
+      ctx.fillStyle = '#8eb0d6';
+      ctx.fillText('Page ' + (currentPage + 1) + ' / ' + pages.length, canvas.width / 2, footY + 28);
+
+      hitZones.push({
+        id: 'prev',
+        u0: prevRect.x / canvas.width,
+        u1: (prevRect.x + prevRect.w) / canvas.width,
+        v0: 1 - (prevRect.y + prevRect.h) / canvas.height,
+        v1: 1 - prevRect.y / canvas.height,
+        action: () => { currentPage = (currentPage - 1 + pages.length) % pages.length; }
+      });
+      hitZones.push({
+        id: 'next',
+        u0: nextRect.x / canvas.width,
+        u1: (nextRect.x + nextRect.w) / canvas.width,
+        v0: 1 - (nextRect.y + nextRect.h) / canvas.height,
+        v1: 1 - nextRect.y / canvas.height,
+        action: () => { currentPage = (currentPage + 1) % pages.length; }
+      });
+
+      panelTex.needsUpdate = true;
+    }
+
+    function setMinimized(val) {
+      minimized = !!val;
+      orbGroup.visible = minimized;
+      panelGroup.visible = !minimized;
+      if (!minimized) redraw();
+    }
+
+    function placeInFrontOfUser() {
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+      const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+      const flatFwd = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+      if (flatFwd.lengthSq() < 0.01) flatFwd.set(0, 0, -1);
+      const right = new THREE.Vector3().crossVectors(flatFwd, new THREE.Vector3(0, 1, 0)).normalize();
+      root.position.copy(hp).addScaledVector(flatFwd, 0.85).addScaledVector(right, -0.32);
+      root.position.y = Math.max(0.85, hp.y - 0.12);
+      root.lookAt(hp.x, root.position.y, hp.z);
+    }
+
+    function show(placeFresh) {
+      root.visible = true;
+      if (placeFresh !== false) placeInFrontOfUser();
+      redraw();
+    }
+    function hide() { root.visible = false; }
+    function toggle() {
+      if (root.visible) hide();
+      else show(true);
+    }
+
+    function pulseGamepad(hand) {
+      try {
+        const gp = hand && hand.gamepad;
+        if (gp && gp.hapticActuators && gp.hapticActuators[0]) {
+          gp.hapticActuators[0].pulse(0.35, 30);
+        }
+      } catch (_) {}
+    }
+
+    function triggerZone(zone, hand) {
+      const now = performance.now();
+      if (now - lastClickTime < 280) return;
+      lastClickTime = now;
+      pulseGamepad(hand);
+      try { zone.action(); } catch (e) { console.warn('[vrMenu] action err:', e); }
+      syncHUDState();
+      redraw();
+    }
+
+    function updateInteraction(dt, elapsed) {
+      if (!root.visible) return;
+      if (minimized) {
+        orbRing.rotation.z = elapsed * 1.4;
+        orbRing.rotation.x = Math.sin(elapsed * 0.9) * 0.4;
+      }
+
+      const hands = APP.hands || {};
+      const handEntries = Object.entries(hands);
+      let newHover = null;
+
+      // Active dragging
+      if (draggingHandKey && hands[draggingHandKey]) {
+        const dh = hands[draggingHandKey];
+        const stillDown = !!(dh.selecting || dh.pinching || dh.squeezing);
+        if (stillDown) {
+          const anchor = dh.pinching && dh.indexTip ? dh.indexTip : null;
+          if (anchor) {
+            root.position.copy(anchor).add(dragOffset);
+          } else if (dh.rayOrigin && dh.rayDir) {
+            root.position.copy(dh.rayOrigin).addScaledVector(dh.rayDir, 0.85).add(dragOffset);
+          }
+          if (APP.headPos) root.lookAt(APP.headPos.x, root.position.y, APP.headPos.z);
+          return;
+        } else {
+          draggingHandKey = null;
+        }
+      }
+
+      for (const [key, hand] of handEntries) {
+        if (!hand) continue;
+        const pressed = !!(hand.justSelected || hand.justPinched);
+
+        // 1. Hand-poke on orb or screen (fingertip proximity)
+        if (hand.indexTip) {
+          if (minimized) {
+            orbMesh.getWorldPosition(tmpVec);
+            if (hand.indexTip.distanceTo(tmpVec) < 0.095) {
+              if (pressed || hand.indexTip.distanceTo(tmpVec) < 0.065) {
+                const now = performance.now();
+                if (now - lastClickTime > 320) {
+                  lastClickTime = now;
+                  setMinimized(false);
+                  return;
+                }
+              }
+            }
+          } else {
+            // Check dragbar poke+pinch
+            dragBar.getWorldPosition(tmpVec);
+            if (hand.pinching && hand.indexTip.distanceTo(tmpVec) < 0.12) {
+              draggingHandKey = key;
+              dragOffset.copy(root.position).sub(hand.indexTip);
+              return;
+            }
+
+            // Convert fingertip into screenMesh local space
+            tmpLocal.copy(hand.indexTip);
+            screenMesh.worldToLocal(tmpLocal);
+            if (Math.abs(tmpLocal.z) < 0.045) {
+              const u = tmpLocal.x / PANEL_W + 0.5;
+              const v = tmpLocal.y / PANEL_H + 0.5;
+              if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
+                for (const z of hitZones) {
+                  if (u >= z.u0 && u <= z.u1 && v >= z.v0 && v <= z.v1) {
+                    newHover = z.id;
+                    if (pressed || tmpLocal.z < 0.015) {
+                      triggerZone(z, hand);
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // 2. Raycast laser interaction (VR controller OR desktop/mobile pointer)
+        if (hand.rayOrigin && hand.rayDir) {
+          raycaster.set(hand.rayOrigin, hand.rayDir);
+          if (minimized) {
+            const hits = raycaster.intersectObject(orbMesh, false);
+            if (hits.length > 0 && (pressed || hand.justSelected)) {
+              if (hand.pinching || hand.squeezing) {
+                draggingHandKey = key;
+                dragOffset.set(0, 0, 0);
+              } else {
+                setMinimized(false);
+              }
+              return;
+            }
+          } else {
+            const dragHits = raycaster.intersectObject(dragBar, false);
+            if (dragHits.length > 0 && (hand.selecting || hand.pinching)) {
+              draggingHandKey = key;
+              dragOffset.copy(root.position).sub(dragHits[0].point);
+              return;
+            }
+
+            const hits = raycaster.intersectObject(screenMesh, false);
+            if (hits.length > 0 && hits[0].uv) {
+              const uv = hits[0].uv;
+              for (const z of hitZones) {
+                if (uv.x >= z.u0 && uv.x <= z.u1 && uv.y >= z.v0 && uv.y <= z.v1) {
+                  newHover = z.id;
+                  if (pressed) {
+                    triggerZone(z, hand);
+                  }
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (newHover !== hoveredId) {
+        hoveredId = newHover;
+        redraw();
+      }
+    }
+
+    return {
+      root,
+      show,
+      hide,
+      toggle,
+      minimize: () => setMinimized(true),
+      expand: () => setMinimized(false),
+      isVisible: () => root.visible,
+      redraw,
+      update: updateInteraction
+    };
+  })();
+
+  // ====================================================================
+  // 3. IN-APP GITHUB .TXT NATURAL-LANGUAGE EDITOR, SANDBOX & COMMITTER
+  // ====================================================================
+  let ghModal = null;
+  let sandboxSnapshot = null; // { filename, previousText }
+
+  function buildLineDiff(oldText, newText) {
+    const a = String(oldText || '').split('\n');
+    const b = String(newText || '').split('\n');
+    const out = [];
+    const maxLen = Math.max(a.length, b.length);
+    let shown = 0;
+    for (let i = 0; i < maxLen; i++) {
+      if (a[i] !== b[i]) {
+        if (a[i] !== undefined) out.push('- ' + (i + 1) + ': ' + a[i]);
+        if (b[i] !== undefined) out.push('+ ' + (i + 1) + ': ' + b[i]);
+        shown++;
+        if (shown > 140) { out.push('... (diff truncated)'); break; }
+      }
+    }
+    return out.length ? out.join('\n') : '(No text differences)';
+  }
+
+  function encodeBase64Utf8(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function decodeBase64Utf8(b64) {
+    const bin = atob(String(b64 || '').replace(/\s+/g, ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  async function ghApiFetch(path, opts) {
+    const cfg = getGhConfig();
+    if (!cfg.owner || !cfg.repo || !cfg.pat) {
+      throw new Error('Set GitHub Owner, Repo, and Personal Access Token (PAT) first.');
+    }
+    const url = 'https://api.github.com/repos/' + encodeURIComponent(cfg.owner) + '/' + encodeURIComponent(cfg.repo) + path;
+    const res = await fetch(url, Object.assign({}, opts || {}, {
+      headers: Object.assign({
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'Bearer ' + cfg.pat,
+        'Content-Type': 'application/json'
+      }, (opts && opts.headers) || {})
+    }));
+    const txt = await res.text();
+    let json = {};
+    try { json = JSON.parse(txt || '{}'); } catch (_) {}
+    if (!res.ok) {
+      throw new Error('GitHub API ' + res.status + ': ' + (json.message || txt));
+    }
+    return json;
+  }
+
+  function getGhConfig() {
+    if (!ghModal) return detectDefaultRepo();
+    return {
+      owner: ghModal.querySelector('#gh-owner').value.trim(),
+      repo: ghModal.querySelector('#gh-repo').value.trim(),
+      branch: ghModal.querySelector('#gh-branch').value.trim() || 'main',
+      pat: ghModal.querySelector('#gh-pat').value.trim()
+    };
+  }
+
+  function saveGhConfig() {
+    const c = getGhConfig();
+    lsSet(GH_STORAGE.owner, c.owner);
+    lsSet(GH_STORAGE.repo, c.repo);
+    lsSet(GH_STORAGE.branch, c.branch);
+    lsSet(GH_STORAGE.pat, c.pat);
+  }
+
+  function setGhLog(msg) {
+    if (ghModal) ghModal.querySelector('#gh-log').textContent = String(msg || '');
+  }
+
+  function populateFileSelect() {
+    if (!ghModal) return;
+    const sel = ghModal.querySelector('#gh-file-select');
+    const prev = sel.value;
+    const loadedNames = APP.modules ? Object.keys(APP.modules) : [];
+    const defaults = ['ai_models.txt', 'visual.txt', 'toolbar.txt', 'bot.txt', 'instruction1.txt', 'instruction2.txt'];
+    const all = Array.from(new Set([...loadedNames, ...defaults]));
+
+    sel.innerHTML = '';
+    for (const f of all) {
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = f;
+      sel.appendChild(opt);
+    }
+    if (prev && all.includes(prev)) sel.value = prev;
+    else if (all.includes('instruction1.txt')) sel.value = 'instruction1.txt';
+  }
+
+  function loadSelectedFileIntoEditor() {
+    if (!ghModal) return;
+    const filename = ghModal.querySelector('#gh-file-select').value;
+    const mod = APP.modules && APP.modules[filename];
+    const current = mod ? mod.rawText : '';
+    ghModal.querySelector('#gh-code-editor').value = current;
+    ghModal.querySelector('#gh-diff-view').textContent = '(Loaded live module "' + filename + '")';
+  }
+
+  async function generateNLEdit() {
+    if (!APP.ai || typeof APP.ai.chat !== 'function') {
+      setGhLog('APP.ai is not available.');
+      return;
+    }
+    const filename = ghModal.querySelector('#gh-file-select').value;
+    const currentText = ghModal.querySelector('#gh-code-editor').value;
+    const promptTxt = ghModal.querySelector('#gh-nl-prompt').value.trim();
+    if (!promptTxt) {
+      setGhLog('Describe the edit you want in natural language first.');
+      return;
+    }
+    setGhLog('Asking ' + APP.ai.getSelectedModel().id + ' to generate updated ' + filename + '...');
+
+    const sys = [
+      'You are a careful WebXR .txt module editor.',
+      'Module format rules:',
+      '- Use @ability: <id>, @autorun (optional), @pin (optional), @match: <phrases with | and &>, @code: ... @end.',
+      '- Outside @code:, use # for comments.',
+      '- Inside @code:, use // or /* */ for JS comments (NEVER # lines inside @code:).',
+      '- Preserve existing working abilities unless asked to remove them.',
+      '- Return ONLY the complete updated .txt file inside a single fenced block ```txt ... ``` with no extra chatter.'
+    ].join('\n');
+
+    const res = await APP.ai.chat({
+      systemPrompt: sys,
+      prompt: 'Target file: ' + filename + '\n\nUser request:\n' + promptTxt + '\n\nCurrent file content:\n```txt\n' + currentText + '\n```'
+    });
+
+    if (!res.ok) {
+      setGhLog('AI Error: ' + res.error);
+      return;
+    }
+
+    let nextText = String(res.text || '').trim();
+    const match = nextText.match(/```(?:txt|text|javascript|js)?\s*([\s\S]*?)```/i);
+    if (match && match[1]) nextText = match[1].trim();
+
+    ghModal.querySelector('#gh-code-editor').value = nextText;
+    ghModal.querySelector('#gh-diff-view').textContent = buildLineDiff(currentText, nextText);
+    setGhLog('Generated update for ' + filename + '. Review diff, Test in Sandbox, then Commit.');
+  }
+
+  async function testInSandbox() {
+    const filename = ghModal.querySelector('#gh-file-select').value;
+    const newText = ghModal.querySelector('#gh-code-editor').value;
+    const mod = APP.modules && APP.modules[filename];
+    const prevText = mod ? mod.rawText : '';
+
+    if (!sandboxSnapshot || sandboxSnapshot.filename !== filename) {
+      sandboxSnapshot = { filename, previousText: prevText };
+    }
+
+    if (typeof APP.reloadModuleText === 'function') {
+      try {
+        await APP.reloadModuleText(filename, newText);
+        renderPinChips();
+        syncHUDState();
+        setGhLog('Sandbox active for "' + filename + '". Test it now or click Rollback Sandbox.');
+      } catch (e) {
+        setGhLog('Sandbox runtime error: ' + (e.message || e) + ' — Click Rollback Sandbox to revert.');
+      }
+    } else {
+      setGhLog('APP.reloadModuleText() not provided by core.');
+    }
+  }
+
+  async function rollbackSandbox() {
+    if (!sandboxSnapshot) {
+      setGhLog('No active sandbox snapshot to roll back.');
+      return;
+    }
+    const { filename, previousText } = sandboxSnapshot;
+    if (typeof APP.reloadModuleText === 'function') {
+      await APP.reloadModuleText(filename, previousText);
+      ghModal.querySelector('#gh-file-select').value = filename;
+      ghModal.querySelector('#gh-code-editor').value = previousText;
+      ghModal.querySelector('#gh-diff-view').textContent = '(Rolled back to pre-sandbox version)';
+      renderPinChips();
+      syncHUDState();
+      setGhLog('Rolled back "' + filename + '" safely.');
+    }
+    sandboxSnapshot = null;
+  }
+
+  // Commit directly to GitHub using Git Blobs + Trees + Commits + Refs API
+  async function commitToGitHub() {
+    saveGhConfig();
+    const cfg = getGhConfig();
+    const filename = ghModal.querySelector('#gh-file-select').value;
+    const content = ghModal.querySelector('#gh-code-editor').value;
+    const commitMsg = ghModal.querySelector('#gh-commit-msg').value.trim() || ('Update ' + filename + ' via WebXR Studio');
+
+    setGhLog('Committing ' + filename + ' to ' + cfg.owner + '/' + cfg.repo + '@' + cfg.branch + '...');
+    try {
+      // 1. Get branch ref
+      const refData = await ghApiFetch('/git/refs/heads/' + encodeURIComponent(cfg.branch));
+      const headSha = refData.object.sha;
+
+      // 2. Get head commit to obtain base tree SHA
+      const headCommit = await ghApiFetch('/git/commits/' + headSha);
+      const baseTreeSha = headCommit.tree.sha;
+
+      // 3. Create new blob for file content
+      const blob = await ghApiFetch('/git/blobs', {
+        method: 'POST',
+        body: JSON.stringify({ content: encodeBase64Utf8(content), encoding: 'base64' })
+      });
+
+      // 4. Create new tree referencing the blob
+      const newTree = await ghApiFetch('/git/trees', {
+        method: 'POST',
+        body: JSON.stringify({
+          base_tree: baseTreeSha,
+          tree: [{ path: filename, mode: '100644', type: 'blob', sha: blob.sha }]
+        })
+      });
+
+      // 5. Create new commit
+      const newCommit = await ghApiFetch('/git/commits', {
+        method: 'POST',
+        body: JSON.stringify({
+          message: commitMsg,
+          tree: newTree.sha,
+          parents: [headSha]
+        })
+      });
+
+      // 6. Update branch ref
+      await ghApiFetch('/git/refs/heads/' + encodeURIComponent(cfg.branch), {
+        method: 'PATCH',
+        body: JSON.stringify({ sha: newCommit.sha, force: false })
+      });
+
+      sandboxSnapshot = null;
+      if (typeof APP.reloadModuleText === 'function') {
+        await APP.reloadModuleText(filename, content);
+      }
+      setGhLog('Committed ' + filename + ' (' + newCommit.sha.slice(0, 7) + ').');
+      loadRecentCommits();
+    } catch (err) {
+      setGhLog('Commit error: ' + (err.message || err));
+    }
+  }
+
+  async function loadRecentCommits() {
+    saveGhConfig();
+    const cfg = getGhConfig();
+    const box = ghModal.querySelector('#gh-commits-list');
+    box.innerHTML = '<div style="font-size:11px;color:#8aa6c8;">Loading commits...</div>';
+    try {
+      const commits = await ghApiFetch('/commits?sha=' + encodeURIComponent(cfg.branch) + '&per_page=8');
+      box.innerHTML = '';
+      for (const c of commits) {
+        const row = document.createElement('div');
+        row.className = 'gh-commit-row';
+        const msg = (c.commit && c.commit.message ? c.commit.message.split('\n')[0] : '').slice(0, 56);
+        const dt = c.commit && c.commit.author && c.commit.author.date ? c.commit.author.date.slice(0, 10) : '';
+        row.innerHTML =
+          '<span><code>' + c.sha.slice(0, 7) + '</code> ' + msg + ' <em style="color:#7c97b8;">(' + dt + ')</em></span>' +
+          '<button type="button" class="hud-btn" style="padding:3px 8px;font-size:11px;">Restore Selected File</button>';
+
+        row.querySelector('button').addEventListener('click', () => restoreFileFromCommit(c.sha));
+        box.appendChild(row);
+      }
+    } catch (err) {
+      box.innerHTML = '<div style="font-size:11px;color:#fda4af;">' + (err.message || err) + '</div>';
+    }
+  }
+
+  async function restoreFileFromCommit(commitSha) {
+    const cfg = getGhConfig();
+    const filename = ghModal.querySelector('#gh-file-select').value;
+    setGhLog('Fetching "' + filename + '" from commit ' + commitSha.slice(0, 7) + '...');
+    try {
+      const data = await ghApiFetch('/contents/' + encodeURIComponent(filename) + '?ref=' + encodeURIComponent(commitSha));
+      if (!data.content) throw new Error('File not found in that commit.');
+      const restored = decodeBase64Utf8(data.content);
+      const current = ghModal.querySelector('#gh-code-editor').value;
+      ghModal.querySelector('#gh-code-editor').value = restored;
+      ghModal.querySelector('#gh-diff-view').textContent = buildLineDiff(current, restored);
+      ghModal.querySelector('#gh-commit-msg').value = 'Revert ' + filename + ' to ' + commitSha.slice(0, 7);
+      setGhLog('Loaded "' + filename + '" from ' + commitSha.slice(0, 7) + '. Test in Sandbox or Commit to revert on GitHub.');
+    } catch (err) {
+      setGhLog('Restore error: ' + (err.message || err));
+    }
+  }
+
+  function ensureGitHubModal() {
+    if (ghModal || !document.body) return;
+    injectHUDStyles();
+    const def = detectDefaultRepo();
+
+    ghModal = document.createElement('div');
+    ghModal.id = 'gh-ed-backdrop';
+    ghModal.innerHTML = [
+      '<div id="gh-ed-card">',
+      '  <div style="display:flex;justify-content:space-between;align-items:center;">',
+      '    <strong style="font-size:16px;color:#6ef3d6;">GitHub .txt Natural-Language Editor & Updater</strong>',
+      '    <button type="button" class="hud-btn" id="gh-close-btn">Close</button>',
+      '  </div>',
+      '  <div class="gh-grid">',
+      '    <input class="gh-inp" id="gh-owner" placeholder="GitHub Owner" value="' + def.owner + '">',
+      '    <input class="gh-inp" id="gh-repo" placeholder="Repo Name" value="' + def.repo + '">',
+      '    <input class="gh-inp" id="gh-branch" placeholder="Branch (main)" value="' + def.branch + '">',
+      '    <input class="gh-inp" id="gh-pat" type="password" placeholder="GitHub PAT (repo scope)" value="' + def.pat + '">',
+      '  </div>',
+      '  <div class="hud-row">',
+      '    <select class="gh-sel" id="gh-file-select" style="flex:1;"></select>',
+      '    <button type="button" class="hud-btn" id="gh-load-btn">Reload File</button>',
+      '    <button type="button" class="hud-btn" id="gh-pull-btn">Fetch from GitHub</button>',
+      '  </div>',
+      '  <div class="hud-row">',
+      '    <input class="gh-inp" id="gh-nl-prompt" style="flex:1;" placeholder="Natural-language edit (e.g. Add a bounce ability to instruction2.txt)..." />',
+      '    <button type="button" class="hud-btn active" id="gh-ai-edit-btn">AI Edit</button>',
+      '  </div>',
+      '  <textarea class="gh-txt" id="gh-code-editor" spellcheck="false"></textarea>',
+      '  <div class="gh-diff" id="gh-diff-view">Diff preview will appear here.</div>',
+      '  <div class="hud-row">',
+      '    <input class="gh-inp" id="gh-commit-msg" style="flex:1;" placeholder="Commit message..." />',
+      '    <button type="button" class="hud-btn" id="gh-sandbox-btn">Test in Sandbox</button>',
+      '    <button type="button" class="hud-btn warn" id="gh-rollback-btn">Rollback Sandbox</button>',
+      '    <button type="button" class="hud-btn active" id="gh-commit-btn">Approve & Commit</button>',
+      '  </div>',
+      '  <div class="gh-log" id="gh-log">Ready.</div>',
+      '  <div class="hud-row" style="justify-content:space-between;">',
+      '    <strong style="font-size:12px;color:#b4cce8;">Last Updates (GitHub Commits)</strong>',
+      '    <button type="button" class="hud-btn" id="gh-refresh-commits-btn">Refresh Commits</button>',
+      '  </div>',
+      '  <div class="gh-commits" id="gh-commits-list"><div style="font-size:11px;color:#8aa6c8;">Click Refresh Commits after entering repo + PAT.</div></div>',
+      '</div>'
+    ].join('');
+    document.body.appendChild(ghModal);
+
+    ghModal.addEventListener('click', (e) => { if (e.target === ghModal) ghModal.classList.remove('open'); });
+    ghModal.querySelector('#gh-close-btn').addEventListener('click', () => ghModal.classList.remove('open'));
+    ghModal.querySelector('#gh-file-select').addEventListener('change', loadSelectedFileIntoEditor);
+    ghModal.querySelector('#gh-load-btn').addEventListener('click', loadSelectedFileIntoEditor);
+    ghModal.querySelector('#gh-ai-edit-btn').addEventListener('click', generateNLEdit);
+    ghModal.querySelector('#gh-sandbox-btn').addEventListener('click', testInSandbox);
+    ghModal.querySelector('#gh-rollback-btn').addEventListener('click', rollbackSandbox);
+    ghModal.querySelector('#gh-commit-btn').addEventListener('click', commitToGitHub);
+    ghModal.querySelector('#gh-refresh-commits-btn').addEventListener('click', loadRecentCommits);
+
+    ghModal.querySelector('#gh-pull-btn').addEventListener('click', async () => {
+      saveGhConfig();
+      const cfg = getGhConfig();
+      const filename = ghModal.querySelector('#gh-file-select').value;
+      setGhLog('Pulling ' + filename + ' from GitHub...');
+      try {
+        const data = await ghApiFetch('/contents/' + encodeURIComponent(filename) + '?ref=' + encodeURIComponent(cfg.branch));
+        const text = decodeBase64Utf8(data.content);
+        const cur = ghModal.querySelector('#gh-code-editor').value;
+        ghModal.querySelector('#gh-code-editor').value = text;
+        ghModal.querySelector('#gh-diff-view').textContent = buildLineDiff(cur, text);
+        setGhLog('Fetched latest ' + filename + ' from GitHub.');
+      } catch (e) {
+        setGhLog('Fetch error: ' + (e.message || e));
+      }
+    });
+  }
+
+  function openGitHubEditor(nlPrompt) {
+    ensureGitHubModal();
+    populateFileSelect();
+    loadSelectedFileIntoEditor();
+    if (nlPrompt) ghModal.querySelector('#gh-nl-prompt').value = String(nlPrompt);
+    ghModal.classList.add('open');
+  }
+
+  // ====================================================================
+  // 4. HOOKS & EXPORTS
+  // ====================================================================
+  buildHUD();
+
+  if (typeof APP.onUpdate === 'function') {
+    APP.onUpdate((dt, elapsed) => vrMenu.update(dt, elapsed));
+  }
+
+  if (typeof APP.on === 'function') {
+    APP.on('modules:loaded', () => { renderPinChips(); syncHUDState(); });
+    APP.on('ability:registered', () => { renderPinChips(); syncHUDState(); });
+    APP.on('mode:changed', syncHUDState);
+    APP.on('mic:changed', syncHUDState);
+    APP.on('drawing:gravity_changed', syncHUDState);
+    APP.on('bot:state_changed', syncHUDState);
+    APP.on('visual:env_changed', syncHUDState);
+    APP.on('ai:changed', syncHUDState);
+    APP.on('status', setStatus);
+    APP.on('xr:start', () => { vrMenu.show(true); });
+  }
+
+  APP.toolbar = {
+    vrMenu,
+    openGitHubEditor,
+    renderPinChips,
+    syncHUDState,
+    setStatus
+  };
+
+  if (typeof APP.registerAbilityHandler === 'function') {
+    APP.registerAbilityHandler('toolbar_hud_and_github', function (text) {
+      const low = String(text || '').toLowerCase();
+      if (low.includes('github') || low.includes('edit') || low.includes('جيتهب')) {
+        openGitHubEditor();
+        return { ok: true, message: 'Opened GitHub .txt Editor.' };
+      }
+      vrMenu.toggle();
+      return { ok: true, message: 'Toggled 3D Spatial VR Menu.' };
+    });
+  }
+})();
+@end

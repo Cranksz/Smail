@@ -1,0 +1,963 @@
+# ======================================================================
+# ai_models.txt — Strictly Free & Available AI Model Registry & Client
+# Load Priority: 1 (runs before visual, toolbar, bot, instructionN)
+# ======================================================================
+
+@ability: ai_models_manager
+@autorun
+@match: ai models | select model | api keys | switch model | تغيير النموذج | مفاتيح الذكاء
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const LS_PREFIX = 'wxrmr_ai_v1_';
+
+  const STORAGE_KEYS = {
+    selectedModel: LS_PREFIX + 'selected_model',
+    geminiKey: LS_PREFIX + 'key_gemini',
+    groqKey: LS_PREFIX + 'key_groq',
+    openrouterKey: LS_PREFIX + 'key_openrouter',
+    orCache: LS_PREFIX + 'openrouter_free_cache'
+  };
+
+  // Static verified FREE-tier models (no credit card / no paid-only APIs)
+  const STATIC_MODELS = [
+    // --- Google Gemini Free Tier (Google AI Studio key: AIza...) ---
+    {
+      id: 'gemini-4-hydrogen',
+      label: 'Gemini 4 Hydrogen (Free Tier)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      isGemini3Plus: true,
+      notes: 'Fast flagship free-tier Gemini 4 model, 1M context, thinking + tools.'
+    },
+    {
+      id: 'gemini-3.8-flash',
+      label: 'Gemini 3.8 Flash (Free Tier)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      isGemini3Plus: true,
+      notes: 'Multimodal Flash with strict multi-turn thoughtSignature tool support.'
+    },
+    {
+      id: 'gemini-3.6-flash',
+      label: 'Gemini 3.6 Flash (Free Tier)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      isGemini3Plus: true,
+      notes: 'High-efficiency Gemini 3.6 Flash for coding & multimodal tool calls.'
+    },
+    {
+      id: 'gemini-3.5-flash-lite',
+      label: 'Gemini 3.5 Flash-Lite (Free Tier)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      isGemini3Plus: true,
+      notes: 'Ultra-low-latency multimodal free model for fast responses.'
+    },
+    {
+      id: 'gemini-3.1-flash-live-preview',
+      label: 'Gemini 3.1 Flash Live (Free Bidirectional Voice/Vision WS)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: true,
+      supportsRest: false,
+      isGemini3Plus: true,
+      notes: 'Real-time BidiGenerateContent WebSocket voice & vision in Robot Sphere.'
+    },
+
+    // --- Groq Free Tier (Groq key: gsk_..., 1,000 req/day) ---
+    {
+      id: 'openai/gpt-oss-120b',
+      label: 'GPT-OSS 120B (Groq Free Tier)',
+      provider: 'groq',
+      supportsVision: false,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      isGemini3Plus: false,
+      notes: 'Free OpenAI open-weight 120B reasoning/tool model on Groq.'
+    },
+    {
+      id: 'llama-3.3-70b-versatile',
+      label: 'Llama 3.3 70B Versatile (Groq Free Tier)',
+      provider: 'groq',
+      supportsVision: false,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      isGemini3Plus: false,
+      notes: 'Fast Meta Llama 3.3 70B free tier on Groq.'
+    },
+
+    // --- OpenRouter Free Endpoints (OpenRouter key: sk-or-..., 50 req/day) ---
+    {
+      id: 'openrouter/free',
+      label: 'OpenRouter Free Models Router',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      isGemini3Plus: false,
+      notes: 'Smartly routes to currently available $0 OpenRouter free models.'
+    }
+  ];
+
+  const PROVIDERS = {
+    gemini: {
+      id: 'gemini',
+      name: 'Google AI Studio (Gemini Free)',
+      keyPrefix: 'AIza',
+      signupUrl: 'https://aistudio.google.com/apikey',
+      quotaNote: 'Free tier available with Google account (no card required).'
+    },
+    groq: {
+      id: 'groq',
+      name: 'Groq Cloud (Free Tier)',
+      keyPrefix: 'gsk_',
+      signupUrl: 'https://console.groq.com/keys',
+      quotaNote: 'Free tier (~1,000 req/day) + Whisper STT.'
+    },
+    openrouter: {
+      id: 'openrouter',
+      name: 'OpenRouter (:free Endpoints)',
+      keyPrefix: 'sk-or-',
+      signupUrl: 'https://openrouter.ai/keys',
+      quotaNote: 'Free tier (~50 req/day on $0 :free models, no card required).'
+    }
+  };
+
+  function safeLSGet(k, fallback) {
+    try {
+      const v = localStorage.getItem(k);
+      return v !== null ? v : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function safeLSSet(k, v) {
+    try {
+      if (v === null || v === undefined || v === '') localStorage.removeItem(k);
+      else localStorage.setItem(k, String(v));
+    } catch (_) {}
+  }
+
+  let dynamicOpenRouterModels = [];
+  let selectedModelId = safeLSGet(STORAGE_KEYS.selectedModel, 'gemini-3.8-flash');
+  let openRouterStatus = { loading: false, lastFetched: 0, count: 0, error: '' };
+  const listeners = new Set();
+
+  function emitChange() {
+    listeners.forEach((fn) => {
+      try { fn(getStateSnapshot()); } catch (e) { console.warn('[ai_models] listener error:', e); }
+    });
+    if (typeof APP.emit === 'function') {
+      try { APP.emit('ai:changed', getStateSnapshot()); } catch (_) {}
+    }
+  }
+
+  function loadCachedOpenRouterModels() {
+    try {
+      const raw = safeLSGet(STORAGE_KEYS.orCache, '');
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed.models)) {
+        dynamicOpenRouterModels = parsed.models;
+        openRouterStatus.lastFetched = parsed.ts || 0;
+        openRouterStatus.count = parsed.models.length;
+      }
+    } catch (_) {}
+  }
+
+  loadCachedOpenRouterModels();
+
+  function getAllModels() {
+    const merged = [...STATIC_MODELS];
+    const seen = new Set(merged.map((m) => m.id));
+    for (const m of dynamicOpenRouterModels) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        merged.push(m);
+      }
+    }
+    return merged;
+  }
+
+  function getSelectedModel() {
+    const list = getAllModels();
+    const found = list.find((m) => m.id === selectedModelId);
+    if (found) return found;
+    // If a cached dynamic model expired, fall back cleanly to default static model & persist
+    selectedModelId = 'gemini-3.8-flash';
+    safeLSSet(STORAGE_KEYS.selectedModel, selectedModelId);
+    return list.find((m) => m.id === selectedModelId) || list[0];
+  }
+
+  function selectModel(id) {
+    const list = getAllModels();
+    const found = list.find((m) => m.id === id);
+    if (!found) {
+      return { ok: false, error: 'Model not found in free registry: ' + id };
+    }
+    selectedModelId = found.id;
+    safeLSSet(STORAGE_KEYS.selectedModel, selectedModelId);
+    emitChange();
+    refreshPanelUI();
+    return { ok: true, model: found };
+  }
+
+  function getKey(provider) {
+    if (provider === 'gemini') return safeLSGet(STORAGE_KEYS.geminiKey, '').trim();
+    if (provider === 'groq') return safeLSGet(STORAGE_KEYS.groqKey, '').trim();
+    if (provider === 'openrouter') return safeLSGet(STORAGE_KEYS.openrouterKey, '').trim();
+    return '';
+  }
+
+  function setKey(provider, val) {
+    const clean = (val || '').trim();
+    if (provider === 'gemini') safeLSSet(STORAGE_KEYS.geminiKey, clean);
+    else if (provider === 'groq') safeLSSet(STORAGE_KEYS.groqKey, clean);
+    else if (provider === 'openrouter') {
+      safeLSSet(STORAGE_KEYS.openrouterKey, clean);
+      if (clean) refreshOpenRouterFree(true);
+    }
+    emitChange();
+    refreshPanelUI();
+  }
+
+  function getStateSnapshot() {
+    const model = getSelectedModel();
+    return {
+      selectedModelId: model.id,
+      model,
+      models: getAllModels(),
+      keysPresent: {
+        gemini: !!getKey('gemini'),
+        groq: !!getKey('groq'),
+        openrouter: !!getKey('openrouter')
+      },
+      openRouterStatus: { ...openRouterStatus }
+    };
+  }
+
+  // Dynamically fetch OpenRouter catalog and keep ONLY active $0 :free chat models
+  async function refreshOpenRouterFree(force) {
+    if (openRouterStatus.loading) return;
+    const now = Date.now();
+    if (!force && openRouterStatus.lastFetched && now - openRouterStatus.lastFetched < 5 * 60 * 1000 && dynamicOpenRouterModels.length) {
+      return;
+    }
+    openRouterStatus.loading = true;
+    openRouterStatus.error = '';
+    refreshPanelUI();
+
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/models', { method: 'GET' });
+      if (!res.ok) {
+        throw new Error('HTTP ' + res.status + ' while fetching OpenRouter models');
+      }
+      const json = await res.json();
+      const rows = Array.isArray(json.data) ? json.data : [];
+
+      const freeModels = [];
+      for (const item of rows) {
+        if (!item || !item.id) continue;
+        if (item.id === 'openrouter/free') continue;
+
+        const pricing = item.pricing || {};
+        const pPrompt = String(pricing.prompt ?? '');
+        const pComp = String(pricing.completion ?? '');
+        const pReq = pricing.request !== undefined ? Number(pricing.request) : 0;
+        const pImg = pricing.image !== undefined ? Number(pricing.image) : 0;
+
+        // Strictly verify prompt & completion pricing === "0" AND :free endpoint
+        const isZeroCost = pPrompt === '0' && pComp === '0' && pReq === 0 && pImg === 0;
+        const isFreeSlug = item.id.endsWith(':free');
+        if (!isZeroCost || !isFreeSlug) continue;
+
+        // Ensure text chat output capability (exclude embed/rerank/audio-only models)
+        const outMods = item.architecture && Array.isArray(item.architecture.output_modalities)
+          ? item.architecture.output_modalities
+          : ['text'];
+        if (!outMods.includes('text')) continue;
+
+        const inMods = item.architecture && Array.isArray(item.architecture.input_modalities)
+          ? item.architecture.input_modalities
+          : ['text'];
+        const supportedParams = Array.isArray(item.supported_parameters) ? item.supported_parameters : [];
+
+        freeModels.push({
+          id: item.id,
+          label: (item.name || item.id) + ' (OpenRouter :free)',
+          provider: 'openrouter',
+          supportsVision: inMods.includes('image'),
+          supportsTools: supportedParams.includes('tools') || true,
+          supportsLiveWS: false,
+          supportsRest: true,
+          isGemini3Plus: false,
+          contextLength: item.context_length || 0,
+          notes: 'Live verified $0 :free OpenRouter endpoint.'
+        });
+      }
+
+      freeModels.sort((a, b) => a.label.localeCompare(b.label));
+      dynamicOpenRouterModels = freeModels;
+      openRouterStatus.lastFetched = Date.now();
+      openRouterStatus.count = freeModels.length;
+      openRouterStatus.error = '';
+
+      safeLSSet(STORAGE_KEYS.orCache, JSON.stringify({ ts: openRouterStatus.lastFetched, models: freeModels }));
+    } catch (err) {
+      openRouterStatus.error = err && err.message ? err.message : 'Failed to load OpenRouter :free list';
+    } finally {
+      openRouterStatus.loading = false;
+      emitChange();
+      refreshPanelUI();
+    }
+  }
+
+  // Human-readable error formatter for 401/403, 404, 429, 400
+  function formatApiError(status, rawText, provider, modelId) {
+    let detail = '';
+    try {
+      const parsed = JSON.parse(rawText || '{}');
+      detail = (parsed.error && (parsed.error.message || parsed.error.status)) || parsed.message || rawText || '';
+    } catch (_) {
+      detail = String(rawText || '').slice(0, 260);
+    }
+
+    const pInfo = PROVIDERS[provider] || { name: provider, signupUrl: '' };
+
+    if (status === 401 || status === 403) {
+      return (
+        'Authentication error (' + status + ') for ' + pInfo.name + '. ' +
+        'Your API key is missing, invalid, or lacks permission for "' + modelId + '". ' +
+        'Check your key in AI Models & Keys (' + pInfo.signupUrl + ').' +
+        (detail ? ' Details: ' + detail : '')
+      );
+    }
+    if (status === 404) {
+      return (
+        'Model unavailable (404) on ' + pInfo.name + ': "' + modelId + '" was not found or its free endpoint rotated. ' +
+        'Select another free model or refresh OpenRouter :free models.' +
+        (detail ? ' Details: ' + detail : '')
+      );
+    }
+    if (status === 429) {
+      return (
+        'Free tier rate limit reached (429) on ' + pInfo.name + ' for "' + modelId + '". ' +
+        'Wait a few seconds and retry, or manually pick another free model/provider.' +
+        (detail ? ' Details: ' + detail : '')
+      );
+    }
+    if (status === 400) {
+      return (
+        'Bad request / schema error (400) on ' + pInfo.name + ' ("' + modelId + '"): ' +
+        (detail || 'Invalid parameters, unsupported modality, or missing thoughtSignature in multi-turn call.')
+      );
+    }
+    return pInfo.name + ' error (' + (status || 'network') + ') for "' + modelId + '": ' + (detail || 'Unknown error');
+  }
+
+  // Sanitize JSON Schema for tool declarations (zero empty properties objects)
+  function sanitizeSchema(schema) {
+    if (!schema || typeof schema !== 'object') {
+      return { type: 'object', properties: { unused: { type: 'string', description: 'Optional placeholder' } } };
+    }
+    const copy = JSON.parse(JSON.stringify(schema));
+    if (!copy.type) copy.type = 'object';
+    if (copy.type === 'object') {
+      if (!copy.properties || typeof copy.properties !== 'object' || Object.keys(copy.properties).length === 0) {
+        copy.properties = { note: { type: 'string', description: 'Optional note' } };
+      } else {
+        for (const k of Object.keys(copy.properties)) {
+          if (copy.properties[k] && copy.properties[k].type === 'object') {
+            copy.properties[k] = sanitizeSchema(copy.properties[k]);
+          }
+        }
+      }
+    }
+    return copy;
+  }
+
+  function normalizeTools(tools) {
+    if (!Array.isArray(tools) || tools.length === 0) return [];
+    return tools
+      .filter((t) => t && t.name)
+      .map((t) => ({
+        name: String(t.name),
+        description: String(t.description || t.name),
+        parameters: sanitizeSchema(t.parameters)
+      }));
+  }
+
+  // Deep-clone helper preserving thoughtSignature and all sibling keys
+  function clonePart(part) {
+    return JSON.parse(JSON.stringify(part));
+  }
+
+  // Single-provider Gemini REST turn loop with FULL thoughtSignature preservation
+  async function runGeminiRestChat(model, apiKey, opts) {
+    const cleanTools = normalizeTools(opts.tools);
+    const contents = [];
+
+    // Seed prior messages if passed
+    const msgs = Array.isArray(opts.messages) ? opts.messages : [];
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (!m) continue;
+      if (m._geminiParts) {
+        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: m._geminiParts.map(clonePart) });
+        continue;
+      }
+      const role = m.role === 'assistant' ? 'model' : 'user';
+      const parts = [];
+      if (m.content) parts.push({ text: String(m.content) });
+      // Attach vision image to the last user message if provided
+      if (i === msgs.length - 1 && role === 'user' && opts.imageB64) {
+        const cleanB64 = String(opts.imageB64).replace(/^data:image\/\w+;base64,/, '');
+        parts.push({ inlineData: { mimeType: opts.imageMime || 'image/jpeg', data: cleanB64 } });
+      }
+      if (parts.length) contents.push({ role, parts });
+    }
+
+    // If no messages were provided, create one user turn
+    if (contents.length === 0) {
+      const parts = [{ text: String(opts.prompt || 'Hello') }];
+      if (opts.imageB64) {
+        const cleanB64 = String(opts.imageB64).replace(/^data:image\/\w+;base64,/, '');
+        parts.push({ inlineData: { mimeType: opts.imageMime || 'image/jpeg', data: cleanB64 } });
+      }
+      contents.push({ role: 'user', parts });
+    }
+
+    const maxSteps = Math.max(1, Math.min(8, opts.maxSteps || 5));
+    const toolTrace = [];
+    let finalText = '';
+    let lastRawParts = [];
+
+    for (let step = 0; step < maxSteps; step++) {
+      const body = { contents };
+
+      if (opts.systemPrompt) {
+        body.systemInstruction = { parts: [{ text: String(opts.systemPrompt) }] };
+      }
+      if (cleanTools.length > 0) {
+        body.tools = [{ functionDeclarations: cleanTools }];
+      }
+
+      // Note: Do NOT send deprecated temperature/topP/topK/candidateCount on Gemini 3.x / 4.x
+      if (!model.isGemini3Plus && typeof opts.temperature === 'number') {
+        body.generationConfig = { temperature: opts.temperature };
+      }
+
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+        encodeURIComponent(model.id) + ':generateContent?key=' + encodeURIComponent(apiKey);
+
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: opts.signal
+        });
+      } catch (netErr) {
+        throw new Error('Network error contacting Google Gemini API: ' + (netErr.message || netErr));
+      }
+
+      const rawTxt = await res.text();
+      if (!res.ok) {
+        throw new Error(formatApiError(res.status, rawTxt, 'gemini', model.id));
+      }
+
+      let data;
+      try {
+        data = JSON.parse(rawTxt);
+      } catch (_) {
+        throw new Error('Invalid JSON response from Gemini API.');
+      }
+
+      const cand = data.candidates && data.candidates[0];
+      if (!cand || !cand.content || !Array.isArray(cand.content.parts)) {
+        const blockReason = (data.promptFeedback && data.promptFeedback.blockReason) || (cand && cand.finishReason) || 'empty candidate';
+        throw new Error('Gemini returned no usable output (' + blockReason + ').');
+      }
+
+      // Preserve the EXACT raw parts array including thoughtSignature and thought flags!
+      const rawParts = cand.content.parts.map(clonePart);
+      lastRawParts = rawParts;
+      contents.push({ role: 'model', parts: rawParts });
+
+      const textChunks = [];
+      const fnCalls = [];
+      for (const part of rawParts) {
+        if (part.text && !part.thought) {
+          textChunks.push(part.text);
+        }
+        if (part.functionCall && part.functionCall.name) {
+          fnCalls.push(part.functionCall);
+        }
+      }
+      if (textChunks.length) {
+        finalText = textChunks.join('\n').trim();
+      }
+
+      if (fnCalls.length === 0 || typeof opts.onToolCall !== 'function') {
+        break;
+      }
+
+      // Execute tool calls and send functionResponse back while keeping previous model turn's thoughtSignature intact
+      const responseParts = [];
+      for (const call of fnCalls) {
+        let resultObj;
+        try {
+          const out = await opts.onToolCall(call.name, call.args || {});
+          resultObj = (out && typeof out === 'object') ? out : { result: out === undefined ? 'ok' : out };
+        } catch (toolErr) {
+          resultObj = { ok: false, error: toolErr && toolErr.message ? toolErr.message : String(toolErr) };
+        }
+        toolTrace.push({ name: call.name, args: call.args || {}, result: resultObj });
+        responseParts.push({
+          functionResponse: {
+            name: call.name,
+            response: resultObj
+          }
+        });
+      }
+
+      contents.push({ role: 'user', parts: responseParts });
+    }
+
+    return {
+      ok: true,
+      modelId: model.id,
+      provider: 'gemini',
+      text: finalText,
+      toolTrace,
+      rawParts: lastRawParts
+    };
+  }
+
+  // Single-provider OpenAI-compatible REST turn loop (Groq & OpenRouter)
+  async function runOpenAICompatChat(model, apiKey, opts) {
+    const endpoint = model.provider === 'groq'
+      ? 'https://api.groq.com/openai/v1/chat/completions'
+      : 'https://openrouter.ai/api/v1/chat/completions';
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + apiKey
+    };
+    if (model.provider === 'openrouter') {
+      headers['HTTP-Referer'] = window.location.origin || 'https://github.io';
+      headers['X-Title'] = 'WebXR Mixed Reality Studio';
+    }
+
+    const cleanTools = normalizeTools(opts.tools).map((t) => ({
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters
+      }
+    }));
+
+    const messages = [];
+    if (opts.systemPrompt) {
+      messages.push({ role: 'system', content: String(opts.systemPrompt) });
+    }
+
+    const inputMsgs = Array.isArray(opts.messages) ? opts.messages : [];
+    for (let i = 0; i < inputMsgs.length; i++) {
+      const m = inputMsgs[i];
+      if (!m) continue;
+      const role = m.role === 'assistant' ? 'assistant' : 'user';
+      const isLastUser = i === inputMsgs.length - 1 && role === 'user';
+
+      if (isLastUser && opts.imageB64 && model.supportsVision) {
+        const dataUrl = String(opts.imageB64).startsWith('data:')
+          ? String(opts.imageB64)
+          : 'data:' + (opts.imageMime || 'image/jpeg') + ';base64,' + opts.imageB64;
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: String(m.content || '') },
+            { type: 'image_url', image_url: { url: dataUrl } }
+          ]
+        });
+      } else {
+        messages.push({ role, content: String(m.content || '') });
+      }
+    }
+
+    if (messages.length === (opts.systemPrompt ? 1 : 0)) {
+      if (opts.imageB64 && model.supportsVision) {
+        const dataUrl = String(opts.imageB64).startsWith('data:')
+          ? String(opts.imageB64)
+          : 'data:' + (opts.imageMime || 'image/jpeg') + ';base64,' + opts.imageB64;
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: String(opts.prompt || 'Hello') },
+            { type: 'image_url', image_url: { url: dataUrl } }
+          ]
+        });
+      } else {
+        messages.push({ role: 'user', content: String(opts.prompt || 'Hello') });
+      }
+    }
+
+    const maxSteps = Math.max(1, Math.min(8, opts.maxSteps || 5));
+    const toolTrace = [];
+    let finalText = '';
+
+    for (let step = 0; step < maxSteps; step++) {
+      const payload = {
+        model: model.id,
+        messages
+      };
+      if (typeof opts.temperature === 'number') {
+        payload.temperature = opts.temperature;
+      }
+      if (cleanTools.length > 0 && model.supportsTools !== false) {
+        payload.tools = cleanTools;
+        payload.tool_choice = 'auto';
+      }
+
+      let res;
+      try {
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal: opts.signal
+        });
+      } catch (netErr) {
+        throw new Error('Network error contacting ' + model.provider + ': ' + (netErr.message || netErr));
+      }
+
+      const rawTxt = await res.text();
+      if (!res.ok) {
+        throw new Error(formatApiError(res.status, rawTxt, model.provider, model.id));
+      }
+
+      let data;
+      try {
+        data = JSON.parse(rawTxt);
+      } catch (_) {
+        throw new Error('Invalid JSON response from ' + model.provider + '.');
+      }
+
+      const choice = data.choices && data.choices[0];
+      if (!choice || !choice.message) {
+        throw new Error(model.provider + ' returned no choices for "' + model.id + '".');
+      }
+
+      const msg = choice.message;
+      const assistantEntry = {
+        role: 'assistant',
+        content: msg.content || ''
+      };
+      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        assistantEntry.tool_calls = msg.tool_calls;
+      }
+      // Preserve any extra_content / reasoning fields verbatim if present
+      if (msg.extra_content) assistantEntry.extra_content = msg.extra_content;
+      messages.push(assistantEntry);
+
+      if (msg.content) {
+        finalText = String(msg.content).trim();
+      }
+
+      const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      if (toolCalls.length === 0 || typeof opts.onToolCall !== 'function') {
+        break;
+      }
+
+      for (const tc of toolCalls) {
+        const fnName = tc.function && tc.function.name;
+        let args = {};
+        try {
+          args = tc.function && tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+        } catch (_) {
+          args = {};
+        }
+        let resultObj;
+        try {
+          const out = await opts.onToolCall(fnName, args);
+          resultObj = (out && typeof out === 'object') ? out : { result: out === undefined ? 'ok' : out };
+        } catch (toolErr) {
+          resultObj = { ok: false, error: toolErr && toolErr.message ? toolErr.message : String(toolErr) };
+        }
+        toolTrace.push({ name: fnName, args, result: resultObj });
+
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id || ('call_' + fnName + '_' + step),
+          name: fnName,
+          content: JSON.stringify(resultObj)
+        });
+      }
+    }
+
+    return {
+      ok: true,
+      modelId: model.id,
+      provider: model.provider,
+      text: finalText,
+      toolTrace
+    };
+  }
+
+  // Unified entry point — ZERO hidden cross-provider switching
+  async function chat(opts) {
+    const model = getSelectedModel();
+    const apiKey = getKey(model.provider);
+    const pInfo = PROVIDERS[model.provider];
+
+    if (!apiKey) {
+      return {
+        ok: false,
+        error: 'Missing ' + pInfo.name + ' API key for selected model "' + model.id + '". Open AI Models & Keys to paste your free key (' + pInfo.signupUrl + ').'
+      };
+    }
+
+    if (model.supportsLiveWS && !model.supportsRest) {
+      // If Gemini Live WebSocket is active in bot.txt, allow routing text there; otherwise explain clearly
+      if (APP.bot && typeof APP.bot.sendLiveText === 'function' && APP.bot.isLiveConnected && APP.bot.isLiveConnected()) {
+        try {
+          await APP.bot.sendLiveText(opts.prompt || (opts.messages && opts.messages[opts.messages.length - 1]?.content) || '');
+          return { ok: true, modelId: model.id, provider: 'gemini', text: '(Sent to active Gemini Live session)', toolTrace: [] };
+        } catch (e) {
+          return { ok: false, error: e.message || String(e) };
+        }
+      }
+      return {
+        ok: false,
+        error: 'Selected model "' + model.id + '" is a real-time Gemini Live WebSocket model. Turn ON the Robot Sphere (Gemini Live) or select a REST model such as "gemini-3.8-flash" or "gemini-4-hydrogen".'
+      };
+    }
+
+    try {
+      if (model.provider === 'gemini') {
+        return await runGeminiRestChat(model, apiKey, opts || {});
+      }
+      if (model.provider === 'groq' || model.provider === 'openrouter') {
+        return await runOpenAICompatChat(model, apiKey, opts || {});
+      }
+      return { ok: false, error: 'Unsupported provider: ' + model.provider };
+    } catch (err) {
+      return {
+        ok: false,
+        modelId: model.id,
+        provider: model.provider,
+        error: err && err.message ? err.message : String(err)
+      };
+    }
+  }
+
+  // ====================================================================
+  // Clean 2D Modal Panel for Model Selection & Free API Keys
+  // ====================================================================
+  let panelEl = null;
+
+  function ensurePanelDOM() {
+    if (panelEl || !document.body) return;
+
+    const style = document.createElement('style');
+    style.id = 'ai-models-panel-style';
+    style.textContent = [
+      '#ai-models-backdrop{position:fixed;inset:0;background:rgba(4,8,16,0.78);backdrop-filter:blur(8px);z-index:9990;display:none;align-items:center;justify-content:center;padding:12px;font-family:system-ui,-apple-system,sans-serif;}',
+      '#ai-models-backdrop.open{display:flex;}',
+      '#ai-models-card{width:100%;max-width:560px;max-height:88vh;overflow-y:auto;background:#0d1422;color:#e6f1ff;border:1px solid #284166;border-radius:16px;padding:16px;box-shadow:0 20px 60px rgba(0,0,0,0.65);}',
+      '#ai-models-card h2{margin:0 0 6px;font-size:18px;color:#6ef3d6;}',
+      '.aim-sub{font-size:12px;color:#9bb3d1;line-height:1.45;margin-bottom:12px;background:#121e33;border:1px solid #223554;padding:10px;border-radius:10px;}',
+      '.aim-sub a{color:#7dd3fc;text-decoration:underline;}',
+      '.aim-sec{margin-bottom:14px;}',
+      '.aim-label{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:600;color:#b8d0ee;margin-bottom:5px;}',
+      '.aim-select,.aim-input{width:100%;box-sizing:border-box;background:#09101c;color:#f1f7ff;border:1px solid #2c466d;border-radius:10px;padding:9px 11px;font-size:13px;}',
+      '.aim-row{display:flex;gap:8px;align-items:center;}',
+      '.aim-btn{background:#1b365d;color:#e8f4ff;border:1px solid #35619c;border-radius:9px;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;}',
+      '.aim-btn:hover{background:#24487a;}',
+      '.aim-btn.primary{background:#0f766e;border-color:#2dd4bf;color:#ecfeff;}',
+      '.aim-meta{font-size:11px;color:#8ea6c5;margin-top:5px;line-height:1.4;}',
+      '.aim-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;background:#132a45;color:#6ef3d6;border:1px solid #264d78;}'
+    ].join('');
+    document.head.appendChild(style);
+
+    panelEl = document.createElement('div');
+    panelEl.id = 'ai-models-backdrop';
+    panelEl.innerHTML = [
+      '<div id="ai-models-card" role="dialog" aria-label="Free AI Models and API Keys">',
+      '  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">',
+      '    <h2>Free AI Models & Keys</h2>',
+      '    <button type="button" class="aim-btn" id="aim-close-btn">Close</button>',
+      '  </div>',
+      '  <div class="aim-sub">',
+      '    <strong>100% Free / No-Card Models Only.</strong> Your selected model is used directly with <em>zero</em> hidden switching.<br>',
+      '    • <strong>Google Gemini Free</strong> (<code style="color:#6ef3d6">AIza...</code>): <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a><br>',
+      '    • <strong>Groq Free</strong> (<code style="color:#6ef3d6">gsk_...</code>, 1,000 req/day + Whisper STT): <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com</a><br>',
+      '    • <strong>OpenRouter Free</strong> (<code style="color:#6ef3d6">sk-or-...</code>, 50 req/day on <code>$0 :free</code> models): <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai</a>',
+      '  </div>',
+      '  <div class="aim-sec">',
+      '    <div class="aim-label">',
+      '      <span>Active Free Model</span>',
+      '      <button type="button" class="aim-btn" id="aim-or-refresh-btn">Refresh OpenRouter :free</button>',
+      '    </div>',
+      '    <select id="aim-model-select" class="aim-select"></select>',
+      '    <div id="aim-model-meta" class="aim-meta"></div>',
+      '  </div>',
+      '  <div class="aim-sec">',
+      '    <div class="aim-label"><span>Google AI Studio Key (Gemini Free + Live WS)</span><span class="aim-badge" id="aim-st-gemini">Not Set</span></div>',
+      '    <input id="aim-key-gemini" class="aim-input" type="password" autocomplete="off" placeholder="AIza...">',
+      '  </div>',
+      '  <div class="aim-sec">',
+      '    <div class="aim-label"><span>Groq API Key (GPT-OSS-120B, Llama 3.3, Whisper)</span><span class="aim-badge" id="aim-st-groq">Not Set</span></div>',
+      '    <input id="aim-key-groq" class="aim-input" type="password" autocomplete="off" placeholder="gsk_...">',
+      '  </div>',
+      '  <div class="aim-sec">',
+      '    <div class="aim-label"><span>OpenRouter API Key (:free Endpoints)</span><span class="aim-badge" id="aim-st-openrouter">Not Set</span></div>',
+      '    <input id="aim-key-openrouter" class="aim-input" type="password" autocomplete="off" placeholder="sk-or-...">',
+      '  </div>',
+      '  <div class="aim-row" style="justify-content:flex-end;">',
+      '    <button type="button" class="aim-btn primary" id="aim-save-btn">Save Keys & Apply</button>',
+      '  </div>',
+      '</div>'
+    ].join('');
+    document.body.appendChild(panelEl);
+
+    panelEl.addEventListener('click', (e) => {
+      if (e.target === panelEl) closePanel();
+    });
+    panelEl.querySelector('#aim-close-btn').addEventListener('click', closePanel);
+    panelEl.querySelector('#aim-or-refresh-btn').addEventListener('click', () => refreshOpenRouterFree(true));
+    panelEl.querySelector('#aim-model-select').addEventListener('change', (e) => {
+      selectModel(e.target.value);
+    });
+    panelEl.querySelector('#aim-save-btn').addEventListener('click', () => {
+      setKey('gemini', panelEl.querySelector('#aim-key-gemini').value);
+      setKey('groq', panelEl.querySelector('#aim-key-groq').value);
+      setKey('openrouter', panelEl.querySelector('#aim-key-openrouter').value);
+      closePanel();
+    });
+  }
+
+  function refreshPanelUI() {
+    if (!panelEl) return;
+    const sel = panelEl.querySelector('#aim-model-select');
+    const meta = panelEl.querySelector('#aim-model-meta');
+    const models = getAllModels();
+    const cur = getSelectedModel();
+
+    sel.innerHTML = '';
+    const groups = {
+      gemini: document.createElement('optgroup'),
+      groq: document.createElement('optgroup'),
+      openrouter: document.createElement('optgroup')
+    };
+    groups.gemini.label = 'Google Gemini Free Tier';
+    groups.groq.label = 'Groq Free Tier';
+    groups.openrouter.label = 'OpenRouter :free ($0 Prompt & Completion)';
+
+    for (const m of models) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label;
+      if (m.id === cur.id) opt.selected = true;
+      (groups[m.provider] || groups.openrouter).appendChild(opt);
+    }
+
+    sel.appendChild(groups.gemini);
+    sel.appendChild(groups.groq);
+    sel.appendChild(groups.openrouter);
+
+    const orNote = openRouterStatus.loading
+      ? 'Loading OpenRouter :free list...'
+      : openRouterStatus.error
+        ? 'OpenRouter fetch note: ' + openRouterStatus.error
+        : 'OpenRouter live :free models loaded: ' + openRouterStatus.count;
+
+    meta.innerHTML =
+      '<div><strong>ID:</strong> <code>' + cur.id + '</code> | ' +
+      '<strong>Vision:</strong> ' + (cur.supportsVision ? 'Yes' : 'Text-only') + ' | ' +
+      '<strong>Tools:</strong> ' + (cur.supportsTools ? 'Yes' : 'No') +
+      (cur.supportsLiveWS ? ' | <strong>Mode:</strong> Live WebSocket' : '') + '</div>' +
+      '<div>' + (cur.notes || '') + '</div>' +
+      '<div style="color:#6ef3d6;margin-top:3px;">' + orNote + '</div>';
+
+    const gKey = getKey('gemini');
+    const qKey = getKey('groq');
+    const oKey = getKey('openrouter');
+
+    panelEl.querySelector('#aim-key-gemini').value = gKey;
+    panelEl.querySelector('#aim-key-groq').value = qKey;
+    panelEl.querySelector('#aim-key-openrouter').value = oKey;
+
+    panelEl.querySelector('#aim-st-gemini').textContent = gKey ? 'Saved' : 'Not Set';
+    panelEl.querySelector('#aim-st-groq').textContent = qKey ? 'Saved' : 'Not Set';
+    panelEl.querySelector('#aim-st-openrouter').textContent = oKey ? 'Saved' : 'Not Set';
+  }
+
+  function openPanel() {
+    ensurePanelDOM();
+    refreshPanelUI();
+    panelEl.classList.add('open');
+  }
+
+  function closePanel() {
+    if (panelEl) panelEl.classList.remove('open');
+  }
+
+  function togglePanel() {
+    if (panelEl && panelEl.classList.contains('open')) closePanel();
+    else openPanel();
+  }
+
+  // Expose unified APP.ai namespace
+  APP.ai = {
+    PROVIDERS,
+    getModels: getAllModels,
+    getSelectedModel,
+    selectModel,
+    getKey,
+    setKey,
+    refreshOpenRouterFree,
+    formatApiError,
+    chat,
+    openPanel,
+    closePanel,
+    togglePanel,
+    onChange: function (fn) {
+      listeners.add(fn);
+      return function () { listeners.delete(fn); };
+    }
+  };
+
+  // Auto-populate live OpenRouter :free endpoints on load
+  refreshOpenRouterFree(false);
+  emitChange();
+
+  // If matched via voice/text ability trigger, open the AI Models panel
+  if (typeof APP.registerAbilityHandler === 'function') {
+    APP.registerAbilityHandler('ai_models_manager', function () {
+      openPanel();
+      return { ok: true, message: 'Opened Free AI Models & Keys panel.' };
+    });
+  }
+})();
+@end
