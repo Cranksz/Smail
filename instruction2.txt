@@ -1,0 +1,1205 @@
+# ======================================================================
+# instruction2.txt — Interactive Physics & VFX Simulation Suite
+#   1. 2D Wave-Equation Water Simulation + Caustics + Hand/Object Ripples
+#   2. Granular Sand Simulation (Avalanche Pile + Falling Grains + Hand Scoop)
+#   3. Surface Disintegration (Ionization Dissolve Wave + Swirling Ash)
+#   4. Interactive Verlet Cloth Simulation
+#   5. Dynamic Cloth Tearing & Hand-Slash Ripping
+# ======================================================================
+
+# ----------------------------------------------------------------------
+# 0. Simulation Router Hook (Works in 100% Instructions & Inst + AI)
+# ----------------------------------------------------------------------
+@ability: sim_suite_router
+@autorun
+@desc: Routes simulation commands cleanly in both 100% Instructions and Instructions + AI modes.
+@match: simulation suite status
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  if (APP._inst2ExecWrapped || typeof APP.executeCommand !== 'function') return;
+
+  const origExec = APP.executeCommand;
+  APP.executeCommand = async function (rawText, source = 'text') {
+    const text = String(rawText || '').trim();
+    if (text && APP.instWeight > 0 && APP.instWeight < 100) {
+      const ab = APP.findInstructionMatch?.(text);
+      if (ab && ab.file === 'instruction2.txt') {
+        APP.ui?.setStatus?.(`Running ${ab.id}...`, 'busy');
+        const res = await APP.runAbility(ab, text);
+        APP.ui?.setStatus?.('Ready', 'ok');
+        return res;
+      }
+    }
+    return await origExec.call(this, rawText, source);
+  };
+  APP._inst2ExecWrapped = true;
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 1. Interactive 2D Wave-Equation Water Simulation
+# ----------------------------------------------------------------------
+@ability: interactive_water_sim
+@pin: Water Sim
+@desc: Spawns a realistic 2D wave-equation water pool with Fresnel reflections, crest foam, floor caustics, and interactive hand/object ripples.
+@match: water simulation | water sim | spawn water | make water | ripple water | pool | محاكاة ماء | محاكاة المياه | ماء
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  const existing = (APP.entities || []).find((e) => e && e.name === 'Interactive Water Pool');
+  if (existing) APP.removeEntity?.(existing, false);
+
+  const waterGroup = new THREE.Group();
+  waterGroup.name = 'Interactive_Water_Pool';
+
+  const POOL_SIZE = 2.05;
+  const GRID = 52;
+  const TOTAL = GRID * GRID;
+  const BASE_Y = 0.13;
+
+  // Sleek dark slate basin walls + bed
+  const stoneMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.78, metalness: 0.18 });
+  const bed = new THREE.Mesh(new THREE.BoxGeometry(POOL_SIZE + 0.12, 0.025, POOL_SIZE + 0.12), stoneMat);
+  bed.position.y = 0.0125;
+  waterGroup.add(bed);
+
+  const wallH = 0.16, wallT = 0.06;
+  const half = POOL_SIZE * 0.5 + wallT * 0.5;
+  const wN = new THREE.Mesh(new THREE.BoxGeometry(POOL_SIZE + wallT * 2, wallH, wallT), stoneMat);
+  wN.position.set(0, wallH * 0.5, -half);
+  const wS = wN.clone(); wS.position.z = half;
+  const wE = new THREE.Mesh(new THREE.BoxGeometry(wallT, wallH, POOL_SIZE), stoneMat);
+  wE.position.set(half, wallH * 0.5, 0);
+  const wW = wE.clone(); wW.position.x = -half;
+  waterGroup.add(wN, wS, wE, wW);
+
+  // Shimmering underwater caustic bed
+  const causticUniforms = { uTime: { value: 0 } };
+  const causticBed = new THREE.Mesh(
+    new THREE.PlaneGeometry(POOL_SIZE, POOL_SIZE),
+    new THREE.ShaderMaterial({
+      uniforms: causticUniforms,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: [
+        'uniform float uTime; varying vec2 vUv;',
+        'float cPat(vec2 uv, float t) {',
+        '  vec2 p = mod(uv * 6.28318, 6.28318) - 250.0;',
+        '  vec2 i = p; float c = 1.0; float inten = 0.005;',
+        '  for (int n = 0; n < 3; n++) {',
+        '    float tn = t * (1.0 - (3.2 / float(n + 1)));',
+        '    i = p + vec2(cos(tn - i.x) + sin(tn + i.y), sin(tn - i.y) + cos(tn + i.x));',
+        '    c += 1.0 / length(vec2(p.x / (sin(i.x + tn) / inten), p.y / (cos(i.y + tn) / inten)));',
+        '  }',
+        '  c /= 3.0; c = 1.17 - pow(c, 1.4);',
+        '  return pow(abs(c), 7.0);',
+        '}',
+        'void main() {',
+        '  float c = cPat(vUv * 1.8, uTime * 0.85);',
+        '  gl_FragColor = vec4(vec3(0.28, 0.82, 1.0) * c * 0.95, clamp(c * 0.85, 0.0, 0.85));',
+        '}'
+      ].join('\n')
+    })
+  );
+  causticBed.rotation.x = -Math.PI / 2;
+  causticBed.position.y = 0.028;
+  waterGroup.add(causticBed);
+
+  // 2D Wave Equation Buffers
+  let hCur = new Float32Array(TOTAL);
+  let hPrev = new Float32Array(TOTAL);
+  let hNext = new Float32Array(TOTAL);
+  const foamArr = new Float32Array(TOTAL);
+
+  const waterGeo = new THREE.PlaneGeometry(POOL_SIZE, POOL_SIZE, GRID - 1, GRID - 1);
+  waterGeo.rotateX(-Math.PI / 2);
+  waterGeo.setAttribute('aFoam', new THREE.BufferAttribute(foamArr, 1));
+
+  const waterUniforms = {
+    uTime: { value: 0 },
+    uDeep: { value: new THREE.Color(0x042b44) },
+    uShallow: { value: new THREE.Color(0x0ea5e9) },
+    uSky: { value: new THREE.Color(0xbae6fd) }
+  };
+
+  const waterMat = new THREE.ShaderMaterial({
+    uniforms: waterUniforms,
+    transparent: true,
+    side: THREE.DoubleSide,
+    vertexShader: [
+      'attribute float aFoam;',
+      'varying vec3 vWPos; varying vec3 vWNorm; varying float vFoam;',
+      'void main() {',
+      '  vFoam = aFoam;',
+      '  vec4 wp = modelMatrix * vec4(position, 1.0);',
+      '  vWPos = wp.xyz;',
+      '  vWNorm = normalize(mat3(modelMatrix) * normal);',
+      '  gl_Position = projectionMatrix * viewMatrix * wp;',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'uniform float uTime; uniform vec3 uDeep; uniform vec3 uShallow; uniform vec3 uSky;',
+      'varying vec3 vWPos; varying vec3 vWNorm; varying float vFoam;',
+      'void main() {',
+      '  vec3 N = normalize(vWNorm);',
+      '  vec3 V = normalize(cameraPosition - vWPos);',
+      '  float fres = pow(1.0 - max(0.0, dot(N, V)), 3.2);',
+      '  vec3 L = normalize(vec3(0.45, 0.85, 0.35));',
+      '  vec3 H = normalize(L + V);',
+      '  float spec = pow(max(0.0, dot(N, H)), 110.0);',
+      '  vec3 col = mix(uDeep, uShallow, 0.32 + fres * 0.68);',
+      '  col = mix(col, uSky, fres * 0.55);',
+      '  col = mix(col, vec3(0.92, 0.98, 1.0), clamp(vFoam * 1.4, 0.0, 0.92));',
+      '  col += vec3(1.0, 0.97, 0.90) * spec * 1.65;',
+      '  float alpha = clamp(0.64 + fres * 0.30 + vFoam * 0.32 + spec * 0.3, 0.0, 0.95);',
+      '  gl_FragColor = vec4(col, alpha);',
+      '}'
+    ].join('\n')
+  });
+
+  const waterMesh = new THREE.Mesh(waterGeo, waterMat);
+  waterMesh.position.y = BASE_Y;
+  waterGroup.add(waterMesh);
+
+  // Splash droplets pool
+  const DROP_COUNT = 60;
+  const dropPos = new Float32Array(DROP_COUNT * 3);
+  const dropVel = Array.from({ length: DROP_COUNT }, () => new THREE.Vector3());
+  const dropLife = new Float32Array(DROP_COUNT);
+  const dropGeo = new THREE.BufferGeometry();
+  dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+  const dropPts = new THREE.Points(dropGeo, new THREE.PointsMaterial({
+    color: 0xe0f2fe, size: 0.016, transparent: true, opacity: 0.85, depthWrite: false
+  }));
+  dropPts.frustumCulled = false;
+  waterGroup.add(dropPts);
+  let nextDrop = 0;
+
+  function emitSplash(lx, lz, strength) {
+    const count = Math.min(8, Math.ceil(strength * 6));
+    for (let i = 0; i < count; i++) {
+      const idx = nextDrop;
+      nextDrop = (nextDrop + 1) % DROP_COUNT;
+      dropPos[idx * 3] = lx + (Math.random() - 0.5) * 0.06;
+      dropPos[idx * 3 + 1] = BASE_Y + 0.02;
+      dropPos[idx * 3 + 2] = lz + (Math.random() - 0.5) * 0.06;
+      dropVel[idx].set((Math.random() - 0.5) * 0.7, 0.8 + Math.random() * 1.1 * strength, (Math.random() - 0.5) * 0.7);
+      dropLife[idx] = 0.55 + Math.random() * 0.3;
+    }
+  }
+
+  function disturb(lx, lz, amp, radiusCells) {
+    const u = (lx / POOL_SIZE) + 0.5;
+    const v = (lz / POOL_SIZE) + 0.5;
+    if (u < 0.04 || u > 0.96 || v < 0.04 || v > 0.96) return;
+    const gx = Math.floor(u * (GRID - 1));
+    const gz = Math.floor(v * (GRID - 1));
+    const r = radiusCells || 2;
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const nx = gx + dx, nz = gz + dz;
+        if (nx <= 1 || nx >= GRID - 2 || nz <= 1 || nz >= GRID - 2) continue;
+        const d = Math.hypot(dx, dz);
+        if (d <= r) {
+          hCur[nz * GRID + nx] += amp * Math.cos((d / r) * Math.PI * 0.5);
+        }
+      }
+    }
+  }
+
+  const spawnPos = APP.getSpawnPosition ? APP.getSpawnPosition(1.35, true) : new THREE.Vector3(0, 0, -1.35);
+  waterGroup.position.copy(spawnPos);
+  APP.scene.add(waterGroup);
+
+  // Initial central drop ripple
+  disturb(0, 0, 0.045, 3);
+
+  const tmpLocal = new THREE.Vector3();
+  const prevHands = new Map();
+  let ambientTick = 0;
+
+  const ent = APP.registerEntity(waterGroup, {
+    name: 'Interactive Water Pool',
+    category: 'world_fx',
+    grabbable: false,
+    holdable: false,
+    physics: { enabled: false, gravity: false },
+    onUpdate: function (dt) {
+      const delta = Math.min(0.033, Math.max(0.004, dt || 0.016));
+      const now = performance.now() * 0.001;
+      causticUniforms.uTime.value = now;
+      waterUniforms.uTime.value = now;
+
+      // Ambient gentle raindrop / breeze ripples
+      ambientTick += delta;
+      if (ambientTick > 0.55) {
+        ambientTick = 0;
+        disturb((Math.random() - 0.5) * POOL_SIZE * 0.78, (Math.random() - 0.5) * POOL_SIZE * 0.78, -0.012, 2);
+      }
+
+      // Hand & pointer ripples
+      for (const [hk, h] of Object.entries(APP.hands || {})) {
+        if (!h || !h.active) continue;
+        const hp = h.isHand ? h.fingerTips?.index : h.pos;
+        if (!hp) continue;
+        tmpLocal.copy(hp);
+        waterGroup.worldToLocal(tmpLocal);
+
+        const last = prevHands.get(hk);
+        const speed = last ? tmpLocal.distanceTo(last) / delta : 0;
+        prevHands.set(hk, tmpLocal.clone());
+
+        if (Math.abs(tmpLocal.x) < POOL_SIZE * 0.48 && Math.abs(tmpLocal.z) < POOL_SIZE * 0.48) {
+          if (tmpLocal.y >= -0.05 && tmpLocal.y <= BASE_Y + 0.14 && (speed > 0.15 || h.trigger || h.pinching)) {
+            disturb(tmpLocal.x, tmpLocal.z, -0.022 * Math.min(2.0, 0.6 + speed * 0.5), 2);
+            if (speed > 0.4) emitSplash(tmpLocal.x, tmpLocal.z, Math.min(1.5, speed * 0.5));
+          } else if (hk === 'dhand' && h.trigger && h.rayOrigin && h.rayDir) {
+            // Desktop click ray intersection on water plane
+            const planeY = waterGroup.position.y + BASE_Y;
+            if (Math.abs(h.rayDir.y) > 0.01) {
+              const tHit = (planeY - h.rayOrigin.y) / h.rayDir.y;
+              if (tHit > 0.1 && tHit < 6.0) {
+                tmpLocal.copy(h.rayOrigin).addScaledVector(h.rayDir, tHit);
+                waterGroup.worldToLocal(tmpLocal);
+                if (Math.abs(tmpLocal.x) < POOL_SIZE * 0.48 && Math.abs(tmpLocal.z) < POOL_SIZE * 0.48) {
+                  disturb(tmpLocal.x, tmpLocal.z, -0.028, 3);
+                  emitSplash(tmpLocal.x, tmpLocal.z, 0.9);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Entity splash interaction (any object touching/moving in pool)
+      for (const other of APP.entities || []) {
+        if (!other || other === ent || !other.group || other.category === 'world_fx' || other.category === 'board') continue;
+        tmpLocal.copy(other.group.position);
+        waterGroup.worldToLocal(tmpLocal);
+        if (Math.abs(tmpLocal.x) < POOL_SIZE * 0.46 && Math.abs(tmpLocal.z) < POOL_SIZE * 0.46 && tmpLocal.y < BASE_Y + 0.18) {
+          const spd = other.physics?.vel ? other.physics.vel.length() : 0;
+          if (spd > 0.18) {
+            disturb(tmpLocal.x, tmpLocal.z, -0.018 * Math.min(2.2, spd), 3);
+            emitSplash(tmpLocal.x, tmpLocal.z, Math.min(1.4, spd * 0.4));
+          }
+        }
+      }
+
+      // 2D Wave Equation Solver
+      for (let z = 1; z < GRID - 1; z++) {
+        const row = z * GRID;
+        for (let x = 1; x < GRID - 1; x++) {
+          const i = row + x;
+          const avg = (hCur[i - 1] + hCur[i + 1] + hCur[i - GRID] + hCur[i + GRID]) * 0.5;
+          hNext[i] = THREE.MathUtils.clamp((avg - hPrev[i]) * 0.985, -0.09, 0.09);
+        }
+      }
+      const tmp = hPrev; hPrev = hCur; hCur = hNext; hNext = tmp;
+
+      // Apply heights, normals, and crest foam to geometry
+      const posAttr = waterGeo.attributes.position;
+      const normAttr = waterGeo.attributes.normal;
+      const cell = POOL_SIZE / (GRID - 1);
+      for (let z = 0; z < GRID; z++) {
+        for (let x = 0; x < GRID; x++) {
+          const i = z * GRID + x;
+          const h = hCur[i];
+          posAttr.setY(i, h);
+
+          const hL = x > 0 ? hCur[i - 1] : h;
+          const hR = x < GRID - 1 ? hCur[i + 1] : h;
+          const hD = z > 0 ? hCur[i - GRID] : h;
+          const hU = z < GRID - 1 ? hCur[i + GRID] : h;
+          const nx = hL - hR, ny = 2.0 * cell, nz = hD - hU;
+          const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+          normAttr.setXYZ(i, nx / len, ny / len, nz / len);
+
+          const steep = Math.abs(hR - hL) + Math.abs(hU - hD);
+          foamArr[i] = Math.max(0, (h * 12.0 + steep * 18.0) - 0.16);
+        }
+      }
+      posAttr.needsUpdate = true;
+      normAttr.needsUpdate = true;
+      waterGeo.attributes.aFoam.needsUpdate = true;
+
+      // Update splash droplets
+      for (let i = 0; i < DROP_COUNT; i++) {
+        if (dropLife[i] <= 0) { dropPos[i * 3 + 1] = -99; continue; }
+        dropLife[i] -= delta;
+        dropVel[i].y -= 7.5 * delta;
+        dropPos[i * 3] += dropVel[i].x * delta;
+        dropPos[i * 3 + 1] += dropVel[i].y * delta;
+        dropPos[i * 3 + 2] += dropVel[i].z * delta;
+        if (dropPos[i * 3 + 1] < BASE_Y) dropLife[i] = 0;
+      }
+      dropGeo.attributes.position.needsUpdate = true;
+    }
+  });
+
+  APP.emit?.('entity:created', ent);
+  APP.ui?.toast?.('Water Simulation active! Touch or click water to make ripples.');
+  APP.speakTTS?.('Interactive water simulation ready.');
+  return { ok: true, id: ent.id, message: 'Spawned interactive 2D wave-equation water pool.' };
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 2. Granular Sand Simulation (Avalanche Pile + Falling Grains + Hand Scoop)
+# ----------------------------------------------------------------------
+@ability: granular_sand_sim
+@pin: Granular Sand
+@desc: Spawns a real granular physics sand simulation with 1,000 falling mineral grains, 34-degree angle-of-repose avalanching dunes, object collisions, and hand scooping.
+@match: granular | sand simulation | sand sim | pour sand | make sand | sand pile | رمل | محاكاة رمل
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  const existing = (APP.entities || []).find((e) => e && e.name === 'Granular Sand Simulation');
+  if (existing) APP.removeEntity?.(existing, false);
+
+  const sandGroup = new THREE.Group();
+  sandGroup.name = 'Granular_Sand_Sim';
+
+  const SIZE = 1.9;
+  const GRID = 44;
+  const CELL = SIZE / (GRID - 1);
+  const MAX_SLOPE = CELL * 0.68; // ~34 degrees angle of repose
+  const pileH = new Float32Array(GRID * GRID);
+
+  // Displaced sand dune surface mesh
+  const pileGeo = new THREE.PlaneGeometry(SIZE, SIZE, GRID - 1, GRID - 1);
+  pileGeo.rotateX(-Math.PI / 2);
+
+  // Procedural mineral sand canvas texture
+  const sCan = document.createElement('canvas');
+  sCan.width = 256; sCan.height = 256;
+  const sCtx = sCan.getContext('2d');
+  sCtx.fillStyle = '#c8a472';
+  sCtx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 6000; i++) {
+    const r = Math.random();
+    sCtx.fillStyle = r > 0.65 ? '#e4c798' : (r > 0.25 ? '#b38b59' : '#6b4e2e');
+    sCtx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+  }
+  const sandTex = new THREE.CanvasTexture(sCan);
+  sandTex.colorSpace = THREE.SRGBColorSpace;
+  sandTex.wrapS = sandTex.wrapT = THREE.RepeatWrapping;
+  sandTex.repeat.set(4, 4);
+
+  const pileMat = new THREE.MeshStandardMaterial({
+    map: sandTex,
+    roughness: 0.92,
+    metalness: 0.05
+  });
+  const pileMesh = new THREE.Mesh(pileGeo, pileMat);
+  pileMesh.receiveShadow = true;
+  pileMesh.castShadow = true;
+  sandGroup.add(pileMesh);
+
+  // Subtle brass emitter ring overhead
+  const emitterRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.08, 0.014, 10, 24),
+    new THREE.MeshStandardMaterial({ color: 0xb45309, metalness: 0.85, roughness: 0.28 })
+  );
+  emitterRing.rotation.x = Math.PI / 2;
+  emitterRing.position.set(0, 1.28, 0);
+  sandGroup.add(emitterRing);
+
+  // 1,000 instanced faceted mineral grains
+  const GRAIN_COUNT = 1000;
+  const grainGeo = new THREE.DodecahedronGeometry(0.0085, 0);
+  const grainMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.86, metalness: 0.08 });
+  const grainInst = new THREE.InstancedMesh(grainGeo, grainMat, GRAIN_COUNT);
+  grainInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  grainInst.castShadow = true;
+  sandGroup.add(grainInst);
+
+  const gPos = new Float32Array(GRAIN_COUNT * 3);
+  const gVel = new Float32Array(GRAIN_COUNT * 3);
+  const gScale = new Float32Array(GRAIN_COUNT);
+  const palette = [new THREE.Color(0xdcb884), new THREE.Color(0xc4985e), new THREE.Color(0xe9d2ac), new THREE.Color(0x8c673e)];
+  const dummy = new THREE.Object3D();
+
+  function resetGrain(i, ex, ez, burst) {
+    const i3 = i * 3;
+    gPos[i3] = ex + (Math.random() - 0.5) * (burst ? 0.09 : 0.05);
+    gPos[i3 + 1] = burst ? (0.25 + Math.random() * 0.2) : (1.24 - Math.random() * 0.35);
+    gPos[i3 + 2] = ez + (Math.random() - 0.5) * (burst ? 0.09 : 0.05);
+    gVel[i3] = (Math.random() - 0.5) * (burst ? 1.4 : 0.16);
+    gVel[i3 + 1] = burst ? (0.8 + Math.random() * 1.1) : (-0.2 - Math.random() * 0.35);
+    gVel[i3 + 2] = (Math.random() - 0.5) * (burst ? 1.4 : 0.16);
+    gScale[i] = 0.65 + Math.random() * 0.85;
+  }
+
+  for (let i = 0; i < GRAIN_COUNT; i++) {
+    resetGrain(i, 0, 0, false);
+    gPos[i * 3 + 1] = 0.05 + (i / GRAIN_COUNT) * 1.2;
+    grainInst.setColorAt(i, palette[i % palette.length]);
+  }
+  if (grainInst.instanceColor) grainInst.instanceColor.needsUpdate = true;
+
+  const spawnPos = APP.getSpawnPosition ? APP.getSpawnPosition(1.3, true) : new THREE.Vector3(0, 0, -1.3);
+  sandGroup.position.copy(spawnPos);
+  APP.scene.add(sandGroup);
+
+  const tmpLocal = new THREE.Vector3();
+  const tmpBox = new THREE.Box3();
+  const tmpBoxCenter = new THREE.Vector3();
+
+  const ent = APP.registerEntity(sandGroup, {
+    name: 'Granular Sand Simulation',
+    category: 'world_fx',
+    grabbable: false,
+    holdable: false,
+    physics: { enabled: false, gravity: false },
+    onUpdate: function (dt) {
+      const delta = Math.min(0.033, Math.max(0.004, dt || 0.016));
+      const now = performance.now() * 0.001;
+
+      const emitX = Math.sin(now * 0.7) * 0.18;
+      const emitZ = Math.cos(now * 0.55) * 0.18;
+      emitterRing.position.set(emitX, 1.28, emitZ);
+
+      // Collect nearby object collision boxes in sandGroup local space
+      const obsBoxes = [];
+      for (const other of APP.entities || []) {
+        if (!other || other === ent || !other.group || other.category === 'world_fx' || other.category === 'board') continue;
+        tmpBox.setFromObject(other.group);
+        if (!tmpBox.isEmpty()) {
+          tmpBox.min.sub(sandGroup.position);
+          tmpBox.max.sub(sandGroup.position);
+          obsBoxes.push(tmpBox.clone());
+        }
+      }
+
+      // Hand scoop / crater carving
+      for (const h of Object.values(APP.hands || {})) {
+        if (!h || !h.active) continue;
+        const hp = h.isHand ? h.fingerTips?.index : h.pos;
+        if (!hp) continue;
+        tmpLocal.copy(hp);
+        sandGroup.worldToLocal(tmpLocal);
+        const gx = Math.round((tmpLocal.x / SIZE + 0.5) * (GRID - 1));
+        const gz = Math.round((tmpLocal.z / SIZE + 0.5) * (GRID - 1));
+        if (gx >= 1 && gx < GRID - 1 && gz >= 1 && gz < GRID - 1) {
+          const curPile = pileH[gz * GRID + gx];
+          if (tmpLocal.y <= curPile + 0.08 && tmpLocal.y >= -0.05) {
+            for (let dz = -2; dz <= 2; dz++) {
+              for (let dx = -2; dx <= 2; dx++) {
+                const nx = gx + dx, nz = gz + dz;
+                if (nx > 0 && nx < GRID - 1 && nz > 0 && nz < GRID - 1) {
+                  pileH[nz * GRID + nx] = Math.max(0, pileH[nz * GRID + nx] - 0.014);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Update falling & colliding grains
+      for (let i = 0; i < GRAIN_COUNT; i++) {
+        const i3 = i * 3;
+        gVel[i3 + 1] -= 7.8 * delta;
+        gPos[i3] += gVel[i3] * delta;
+        gPos[i3 + 1] += gVel[i3 + 1] * delta;
+        gPos[i3 + 2] += gVel[i3 + 2] * delta;
+
+        // Object collision deflection
+        for (let b = 0; b < obsBoxes.length; b++) {
+          const ob = obsBoxes[b];
+          if (gPos[i3] > ob.min.x && gPos[i3] < ob.max.x &&
+              gPos[i3 + 2] > ob.min.z && gPos[i3 + 2] < ob.max.z &&
+              gPos[i3 + 1] > ob.min.y && gPos[i3 + 1] < ob.max.y) {
+            ob.getCenter(tmpBoxCenter);
+            gPos[i3 + 1] = ob.max.y + 0.01;
+            gVel[i3] += (gPos[i3] - tmpBoxCenter.x) * 2.5;
+            gVel[i3 + 2] += (gPos[i3 + 2] - tmpBoxCenter.z) * 2.5;
+            gVel[i3 + 1] = Math.abs(gVel[i3 + 1]) * 0.25;
+          }
+        }
+
+        // Pile heightmap deposition
+        const gx = Math.floor((gPos[i3] / SIZE + 0.5) * (GRID - 1));
+        const gz = Math.floor((gPos[i3 + 2] / SIZE + 0.5) * (GRID - 1));
+        const inBounds = gx >= 1 && gx < GRID - 1 && gz >= 1 && gz < GRID - 1;
+        const floorY = inBounds ? pileH[gz * GRID + gx] : 0;
+
+        if (gPos[i3 + 1] <= floorY) {
+          if (inBounds && pileH[gz * GRID + gx] < 0.42) {
+            pileH[gz * GRID + gx] += 0.0028;
+          }
+          resetGrain(i, emitX, emitZ, false);
+        }
+
+        dummy.position.set(gPos[i3], gPos[i3 + 1], gPos[i3 + 2]);
+        dummy.rotation.set(i + now * 2.0, i * 0.7, 0);
+        dummy.scale.setScalar(gScale[i]);
+        dummy.updateMatrix();
+        grainInst.setMatrixAt(i, dummy.matrix);
+      }
+      grainInst.instanceMatrix.needsUpdate = true;
+
+      // Angle-of-repose avalanche relaxation across pile heightmap
+      const dirs = [-1, 1, -GRID, GRID];
+      for (let pass = 0; pass < 2; pass++) {
+        for (let z = 1; z < GRID - 1; z++) {
+          for (let x = 1; x < GRID - 1; x++) {
+            const idx = z * GRID + x;
+            const h = pileH[idx];
+            if (h <= 0.001) continue;
+            for (let d = 0; d < 4; d++) {
+              const ni = idx + dirs[d];
+              const diff = h - pileH[ni];
+              if (diff > MAX_SLOPE) {
+                const move = (diff - MAX_SLOPE) * 0.24;
+                pileH[idx] -= move;
+                pileH[ni] += move;
+              }
+            }
+          }
+        }
+      }
+
+      const posAttr = pileGeo.attributes.position;
+      for (let i = 0; i < pileH.length; i++) posAttr.setY(i, pileH[i]);
+      posAttr.needsUpdate = true;
+      pileGeo.computeVertexNormals();
+    }
+  });
+
+  APP.emit?.('entity:created', ent);
+  APP.ui?.toast?.('Granular Sand Simulation active! Move hands or objects through the sand.');
+  APP.speakTTS?.('Granular sand simulation active.');
+  return { ok: true, id: ent.id, message: 'Spawned granular sand simulation with angle-of-repose dunes.' };
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 3. Disintegration Simulation (Ionization Dissolve + Swirling Dust)
+# ----------------------------------------------------------------------
+@ability: disintegrate_object_sim
+@pin: Disintegrate
+@desc: Disintegrates the target or latest 3D object into 1,800 swirling dust and glowing ember particles as an ionization wave erodes the mesh.
+@match: disintegrate | disintegration | turn to dust | thanos | crumble | dissolve object | تفكك | تفتيت | غبار
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  const raw = String(typeof command === 'string' ? command : '').trim();
+  const q = raw.replace(/^(please\s+)?(disintegrate|dissolve|crumble|shatter|تفكك|تفتيت)\s*(the|a|an)?\s*/i, '').trim();
+
+  let target = q ? APP.findEntity?.(q) : null;
+  if (!target || target.category === 'world_fx' || target.category === 'board') {
+    const candidates = (APP.entities || []).filter((e) => e && e.group?.parent && e.category !== 'world_fx' && e.category !== 'board' && !e.isPen);
+    target = candidates[candidates.length - 1] || null;
+  }
+
+  // If scene has no object yet, spawn a detailed crystal-stone artifact and disintegrate it!
+  if (!target) {
+    const artGroup = new THREE.Group();
+    const ped = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.22, 0.28, 12),
+      new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.55, metalness: 0.45 })
+    );
+    ped.position.y = 0.14;
+    const core = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.22, 2),
+      new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0ea5e9, emissiveIntensity: 0.5, roughness: 0.25, metalness: 0.65 })
+    );
+    core.position.y = 0.50;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.30, 0.025, 12, 32),
+      new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.28, metalness: 0.9 })
+    );
+    ring.position.y = 0.50;
+    ring.rotation.x = 0.6;
+    artGroup.add(ped, core, ring);
+    const sp = APP.getSpawnPosition ? APP.getSpawnPosition(1.15, true) : new THREE.Vector3(0, 0, -1.15);
+    artGroup.position.copy(sp);
+    target = APP.registerEntity(artGroup, { name: 'Artifact Monolith', category: 'artifact' });
+  }
+
+  target.group.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(target.group);
+  const minY = isFinite(box.min.y) ? box.min.y : 0;
+  const maxY = isFinite(box.max.y) ? Math.max(minY + 0.1, box.max.y) : 1.0;
+
+  // Sample 1,800 surface points & colors across the target meshes
+  const samplePos = [];
+  const sampleCol = [];
+  const vTmp = new THREE.Vector3();
+
+  target.group.traverse((c) => {
+    if (!c.isMesh || !c.geometry?.attributes?.position) return;
+    const posA = c.geometry.attributes.position;
+    const colA = c.geometry.attributes.color;
+    const mat = Array.isArray(c.material) ? c.material[0] : c.material;
+    const baseCol = mat?.color ? mat.color : new THREE.Color(0x94a3b8);
+    const step = Math.max(1, Math.floor(posA.count / 450));
+    for (let i = 0; i < posA.count; i += step) {
+      vTmp.fromBufferAttribute(posA, i).applyMatrix4(c.matrixWorld);
+      samplePos.push(vTmp.x, vTmp.y, vTmp.z);
+      if (colA) sampleCol.push(colA.getX(i), colA.getY(i), colA.getZ(i));
+      else sampleCol.push(baseCol.r, baseCol.g, baseCol.b);
+    }
+  });
+
+  // Pad up to ~1,600 particles with jittered replicas if mesh was low-poly
+  const P_COUNT = Math.min(1800, Math.max(600, samplePos.length / 3));
+  const pPos = new Float32Array(P_COUNT * 3);
+  const pCol = new Float32Array(P_COUNT * 3);
+  const pThresh = new Float32Array(P_COUNT);
+  const pVel = new Float32Array(P_COUNT * 3);
+  const pDetached = new Uint8Array(P_COUNT);
+  const pLife = new Float32Array(P_COUNT);
+
+  const srcLen = Math.max(1, samplePos.length / 3);
+  for (let i = 0; i < P_COUNT; i++) {
+    const si = (i % srcLen) * 3;
+    const px = samplePos[si] + (Math.random() - 0.5) * 0.015;
+    const py = samplePos[si + 1] + (Math.random() - 0.5) * 0.015;
+    const pz = samplePos[si + 2] + (Math.random() - 0.5) * 0.015;
+    pPos[i * 3] = px; pPos[i * 3 + 1] = py; pPos[i * 3 + 2] = pz;
+    pCol[i * 3] = sampleCol[si]; pCol[i * 3 + 1] = sampleCol[si + 1]; pCol[i * 3 + 2] = sampleCol[si + 2];
+
+    const normY = THREE.MathUtils.clamp((py - minY) / (maxY - minY), 0, 1);
+    pThresh[i] = THREE.MathUtils.clamp(normY * 0.72 + Math.random() * 0.28, 0.01, 0.99);
+    pLife[i] = 1.0;
+    pVel[i * 3] = (Math.random() - 0.3) * 0.35 + 0.18; // Gentle breeze drift
+    pVel[i * 3 + 1] = 0.22 + Math.random() * 0.45;
+    pVel[i * 3 + 2] = (Math.random() - 0.5) * 0.35;
+  }
+
+  // Inject glowing ionization dissolve wave into target's materials
+  const uProg = { value: 0.0 };
+  target.group.traverse((c) => {
+    if (!c.isMesh || !c.material) return;
+    const mats = Array.isArray(c.material) ? c.material : [c.material];
+    const nextMats = mats.map((m) => {
+      const cl = m.clone();
+      cl.side = THREE.DoubleSide;
+      cl.customProgramCacheKey = () => 'nxr_disintegrate_v1';
+      cl.onBeforeCompile = function (shader) {
+        shader.uniforms.uDisProg = uProg;
+        shader.uniforms.uMinY = { value: minY };
+        shader.uniforms.uSpanY = { value: maxY - minY };
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nvarying vec3 vDisWPos;')
+          .replace('#include <project_vertex>', '#include <project_vertex>\nvDisWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', [
+            '#include <common>',
+            'uniform float uDisProg; uniform float uMinY; uniform float uSpanY;',
+            'varying vec3 vDisWPos;',
+            'float disHash(vec3 p) { p = fract(p * 0.3183 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }'
+          ].join('\n'))
+          .replace('#include <opaque_fragment>', [
+            'float disN = disHash(floor(vDisWPos * 46.0));',
+            'float disH = clamp((vDisWPos.y - uMinY) / max(0.05, uSpanY), 0.0, 1.0);',
+            'float disVal = disH * 0.72 + disN * 0.28;',
+            'if (disVal < uDisProg) discard;',
+            'float rim = 1.0 - smoothstep(uDisProg, uDisProg + 0.075, disVal);',
+            'outgoingLight = mix(outgoingLight, vec3(1.0, 0.48, 0.08) * 3.2, rim);',
+            '#include <opaque_fragment>'
+          ].join('\n'));
+      };
+      cl.needsUpdate = true;
+      return cl;
+    });
+    c.material = Array.isArray(c.material) ? nextMats : nextMats[0];
+  });
+
+  // Particle cloud group
+  const dustGroup = new THREE.Group();
+  dustGroup.name = 'Disintegration_Particles';
+  const pGeo = new THREE.BufferGeometry();
+  pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+  pGeo.setAttribute('aCol', new THREE.BufferAttribute(pCol, 3));
+  pGeo.setAttribute('aLife', new THREE.BufferAttribute(pLife, 1));
+  const pActive = new Float32Array(P_COUNT);
+  pGeo.setAttribute('aActive', new THREE.BufferAttribute(pActive, 1));
+
+  const pMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uSize: { value: 26.0 * (window.devicePixelRatio || 1) } },
+    vertexShader: [
+      'attribute vec3 aCol; attribute float aLife; attribute float aActive;',
+      'uniform float uSize;',
+      'varying vec3 vCol; varying float vAlpha;',
+      'void main() {',
+      '  vCol = mix(vec3(1.0, 0.55, 0.12), aCol, smoothstep(1.0, 0.55, aLife));',
+      '  vAlpha = aActive * clamp(aLife, 0.0, 1.0);',
+      '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+      '  gl_PointSize = aActive > 0.5 ? clamp((uSize / max(0.3, -mv.z)) * aLife, 2.0, 14.0) : 0.0;',
+      '  gl_Position = projectionMatrix * mv;',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'varying vec3 vCol; varying float vAlpha;',
+      'void main() {',
+      '  if (vAlpha < 0.01) discard;',
+      '  float d = length(gl_PointCoord - 0.5) * 2.0; if (d > 1.0) discard;',
+      '  gl_FragColor = vec4(vCol, pow(1.0 - d, 1.8) * vAlpha);',
+      '}'
+    ].join('\n')
+  });
+
+  const dustPts = new THREE.Points(pGeo, pMat);
+  dustPts.frustumCulled = false;
+  dustGroup.add(dustPts);
+  APP.scene.add(dustGroup);
+
+  let meshRemoved = false;
+  let elapsed = 0;
+
+  const dustEnt = APP.registerEntity(dustGroup, {
+    name: 'Disintegration Dust',
+    category: 'world_fx',
+    grabbable: false,
+    physics: { enabled: false },
+    onUpdate: function (dt) {
+      const delta = Math.min(0.04, dt || 0.016);
+      elapsed += delta;
+      uProg.value = Math.min(1.08, elapsed / 2.6);
+
+      let anyAlive = false;
+      for (let i = 0; i < P_COUNT; i++) {
+        if (!pDetached[i]) {
+          if (uProg.value >= pThresh[i]) {
+            pDetached[i] = 1;
+            pActive[i] = 1.0;
+          }
+          anyAlive = true;
+        } else if (pLife[i] > 0) {
+          anyAlive = true;
+          const i3 = i * 3;
+          // Curl-like swirling turbulence + upward drift
+          const px = pPos[i3], py = pPos[i3 + 1], pz = pPos[i3 + 2];
+          pVel[i3] += Math.sin(py * 5.0 + elapsed * 3.0) * 0.55 * delta;
+          pVel[i3 + 2] += Math.cos(px * 5.0 + elapsed * 2.5) * 0.55 * delta;
+          pPos[i3] += pVel[i3] * delta;
+          pPos[i3 + 1] += pVel[i3 + 1] * delta;
+          pPos[i3 + 2] += pVel[i3 + 2] * delta;
+          pLife[i] -= delta * 0.48;
+        }
+      }
+
+      if (!meshRemoved && uProg.value >= 1.05) {
+        meshRemoved = true;
+        APP.removeEntity?.(target, false);
+      }
+
+      pGeo.attributes.position.needsUpdate = true;
+      pGeo.attributes.aLife.needsUpdate = true;
+      pGeo.attributes.aActive.needsUpdate = true;
+
+      if (meshRemoved && !anyAlive) {
+        APP.removeEntity?.(dustEnt, false);
+      }
+    }
+  });
+
+  APP.ui?.toast?.(`Disintegrating ${target.name}...`);
+  APP.speakTTS?.(`Disintegrating ${target.name}.`);
+  return { ok: true, message: `Disintegrating ${target.name} into ash particles.` };
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 4. Interactive Tearable Verlet Cloth Simulation
+# ----------------------------------------------------------------------
+@ability: interactive_cloth_sim
+@pin: Cloth Sim
+@desc: Spawns a realistic woven Verlet cloth banner that billows in wind, collides with objects, can be grabbed/pulled by hand, and physically rips apart when over-stretched or swiped fast.
+@match: cloth simulation | cloth sim | spawn cloth | make cloth | curtain | fabric | banner | قماش | محاكاة قماش | ستارة
+@code:
+(function () {
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  if (APP._activeClothEnt && APP.entities?.includes(APP._activeClothEnt)) {
+    APP.removeEntity?.(APP._activeClothEnt, false);
+  }
+
+  const clothGroup = new THREE.Group();
+  clothGroup.name = 'Tearable_Cloth_Sim';
+
+  const COLS = 22, ROWS = 16;
+  const W = 1.08, H = 0.80;
+  const DX = W / (COLS - 1), DY = H / (ROWS - 1);
+  const DIAG = Math.hypot(DX, DY);
+  const N_COUNT = COLS * ROWS;
+
+  // Suspension crossbar
+  const rod = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.013, 0.013, W + 0.14, 14),
+    new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.88, roughness: 0.25 })
+  );
+  rod.rotation.z = Math.PI / 2;
+  rod.position.set(0, H * 0.5 + 0.015, 0);
+  clothGroup.add(rod);
+
+  // Procedural woven fabric texture
+  const fCan = document.createElement('canvas');
+  fCan.width = 512; fCan.height = 512;
+  const fCtx = fCan.getContext('2d');
+  fCtx.fillStyle = '#991b1b';
+  fCtx.fillRect(0, 0, 512, 512);
+  fCtx.strokeStyle = 'rgba(255,235,210,0.12)';
+  fCtx.lineWidth = 2;
+  for (let i = 0; i < 512; i += 8) {
+    fCtx.beginPath(); fCtx.moveTo(i, 0); fCtx.lineTo(i, 512); fCtx.stroke();
+    fCtx.beginPath(); fCtx.moveTo(0, i); fCtx.lineTo(512, i); fCtx.stroke();
+  }
+  fCtx.strokeStyle = '#fbbf24';
+  fCtx.lineWidth = 14;
+  fCtx.strokeRect(18, 18, 476, 476);
+
+  const fabricTex = new THREE.CanvasTexture(fCan);
+  fabricTex.colorSpace = THREE.SRGBColorSpace;
+  fabricTex.anisotropy = 4;
+
+  // Nodes & Springs
+  const cur = [], prev = [], pinned = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const x = (c / (COLS - 1) - 0.5) * W;
+      const y = H * 0.5 - r * DY;
+      cur.push(new THREE.Vector3(x, y, 0));
+      prev.push(new THREE.Vector3(x, y, 0));
+      pinned.push(r === 0);
+    }
+  }
+
+  // Spring grid tracking for quads: hSprings[r][c] connects (r,c)-(r,c+1), vSprings[r][c] connects (r,c)-(r+1,c)
+  const springs = [];
+  const hGrid = Array.from({ length: ROWS }, () => new Array(COLS - 1));
+  const vGrid = Array.from({ length: ROWS - 1 }, () => new Array(COLS));
+
+  function addSpring(a, b, rest, tearMult) {
+    const s = { a, b, rest, tearDist: rest * tearMult, broken: false };
+    springs.push(s);
+    return s;
+  }
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const i = r * COLS + c;
+      if (c < COLS - 1) hGrid[r][c] = addSpring(i, i + 1, DX, 2.15);
+      if (r < ROWS - 1) vGrid[r][c] = addSpring(i, i + COLS, DY, 2.15);
+      if (r < ROWS - 1 && c < COLS - 1) {
+        addSpring(i, i + COLS + 1, DIAG, 2.45);
+        addSpring(i + 1, i + COLS, DIAG, 2.45);
+      }
+    }
+  }
+
+  const clothGeo = new THREE.BufferGeometry();
+  const posArr = new Float32Array(N_COUNT * 3);
+  const uvArr = new Float32Array(N_COUNT * 2);
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const idx = r * COLS + c;
+      uvArr[idx * 2] = c / (COLS - 1);
+      uvArr[idx * 2 + 1] = 1.0 - r / (ROWS - 1);
+    }
+  }
+  const maxIndices = (ROWS - 1) * (COLS - 1) * 6;
+  const idxArr = new Uint16Array(maxIndices);
+  clothGeo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+  clothGeo.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
+  clothGeo.setIndex(new THREE.BufferAttribute(idxArr, 1));
+
+  const clothMat = new THREE.MeshStandardMaterial({
+    map: fabricTex,
+    roughness: 0.78,
+    metalness: 0.04,
+    side: THREE.DoubleSide
+  });
+  const clothMesh = new THREE.Mesh(clothGeo, clothMat);
+  clothMesh.castShadow = true;
+  clothMesh.receiveShadow = true;
+  clothGroup.add(clothMesh);
+
+  // Torn fiber burst particles
+  const FIBER_MAX = 80;
+  const fibPos = new Float32Array(FIBER_MAX * 3);
+  const fibVel = Array.from({ length: FIBER_MAX }, () => new THREE.Vector3());
+  const fibLife = new Float32Array(FIBER_MAX);
+  const fibGeo = new THREE.BufferGeometry();
+  fibGeo.setAttribute('position', new THREE.BufferAttribute(fibPos, 3));
+  const fibPts = new THREE.Points(fibGeo, new THREE.PointsMaterial({ color: 0xfca5a5, size: 0.015, transparent: true, opacity: 0.9 }));
+  fibPts.frustumCulled = false;
+  clothGroup.add(fibPts);
+  let nextFib = 0;
+
+  function emitRipFibers(pt) {
+    for (let k = 0; k < 3; k++) {
+      const fi = nextFib; nextFib = (nextFib + 1) % FIBER_MAX;
+      fibPos[fi * 3] = pt.x; fibPos[fi * 3 + 1] = pt.y; fibPos[fi * 3 + 2] = pt.z;
+      fibVel[fi].set((Math.random() - 0.5) * 1.4, Math.random() * 0.8, (Math.random() - 0.5) * 1.4);
+      fibLife[fi] = 0.55;
+    }
+  }
+
+  let indicesDirty = true;
+  function rebuildClothIndices() {
+    let ptr = 0;
+    for (let r = 0; r < ROWS - 1; r++) {
+      for (let c = 0; c < COLS - 1; c++) {
+        const top = hGrid[r][c], bot = hGrid[r + 1][c];
+        const left = vGrid[r][c], right = vGrid[r][c + 1];
+        const intactCount = (!top.broken ? 1 : 0) + (!bot.broken ? 1 : 0) + (!left.broken ? 1 : 0) + (!right.broken ? 1 : 0);
+        if (intactCount < 3) continue;
+        const a = r * COLS + c, b = a + 1, d = a + COLS, e = d + 1;
+        idxArr[ptr++] = a; idxArr[ptr++] = d; idxArr[ptr++] = b;
+        idxArr[ptr++] = b; idxArr[ptr++] = d; idxArr[ptr++] = e;
+      }
+    }
+    clothGeo.index.needsUpdate = true;
+    clothGeo.setDrawRange(0, ptr);
+    indicesDirty = false;
+  }
+  rebuildClothIndices();
+
+  const spawnPos = APP.getSpawnPosition ? APP.getSpawnPosition(1.05, true) : new THREE.Vector3(0, 0, -1.05);
+  clothGroup.position.set(spawnPos.x, 1.15, spawnPos.z);
+  const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+  clothGroup.lookAt(hp.x, clothGroup.position.y, hp.z);
+  APP.scene.add(clothGroup);
+
+  const tmpDelta = new THREE.Vector3();
+  const tmpLocal = new THREE.Vector3();
+  const prevHands = new Map();
+  let grabbedIdx = -1;
+  let grabbedHand = null;
+
+  function tearAtLocalPoint(pt, radius, impulseVec) {
+    let toreAny = false;
+    for (let i = 0; i < springs.length; i++) {
+      const s = springs[i];
+      if (s.broken) continue;
+      const mx = (cur[s.a].x + cur[s.b].x) * 0.5;
+      const my = (cur[s.a].y + cur[s.b].y) * 0.5;
+      const mz = (cur[s.a].z + cur[s.b].z) * 0.5;
+      if (Math.hypot(mx - pt.x, my - pt.y, mz - pt.z) < radius) {
+        s.broken = true;
+        toreAny = true;
+        indicesDirty = true;
+        emitRipFibers(cur[s.a]);
+        if (impulseVec) {
+          prev[s.a].sub(impulseVec);
+          prev[s.b].add(impulseVec);
+        }
+      }
+    }
+    return toreAny;
+  }
+
+  const clothApi = {
+    group: clothGroup,
+    cur, prev, pinned, springs, COLS, ROWS, W, H,
+    tearSlice: function (yRatio = 0.45, jagged = true) {
+      const targetRow = Math.max(1, Math.min(ROWS - 2, Math.floor(yRatio * ROWS)));
+      for (let c = 0; c < COLS; c++) {
+        const jitter = jagged ? Math.round(Math.sin(c * 0.9) * 1) : 0;
+        const r = THREE.MathUtils.clamp(targetRow + jitter, 1, ROWS - 2);
+        const pt = cur[r * COLS + c];
+        tearAtLocalPoint(pt, DX * 0.95, new THREE.Vector3(0, 0, 0.018));
+      }
+      rebuildClothIndices();
+      return true;
+    },
+    shred: function () {
+      for (let c = 3; c < COLS - 2; c += 4) {
+        for (let r = 1; r < ROWS - 1; r++) {
+          tearAtLocalPoint(cur[r * COLS + c], DX * 0.85, new THREE.Vector3((Math.random() - 0.5) * 0.02, 0, 0.02));
+        }
+      }
+      rebuildClothIndices();
+      return true;
+    }
+  };
+
+  const ent = APP.registerEntity(clothGroup, {
+    name: 'Interactive Tearable Cloth',
+    category: 'cloth',
+    grabbable: false,
+    holdable: false,
+    physics: { enabled: false, gravity: false },
+    onUpdate: function (dt) {
+      const safeDt = Math.min(0.025, Math.max(0.004, dt || 0.016));
+      const now = performance.now() * 0.001;
+      const gravY = -7.8 * safeDt * safeDt;
+      const floorLocalY = -clothGroup.position.y + 0.02;
+
+      // Hand grab, push & fast-swipe tear!
+      let activeGrab = false;
+      for (const [hk, h] of Object.entries(APP.hands || {})) {
+        if (!h || !h.active) continue;
+        let tip = h.isHand ? h.fingerTips?.index : h.pos;
+        if (hk === 'dhand' && h.rayOrigin && h.rayDir) {
+          // Project desktop ray onto cloth plane z=0
+          const invM = clothGroup.matrixWorld.clone().invert();
+          const ro = h.rayOrigin.clone().applyMatrix4(invM);
+          const rd = h.rayDir.clone().transformDirection(invM);
+          if (Math.abs(rd.z) > 0.01) {
+            const t = -ro.z / rd.z;
+            if (t > 0.1 && t < 5.0) tip = ro.addScaledVector(rd, t).applyMatrix4(clothGroup.matrixWorld);
+          }
+        }
+        if (!tip) continue;
+
+        tmpLocal.copy(tip);
+        clothGroup.worldToLocal(tmpLocal);
+
+        const last = prevHands.get(hk);
+        const speed = last ? tmpLocal.distanceTo(last) / safeDt : 0;
+        prevHands.set(hk, tmpLocal.clone());
+
+        if ((h.trigger || h.pinching) && grabbedIdx === -1) {
+          let bestI = -1, bestD = 0.14;
+          for (let i = COLS; i < N_COUNT; i++) {
+            const d = cur[i].distanceTo(tmpLocal);
+            if (d < bestD) { bestD = d; bestI = i; }
+          }
+          if (bestI !== -1) { grabbedIdx = bestI; grabbedHand = hk; }
+        }
+
+        if (grabbedHand === hk && (h.trigger || h.pinching) && grabbedIdx !== -1) {
+          cur[grabbedIdx].lerp(tmpLocal, 0.75);
+          prev[grabbedIdx].copy(cur[grabbedIdx]);
+          activeGrab = true;
+        }
+
+        // Fast swipe across fabric rips springs!
+        if (speed > 1.35) {
+          tearAtLocalPoint(tmpLocal, 0.085, new THREE.Vector3(0, 0, 0.012));
+        } else if (speed > 0.1) {
+          // Gentle push
+          for (let i = COLS; i < N_COUNT; i++) {
+            const d = cur[i].distanceTo(tmpLocal);
+            if (d < 0.12 && d > 1e-4) {
+              tmpDelta.subVectors(cur[i], tmpLocal).normalize();
+              cur[i].addScaledVector(tmpDelta, (0.12 - d) * 0.45);
+            }
+          }
+        }
+      }
+      if (!activeGrab) { grabbedIdx = -1; grabbedHand = null; }
+
+      // Verlet integration + wind gusts
+      for (let i = 0; i < N_COUNT; i++) {
+        if (pinned[i] || i === grabbedIdx) continue;
+        const p = cur[i], pr = prev[i];
+        const vx = (p.x - pr.x) * 0.985;
+        const vy = (p.y - pr.y) * 0.985;
+        const vz = (p.z - pr.z) * 0.985;
+        pr.copy(p);
+        const windZ = (Math.sin(now * 2.4 + p.x * 3.1 + p.y * 2.0) * 0.5 + 0.35) * 0.0014;
+        const windX = Math.cos(now * 1.7 + p.y * 2.5) * 0.00045;
+        p.x += vx + windX;
+        p.y += vy + gravY;
+        p.z += vz + windZ;
+        if (p.y < floorLocalY) p.y = floorLocalY;
+      }
+
+      // Distance constraints + stretch tearing
+      for (let iter = 0; iter < 5; iter++) {
+        for (let i = 0; i < springs.length; i++) {
+          const s = springs[i];
+          if (s.broken) continue;
+          const pa = cur[s.a], pb = cur[s.b];
+          tmpDelta.subVectors(pb, pa);
+          const d = tmpDelta.length();
+          if (d < 1e-6) continue;
+          if (iter === 0 && d > s.tearDist) {
+            s.broken = true;
+            indicesDirty = true;
+            emitRipFibers(pa);
+            continue;
+          }
+          const diff = (d - s.rest) / d;
+          const pinA = pinned[s.a] || s.a === grabbedIdx;
+          const pinB = pinned[s.b] || s.b === grabbedIdx;
+          if (pinA && pinB) continue;
+          if (pinA) pb.addScaledVector(tmpDelta, -diff);
+          else if (pinB) pa.addScaledVector(tmpDelta, diff);
+          else { pa.addScaledVector(tmpDelta, diff * 0.5); pb.addScaledVector(tmpDelta, -diff * 0.5); }
+        }
+      }
+
+      if (indicesDirty) rebuildClothIndices();
+
+      for (let i = 0; i < N_COUNT; i++) {
+        posArr[i * 3] = cur[i].x;
+        posArr[i * 3 + 1] = cur[i].y;
+        posArr[i * 3 + 2] = cur[i].z;
+      }
+      clothGeo.attributes.position.needsUpdate = true;
+      clothGeo.computeVertexNormals();
+
+      // Update torn fiber particles
+      for (let i = 0; i < FIBER_MAX; i++) {
+        if (fibLife[i] <= 0) { fibPos[i * 3 + 1] = -99; continue; }
+        fibLife[i] -= safeDt;
+        fibVel[i].y -= 3.5 * safeDt;
+        fibPos[i * 3] += fibVel[i].x * safeDt;
+        fibPos[i * 3 + 1] += fibVel[i].y * safeDt;
+        fibPos[i * 3 + 2] += fibVel[i].z * safeDt;
+      }
+      fibGeo.attributes.position.needsUpdate = true;
+    }
+  });
+
+  clothApi.entity = ent;
+  APP._activeCloth = clothApi;
+  APP._activeClothEnt = ent;
+  APP.emit?.('entity:created', ent);
+  APP.ui?.toast?.('Cloth Simulation active! Pull hard or swipe fast through it to tear.');
+  APP.speakTTS?.('Tearable cloth simulation active.');
+  return { ok: true, id: ent.id, message: 'Spawned interactive tearable Verlet cloth.' };
+})();
+@end
+
+# ----------------------------------------------------------------------
+# 5. Tear / Shred Cloth Action
+# ----------------------------------------------------------------------
+@ability: tear_cloth_action
+@pin: Tear Cloth
+@desc: Rips or shreds the cloth banner dynamically into hanging torn strips (spawns a cloth first if none is present).
+@match: tear | rip | shred | cut cloth | slice cloth | تمزيق | مزق | قطع القماش
+@code:
+(async function () {
+  const raw = String(typeof command === 'string' ? command : '').toLowerCase();
+  let cloth = APP._activeCloth;
+  if (!cloth || !cloth.entity || !APP.entities?.includes(cloth.entity)) {
+    const ab = APP.abilities?.get('interactive_cloth_sim');
+    if (ab) await APP.runAbility(ab, 'cloth simulation');
+    cloth = APP._activeCloth;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  if (!cloth) return { ok: false, error: 'Could not initialize cloth to tear.' };
+
+  if (raw.includes('shred') || raw.includes('strips') || raw.includes('شرائط')) {
+    cloth.shred();
+    APP.ui?.toast?.('Shredded cloth into hanging strips!');
+    APP.speakTTS?.('Shredded the cloth into ribbons.');
+    return { ok: true, message: 'Shredded cloth into hanging strips.' };
+  }
+
+  cloth.tearSlice(0.35 + Math.random() * 0.3, true);
+  APP.ui?.toast?.('Ripped a tear right across the cloth!');
+  APP.speakTTS?.('Tore the cloth open.');
+  return { ok: true, message: 'Tore a jagged rip across the cloth.' };
+})();
+@end
