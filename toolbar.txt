@@ -1,0 +1,1125 @@
+# ======================================================================
+# toolbar.txt — 2D Bottom HUD + 3D Spatial VR Toolbar + Full-Access GitHub .txt Editor
+# ======================================================================
+
+@ability: toolbar_hud_and_github
+@autorun
+@desc: Responsive 2D HUD inside #bottom-hud-mount, draggable 3D VR toolbar, and full-context GitHub .txt Natural-Language Editor with surgical patches, syntax validation, Sandbox & Commits.
+@match: toolbar | vr menu | spatial menu | github editor | edit scripts | open menu | القائمة | محرر جيتهب
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return;
+
+  if (typeof APP._toolbarCleanup === 'function') {
+    try { APP._toolbarCleanup(); } catch (_) {}
+  }
+
+  // ====================================================================
+  // 1. 2D BOTTOM HUD (Mounted inside #bottom-hud-mount, z-index < modals)
+  // ====================================================================
+  function injectToolbarCSS() {
+    if (document.getElementById('wxrmr-tb-css')) return;
+    const style = document.createElement('style');
+    style.id = 'wxrmr-tb-css';
+    style.textContent = [
+      '#tb-hud-card{display:flex;flex-direction:column;gap:7px;padding:9px 11px;}',
+      '.tb-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;}',
+      '.tb-pins{display:flex;align-items:center;gap:6px;overflow-x:auto;padding-bottom:2px;scrollbar-width:thin;}',
+      '.tb-chip{background:rgba(0,240,180,0.12);color:#7ef7d4;border:1px solid rgba(0,240,180,0.34);border-radius:999px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;}',
+      '.tb-chip:hover{background:rgba(0,240,180,0.24);}',
+      '.gh-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;}',
+      '.gh-diff{background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.14);border-radius:9px;padding:8px;max-height:140px;overflow:auto;font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap;color:#cbd5e1;}',
+      '.gh-commits{max-height:150px;overflow-y:auto;border:1px solid rgba(255,255,255,0.14);border-radius:9px;background:rgba(0,0,0,0.35);padding:6px;display:flex;flex-direction:column;gap:5px;}',
+      '.gh-c-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 7px;border-radius:7px;background:rgba(255,255,255,0.05);font-size:11px;}'
+    ].join('');
+    document.head.appendChild(style);
+  }
+
+  let hudCard = null;
+  let pinStrip = null;
+  let cmdInput = null;
+
+  function build2DHUD() {
+    const mount = document.getElementById('bottom-hud-mount');
+    if (!mount) return;
+    injectToolbarCSS();
+
+    mount.innerHTML = '';
+    hudCard = document.createElement('div');
+    hudCard.id = 'tb-hud-card';
+    hudCard.className = 'glass';
+    hudCard.innerHTML = [
+      '<div class="tb-row">',
+      '  <button type="button" class="btn tb-mode-btn" data-mode="ai">AI Only</button>',
+      '  <button type="button" class="btn tb-mode-btn" data-mode="instructions">Instructions</button>',
+      '  <button type="button" class="btn tb-mode-btn" data-mode="ai_instructions">AI + Inst</button>',
+      '  <select id="tb-lang-sel" title="Voice Language" style="padding:5px 8px;font-size:12px;">',
+      '    <option value="en-US">en-US</option>',
+      '    <option value="ar-DZ">ar-DZ (العربية)</option>',
+      '  </select>',
+      '  <button type="button" class="btn" id="tb-mic-btn">Mic: OFF</button>',
+      '  <button type="button" class="btn" id="tb-bot-btn">Geeny: ON</button>',
+      '  <button type="button" class="btn" id="tb-grav-btn">Draw Gravity: OFF</button>',
+      '  <button type="button" class="btn" id="tb-env-btn">Env: default</button>',
+      '  <button type="button" class="btn" id="tb-vr-btn">3D Menu</button>',
+      '  <button type="button" class="btn danger" id="tb-clear-btn">Clear</button>',
+      '</div>',
+      '<div class="tb-pins" id="tb-pin-strip"></div>',
+      '<div class="tb-row">',
+      '  <input id="tb-cmd-input" type="text" style="flex:1;min-width:180px;" placeholder="Ask Geeny or run command (e.g. show me how to draw a cat, portal to forest)..." />',
+      '  <button type="button" class="btn active" id="tb-send-btn">Send</button>',
+      '</div>'
+    ].join('');
+    mount.appendChild(hudCard);
+
+    pinStrip = hudCard.querySelector('#tb-pin-strip');
+    cmdInput = hudCard.querySelector('#tb-cmd-input');
+
+    hudCard.querySelectorAll('.tb-mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        APP.setExecMode?.(btn.dataset.mode);
+        syncState();
+      });
+    });
+
+    hudCard.querySelector('#tb-lang-sel').addEventListener('change', (e) => {
+      APP.setLang?.(e.target.value);
+      syncState();
+    });
+
+    hudCard.querySelector('#tb-mic-btn').addEventListener('click', () => { APP.toggleMic?.(); });
+    hudCard.querySelector('#tb-bot-btn').addEventListener('click', () => { APP.bot?.toggle?.(); syncState(); });
+    hudCard.querySelector('#tb-grav-btn').addEventListener('click', () => { APP.setDrawingGravity?.(!APP.drawingGravity); syncState(); });
+    hudCard.querySelector('#tb-env-btn').addEventListener('click', () => { APP.visual?.cycleEnvironment?.(); syncState(); });
+    hudCard.querySelector('#tb-vr-btn').addEventListener('click', () => { vrMenu.toggle(); });
+    hudCard.querySelector('#tb-clear-btn').addEventListener('click', () => { APP.clearAllEntities?.(); });
+
+    function submitCmd() {
+      const txt = (cmdInput.value || '').trim();
+      if (!txt) return;
+      cmdInput.value = '';
+      APP.executeCommand?.(txt, 'text');
+    }
+    hudCard.querySelector('#tb-send-btn').addEventListener('click', submitCmd);
+    cmdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submitCmd(); }
+    });
+  }
+
+  function getPinnedList() {
+    if (typeof APP.getPinnedAbilities === 'function') return APP.getPinnedAbilities();
+    if (APP.abilities instanceof Map) return Array.from(APP.abilities.values()).filter((a) => a && a.pin);
+    return [];
+  }
+
+  function renderPinChips() {
+    if (!pinStrip) return;
+    const pins = getPinnedList();
+    pinStrip.innerHTML = '';
+    if (!pins.length) {
+      const span = document.createElement('span');
+      span.style.cssText = 'font-size:11px;color:#94a3b8;';
+      span.textContent = 'Pinned @pin abilities appear here automatically.';
+      pinStrip.appendChild(span);
+      return;
+    }
+    for (const ab of pins) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'tb-chip';
+      chip.textContent = ab.pinLabel || ab.label || ab.id;
+      chip.title = `${ab.file || ''} — ${ab.matchRaw || ab.id}`;
+      chip.addEventListener('click', () => {
+        APP.runAbility?.(ab, ab.samplePhrase || ab.pinLabel || ab.id);
+      });
+      pinStrip.appendChild(chip);
+    }
+  }
+
+  function syncState() {
+    if (!hudCard) return;
+    const mode = APP.execMode || 'ai_instructions';
+    hudCard.querySelectorAll('.tb-mode-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.mode === mode);
+    });
+    const langSel = hudCard.querySelector('#tb-lang-sel');
+    if (langSel) langSel.value = APP.lang || 'en-US';
+
+    const micBtn = hudCard.querySelector('#tb-mic-btn');
+    micBtn.textContent = 'Mic: ' + (APP.micActive ? 'ON' : 'OFF');
+    micBtn.classList.toggle('active', !!APP.micActive);
+
+    const botBtn = hudCard.querySelector('#tb-bot-btn');
+    const botOn = APP.bot ? !!APP.bot.isEnabled?.() : true;
+    botBtn.textContent = 'Geeny: ' + (botOn ? 'ON' : 'OFF');
+    botBtn.classList.toggle('active', botOn);
+
+    const gravBtn = hudCard.querySelector('#tb-grav-btn');
+    gravBtn.textContent = 'Draw Gravity: ' + (APP.drawingGravity ? 'ON' : 'OFF');
+    gravBtn.classList.toggle('active', !!APP.drawingGravity);
+
+    const envBtn = hudCard.querySelector('#tb-env-btn');
+    const env = APP.visual ? APP.visual.getEnvironment() : 'default';
+    envBtn.textContent = 'Env: ' + env;
+
+    if (vrMenu && vrMenu.isVisible()) vrMenu.redraw();
+  }
+
+  // ====================================================================
+  // 2. 3D SPATIAL VR TOOLBAR
+  // ====================================================================
+  const vrMenu = (function buildVRMenu() {
+    const root = new THREE.Group();
+    root.name = 'APP_SPATIAL_VR_TOOLBAR';
+    root.position.set(-0.42, 1.32, -0.92);
+    root.visible = false;
+    APP.scene.add(root);
+
+    const PANEL_W = 0.72;
+    const PANEL_H = 0.50;
+
+    const orbGroup = new THREE.Group();
+    orbGroup.visible = false;
+    const orbMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.052, 24, 24),
+      new THREE.MeshStandardMaterial({ color: 0x00f0b4, emissive: 0x0ea5e9, emissiveIntensity: 0.95, roughness: 0.2, metalness: 0.4 })
+    );
+    const orbRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.072, 0.0045, 10, 36),
+      new THREE.MeshBasicMaterial({ color: 0x6ef3d6, transparent: true, opacity: 0.85 })
+    );
+    orbGroup.add(orbMesh, orbRing);
+    root.add(orbGroup);
+
+    const panelGroup = new THREE.Group();
+    root.add(panelGroup);
+
+    const backMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(PANEL_W + 0.024, PANEL_H + 0.024, 0.014),
+      new THREE.MeshStandardMaterial({ color: 0x09111e, roughness: 0.45, metalness: 0.35 })
+    );
+    backMesh.position.z = -0.009;
+    panelGroup.add(backMesh);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 712;
+    const ctx = canvas.getContext('2d');
+    const panelTex = new THREE.CanvasTexture(canvas);
+    panelTex.colorSpace = THREE.SRGBColorSpace;
+    panelTex.needsUpdate = true;
+
+    const screenMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(PANEL_W, PANEL_H),
+      new THREE.MeshBasicMaterial({ map: panelTex, transparent: true })
+    );
+    panelGroup.add(screenMesh);
+
+    const dragBar = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, 0.028, 0.018),
+      new THREE.MeshStandardMaterial({ color: 0x00f0b4, emissive: 0x0ea5e9, emissiveIntensity: 0.65, roughness: 0.3 })
+    );
+    dragBar.position.set(0, PANEL_H * 0.5 + 0.024, 0);
+    panelGroup.add(dragBar);
+
+    let minimized = false;
+    let currentPage = 0;
+    let hitZones = [];
+    let hoveredId = null;
+    let lastClickTime = 0;
+    let draggingHandKey = null;
+    const dragOffset = new THREE.Vector3();
+    const tmpVec = new THREE.Vector3();
+    const tmpLocal = new THREE.Vector3();
+
+    function getPages() {
+      const mode = APP.execMode || 'ai_instructions';
+      const env = APP.visual ? APP.visual.getEnvironment() : 'default';
+      const botOn = APP.bot ? !!APP.bot.isEnabled?.() : true;
+      const pages = [{
+        title: 'CORE CONTROLS (1)',
+        items: [
+          { id: 'm_ai', label: 'Mode: AI Only', active: mode === 'ai', action: () => APP.setExecMode?.('ai') },
+          { id: 'm_in', label: 'Mode: Instructions', active: mode === 'instructions', action: () => APP.setExecMode?.('instructions') },
+          { id: 'm_mx', label: 'Mode: AI + Inst', active: mode === 'ai_instructions', action: () => APP.setExecMode?.('ai_instructions') },
+          { id: 'mic', label: 'Mic: ' + (APP.micActive ? 'ON' : 'OFF'), active: !!APP.micActive, action: () => APP.toggleMic?.() },
+          { id: 'bot', label: 'Geeny: ' + (botOn ? 'ON' : 'OFF'), active: botOn, action: () => APP.bot?.toggle?.() },
+          { id: 'grav', label: 'Draw Gravity: ' + (APP.drawingGravity ? 'ON' : 'OFF'), active: !!APP.drawingGravity, action: () => APP.setDrawingGravity?.(!APP.drawingGravity) },
+          { id: 'env', label: 'Env: ' + env, active: env !== 'default', action: () => APP.visual?.cycleEnvironment?.() },
+          { id: 'clr', label: 'Clear Scene', warn: true, action: () => APP.clearAllEntities?.() }
+        ]
+      }];
+
+      const pins = getPinnedList();
+      const perPage = 6;
+      const pCount = Math.max(1, Math.ceil(pins.length / perPage));
+      for (let p = 0; p < pCount; p++) {
+        const slice = pins.slice(p * perPage, (p + 1) * perPage);
+        pages.push({
+          title: 'PINNED ABILITIES (' + (p + 2) + ')',
+          items: slice.map((ab) => ({
+            id: 'pin_' + ab.id,
+            label: ab.pinLabel || ab.label || ab.id,
+            active: false,
+            action: () => APP.runAbility?.(ab, ab.samplePhrase || ab.pinLabel || ab.id)
+          }))
+        });
+      }
+      return pages;
+    }
+
+    function drawRoundedRect(x, y, w, h, r, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 3; ctx.stroke(); }
+    }
+
+    function redraw() {
+      const pages = getPages();
+      if (currentPage >= pages.length) currentPage = 0;
+      const page = pages[currentPage];
+      hitZones = [];
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawRoundedRect(6, 6, canvas.width - 12, canvas.height - 12, 28, '#0b1424', '#00f0b4');
+
+      ctx.fillStyle = '#6ef3d6';
+      ctx.font = 'bold 30px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(page.title, 34, 54);
+
+      const minRect = { x: canvas.width - 190, y: 24, w: 158, h: 54 };
+      drawRoundedRect(minRect.x, minRect.y, minRect.w, minRect.h, 14, hoveredId === 'minimize' ? '#254a78' : '#162c49', '#5eead4');
+      ctx.fillStyle = '#e0f2fe';
+      ctx.font = 'bold 22px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Minimize', minRect.x + minRect.w / 2, minRect.y + minRect.h / 2);
+      hitZones.push({
+        id: 'minimize',
+        u0: minRect.x / canvas.width, u1: (minRect.x + minRect.w) / canvas.width,
+        v0: 1 - (minRect.y + minRect.h) / canvas.height, v1: 1 - minRect.y / canvas.height,
+        action: () => setMinimized(true)
+      });
+
+      const cols = 2, padX = 34, startY = 104, gapX = 22, gapY = 20;
+      const btnW = (canvas.width - padX * 2 - gapX) / cols;
+      const btnH = 112;
+
+      if (!page.items.length) {
+        ctx.fillStyle = '#89a7c9';
+        ctx.font = '26px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('No @pin abilities loaded yet.', canvas.width / 2, 330);
+      } else {
+        page.items.forEach((item, idx) => {
+          const col = idx % cols;
+          const row = Math.floor(idx / cols);
+          const bx = padX + col * (btnW + gapX);
+          const by = startY + row * (btnH + gapY);
+          const isHover = hoveredId === item.id;
+          let bg = '#15253e', border = '#335785';
+          if (item.active) { bg = '#0f766e'; border = '#00f0b4'; }
+          if (item.warn) { bg = '#611f2b'; border = '#f87171'; }
+          if (isHover) { bg = item.warn ? '#852938' : '#244675'; border = '#7dd3fc'; }
+
+          drawRoundedRect(bx, by, btnW, btnH, 18, bg, border);
+          ctx.fillStyle = '#f0f7ff';
+          ctx.font = 'bold 28px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(String(item.label).slice(0, 22), bx + btnW / 2, by + btnH / 2);
+
+          hitZones.push({
+            id: item.id,
+            u0: bx / canvas.width, u1: (bx + btnW) / canvas.width,
+            v0: 1 - (by + btnH) / canvas.height, v1: 1 - by / canvas.height,
+            action: item.action
+          });
+        });
+      }
+
+      const footY = canvas.height - 82;
+      const prevRect = { x: 34, y: footY, w: 180, h: 56 };
+      const nextRect = { x: canvas.width - 214, y: footY, w: 180, h: 56 };
+
+      drawRoundedRect(prevRect.x, prevRect.y, prevRect.w, prevRect.h, 14, hoveredId === 'prev' ? '#234672' : '#13243b', '#3b679e');
+      drawRoundedRect(nextRect.x, nextRect.y, nextRect.w, nextRect.h, 14, hoveredId === 'next' ? '#234672' : '#13243b', '#3b679e');
+
+      ctx.fillStyle = '#dcecff';
+      ctx.font = 'bold 24px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('< Prev', prevRect.x + prevRect.w / 2, prevRect.y + prevRect.h / 2);
+      ctx.fillText('Next >', nextRect.x + nextRect.w / 2, nextRect.y + nextRect.h / 2);
+      ctx.fillStyle = '#8eb0d6';
+      ctx.fillText('Page ' + (currentPage + 1) + ' / ' + pages.length, canvas.width / 2, footY + 28);
+
+      hitZones.push({
+        id: 'prev', u0: prevRect.x / canvas.width, u1: (prevRect.x + prevRect.w) / canvas.width,
+        v0: 1 - (prevRect.y + prevRect.h) / canvas.height, v1: 1 - prevRect.y / canvas.height,
+        action: () => { currentPage = (currentPage - 1 + pages.length) % pages.length; }
+      });
+      hitZones.push({
+        id: 'next', u0: nextRect.x / canvas.width, u1: (nextRect.x + nextRect.w) / canvas.width,
+        v0: 1 - (nextRect.y + nextRect.h) / canvas.height, v1: 1 - nextRect.y / canvas.height,
+        action: () => { currentPage = (currentPage + 1) % pages.length; }
+      });
+
+      panelTex.needsUpdate = true;
+    }
+
+    function setMinimized(val) {
+      minimized = !!val;
+      orbGroup.visible = minimized;
+      panelGroup.visible = !minimized;
+      if (!minimized) redraw();
+    }
+
+    function triggerZone(zone, hand) {
+      const now = performance.now();
+      if (now - lastClickTime < 280) return;
+      lastClickTime = now;
+      try {
+        const gp = hand && hand.gamepad;
+        if (gp?.hapticActuators?.[0]) gp.hapticActuators[0].pulse(0.35, 30);
+      } catch (_) {}
+      try { zone.action(); } catch (e) { console.warn('[vrMenu]', e); }
+      syncState();
+      redraw();
+    }
+
+    screenMesh.userData.onPoke = function (hit) {
+      if (!root.visible || minimized || !hit || !hit.uv) return;
+      const uv = hit.uv;
+      for (const z of hitZones) {
+        if (uv.x >= z.u0 && uv.x <= z.u1 && uv.y >= z.v0 && uv.y <= z.v1) {
+          triggerZone(z, null);
+          break;
+        }
+      }
+    };
+    orbMesh.userData.onPoke = function () {
+      if (!root.visible || !minimized) return;
+      const now = performance.now();
+      if (now - lastClickTime < 280) return;
+      lastClickTime = now;
+      setMinimized(false);
+    };
+
+    if (APP.pokeTargets) {
+      APP.pokeTargets.add(screenMesh);
+      APP.pokeTargets.add(orbMesh);
+      APP.pokeTargets.add(dragBar);
+    }
+
+    function placeInFrontOfUser() {
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+      const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+      const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+      if (flat.lengthSq() < 0.01) flat.set(0, 0, -1);
+      const right = new THREE.Vector3().crossVectors(flat, new THREE.Vector3(0, 1, 0)).normalize();
+      root.position.copy(hp).addScaledVector(flat, 0.85).addScaledVector(right, -0.30);
+      root.position.y = Math.max(0.88, hp.y - 0.12);
+      root.lookAt(hp.x, root.position.y, hp.z);
+    }
+
+    function show(placeFresh) {
+      root.visible = true;
+      if (placeFresh !== false) placeInFrontOfUser();
+      redraw();
+    }
+
+    function updateInteraction(dt, elapsed) {
+      if (!root.visible) return;
+      if (minimized) {
+        orbRing.rotation.z = elapsed * 1.4;
+        orbRing.rotation.x = Math.sin(elapsed * 0.9) * 0.4;
+      }
+
+      const hands = APP.hands || {};
+      if (draggingHandKey && hands[draggingHandKey]) {
+        const dh = hands[draggingHandKey];
+        if (dh.active && (dh.trigger || dh.pinching || dh.gripping)) {
+          if (dh.isHand && dh.fingerTips?.index) root.position.copy(dh.fingerTips.index).add(dragOffset);
+          else if (dh.rayOrigin && dh.rayDir) root.position.copy(dh.rayOrigin).addScaledVector(dh.rayDir, 0.85).add(dragOffset);
+          if (APP.headPos) root.lookAt(APP.headPos.x, root.position.y, APP.headPos.z);
+          return;
+        } else {
+          draggingHandKey = null;
+        }
+      }
+
+      let newHover = null;
+      const raycaster = new THREE.Raycaster();
+
+      for (const [key, hand] of Object.entries(hands)) {
+        if (!hand || !hand.active) continue;
+        const tip = hand.isHand ? hand.fingerTips?.index : hand.pos;
+
+        if (hand.isHand && tip) {
+          if (minimized) {
+            orbMesh.getWorldPosition(tmpVec);
+            if (tip.distanceTo(tmpVec) < 0.085) {
+              const now = performance.now();
+              if (now - lastClickTime > 320) { lastClickTime = now; setMinimized(false); return; }
+            }
+          } else {
+            dragBar.getWorldPosition(tmpVec);
+            if (hand.pinching && tip.distanceTo(tmpVec) < 0.12) {
+              draggingHandKey = key;
+              dragOffset.copy(root.position).sub(tip);
+              return;
+            }
+            tmpLocal.copy(tip);
+            screenMesh.worldToLocal(tmpLocal);
+            if (Math.abs(tmpLocal.z) < 0.042) {
+              const u = tmpLocal.x / PANEL_W + 0.5;
+              const v = tmpLocal.y / PANEL_H + 0.5;
+              if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
+                for (const z of hitZones) {
+                  if (u >= z.u0 && u <= z.u1 && v >= z.v0 && v <= z.v1) {
+                    newHover = z.id;
+                    if (hand.justPinched || tmpLocal.z < 0.015) triggerZone(z, hand);
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (hand.rayOrigin && hand.rayDir) {
+          raycaster.set(hand.rayOrigin, hand.rayDir);
+          if (!minimized) {
+            const dragHits = raycaster.intersectObject(dragBar, false);
+            if (dragHits.length && (hand.trigger || hand.gripping)) {
+              draggingHandKey = key;
+              dragOffset.copy(root.position).sub(dragHits[0].point);
+              return;
+            }
+            const scrHits = raycaster.intersectObject(screenMesh, false);
+            if (scrHits.length && scrHits[0].uv) {
+              const uv = scrHits[0].uv;
+              for (const z of hitZones) {
+                if (uv.x >= z.u0 && uv.x <= z.u1 && uv.y >= z.v0 && uv.y <= z.v1) {
+                  newHover = z.id;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (newHover !== hoveredId) {
+        hoveredId = newHover;
+        redraw();
+      }
+    }
+
+    return {
+      root, screenMesh, orbMesh, dragBar, show,
+      hide: () => { root.visible = false; },
+      toggle: () => { if (root.visible) root.visible = false; else show(true); },
+      minimize: () => setMinimized(true),
+      expand: () => setMinimized(false),
+      isVisible: () => root.visible,
+      redraw,
+      update: updateInteraction
+    };
+  })();
+
+  // ====================================================================
+  // 3. FULL-ACCESS GITHUB .TXT EDITOR (Surgical Patches + Outer Fence Fix)
+  // ====================================================================
+  let sandboxSnapshot = null;
+
+  function getRepoCfg() {
+    const body = document.getElementById('modal-editor-body');
+    if (body && body.dataset.built) {
+      return {
+        owner: body.querySelector('#gh-owner').value.trim(),
+        repo: body.querySelector('#gh-repo').value.trim(),
+        branch: body.querySelector('#gh-branch').value.trim() || 'main',
+        pat: body.querySelector('#gh-pat').value.trim()
+      };
+    }
+    return {
+      owner: APP.repo.owner || '',
+      repo: APP.repo.name || '',
+      branch: APP.repo.branch || 'main',
+      pat: APP.repo.pat || ''
+    };
+  }
+
+  function saveRepoCfg() {
+    const c = getRepoCfg();
+    APP.repo.owner = c.owner;
+    APP.repo.name = c.repo;
+    APP.repo.branch = c.branch;
+    APP.repo.pat = c.pat;
+    try {
+      localStorage.setItem('GH_OWNER', c.owner);
+      localStorage.setItem('GH_REPO', c.repo);
+      localStorage.setItem('GH_BRANCH', c.branch);
+      localStorage.setItem('GH_PAT', c.pat);
+    } catch (_) {}
+  }
+
+  async function ghApiFetch(path, opts) {
+    const cfg = getRepoCfg();
+    if (!cfg.owner || !cfg.repo || !cfg.pat) {
+      throw new Error('Enter GitHub Owner, Repo Name, and Personal Access Token (PAT) first.');
+    }
+    const url = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}${path}`;
+    const res = await fetch(url, Object.assign({}, opts || {}, {
+      headers: Object.assign({
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'Bearer ' + cfg.pat,
+        'Content-Type': 'application/json'
+      }, (opts && opts.headers) || {})
+    }));
+    const txt = await res.text();
+    let json = {};
+    try { json = JSON.parse(txt || '{}'); } catch (_) {}
+    if (!res.ok) throw new Error(`GitHub ${res.status}: ${json.message || txt}`);
+    return json;
+  }
+
+  function encodeB64(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function decodeB64(b64) {
+    const bin = atob(String(b64 || '').replace(/\s+/g, ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  function buildLineDiff(aStr, bStr) {
+    const a = String(aStr || '').split('\n');
+    const b = String(bStr || '').split('\n');
+    const out = [];
+    const maxLen = Math.max(a.length, b.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (a[i] !== b[i]) {
+        if (a[i] !== undefined) out.push('- ' + (i + 1) + ': ' + a[i]);
+        if (b[i] !== undefined) out.push('+ ' + (i + 1) + ': ' + b[i]);
+        if (out.length > 140) { out.push('... (truncated)'); break; }
+      }
+    }
+    return out.length ? out.join('\n') : '(No differences)';
+  }
+
+  // Strip ONLY the outermost markdown code fence (safe even when code contains ``` strings)
+  function stripOuterCodeFences(raw) {
+    let s = String(raw || '').trim();
+    const first = s.indexOf('```');
+    const last = s.lastIndexOf('```');
+    if (first !== -1 && last > first) {
+      const inner = s.slice(first + 3, last).replace(/^[a-zA-Z0-9_-]*\r?\n/, '');
+      if (inner.includes('@ability:') || inner.includes('<<<')) {
+        return inner.trim();
+      }
+    }
+    return s;
+  }
+
+  // Apply surgical <<<APPEND_ABILITY, <<<SEARCH/<<<REPLACE, or full-file replacement
+  function applyAIModuleOutput(rawResponse, currentText, filename) {
+    const clean = stripOuterCodeFences(rawResponse);
+
+    // 1. Surgical APPEND_ABILITY block(s)
+    if (clean.includes('<<<APPEND_ABILITY')) {
+      const blockMatch = clean.match(/<<<APPEND_ABILITY\s*([\s\S]*?)<<<END_ABILITY/i);
+      const block = blockMatch ? blockMatch[1].trim() : clean.replace(/<<<APPEND_ABILITY|<<<END_ABILITY/gi, '').trim();
+      const parsedNew = APP.parseModuleText ? APP.parseModuleText(filename, block) : [];
+      let merged = String(currentText || '').trim();
+
+      if (parsedNew.length && APP.parseModuleText) {
+        const existing = APP.parseModuleText(filename, merged);
+        // Replace existing @ability block if same id, otherwise append
+        for (const ab of parsedNew) {
+          const idEsc = ab.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const re = new RegExp(`@ability:\\s*${idEsc}[\\s\\S]*?@end`, 'm');
+          const singleBlockMatch = block.match(new RegExp(`@ability:\\s*${idEsc}[\\s\\S]*?@end`, 'm'));
+          if (existing.some((e) => e.id === ab.id) && singleBlockMatch) {
+            merged = merged.replace(re, singleBlockMatch[0]);
+          } else {
+            merged = (merged ? merged + '\n\n' : '') + (singleBlockMatch ? singleBlockMatch[0] : block);
+          }
+        }
+        return merged.trim();
+      }
+      return (merged ? merged + '\n\n' : '') + block;
+    }
+
+    // 2. Surgical SEARCH / REPLACE patches
+    if (clean.includes('<<<SEARCH') && clean.includes('<<<REPLACE')) {
+      let updated = String(currentText || '');
+      const patchRegex = /<<<SEARCH\r?\n([\s\S]*?)\r?\n<<<REPLACE\r?\n([\s\S]*?)\r?\n<<<END_PATCH/g;
+      let match;
+      let applied = 0;
+      while ((match = patchRegex.exec(clean)) !== null) {
+        const searchStr = match[1];
+        const replaceStr = match[2];
+        if (updated.includes(searchStr)) {
+          updated = updated.replace(searchStr, replaceStr);
+          applied++;
+        }
+      }
+      if (applied > 0) return updated;
+    }
+
+    // 3. Full-file output (plus smart safety merge if AI returned only 1 new ability for a multi-ability file)
+    let full = clean.replace(/^<<<FULL_FILE\s*/i, '').replace(/<<<END_FILE\s*$/i, '').trim();
+    if (APP.parseModuleText && currentText) {
+      const curAbilities = APP.parseModuleText(filename, currentText);
+      const newAbilities = APP.parseModuleText(filename, full);
+      if (curAbilities.length >= 2 && newAbilities.length === 1 && !curAbilities.some((a) => a.id === newAbilities[0].id)) {
+        return currentText.trim() + '\n\n' + full;
+      }
+    }
+    return full;
+  }
+
+  function validateModuleSyntax(filename, rawText) {
+    if (typeof APP.parseModuleText !== 'function') return { ok: true };
+    const abilities = APP.parseModuleText(filename, rawText);
+    if (!abilities.length) {
+      return { ok: false, error: 'Parsed 0 @ability blocks. Ensure @ability: <id>, @code:, and @end tags are present.' };
+    }
+    const AsyncFn = Object.getPrototypeOf(async function () {}).constructor;
+    for (const ab of abilities) {
+      try {
+        new AsyncFn('APP', 'THREE', 'command', 'ability', ab.code);
+      } catch (e) {
+        return { ok: false, error: `JS SyntaxError inside @ability: ${ab.id}: ${e.message}` };
+      }
+    }
+    return { ok: true, count: abilities.length };
+  }
+
+  function buildFullAppContextForEdit(targetFilename, requestText) {
+    const modEntries = Object.entries(APP.modules || {});
+    const moduleIndex = modEntries.map(([fn, txt]) => {
+      const abs = APP.parseModuleText ? APP.parseModuleText(fn, txt) : [];
+      return `- ${fn} (${txt.length} chars): abilities=[${abs.map(a => a.id).join(', ')}]`;
+    }).join('\n');
+
+    const archGuide = [
+      'NEXUSXR ARCHITECTURE & GLOBAL HOOKS (defined in index.html + modules):',
+      '- Shared namespace: `APP` (window.APP), `THREE` (APP.THREE), `APP.scene`, `APP.camera`, `APP.renderer`.',
+      '- Update loop: `APP.onUpdate((dt, elapsed) => { ... })` (returns unsubscribe fn) or `APP.frameHooks.add(fn)`.',
+      '- Events: `APP.on(event, fn)`, `APP.emit(event, payload)`.',
+      '- Entities: `APP.registerEntity(group, { name, category, holdable, hasGravity, onUpdate })`.',
+      '- Assets: `APP.importedImages` (Map<cleanName, {name,cleanName,url}>), `APP.importedGLBs`, `APP.importedVideos`, `APP.spawnAsset(name)`.',
+      '- Geeny Robot (`bot.txt`): `APP.bot.root` (world Group), `APP.bot.bodyGroup` (tilting chassis Group; back/shoulders are around local z = -0.15, y = 0.04), `APP.bot.tentacleGroup`, `APP.bot.getVelocity()`, `APP.bot.showBoard(...)`, `APP.bot.hideBoard()`.',
+      '- Visuals (`visual.txt`): `APP.visual.setEnvironment(...)`, `APP.visual.set360Environment(...)`, `APP.visual.applyDissolveShader(group, "materialize")`.',
+      '- Toolbar (`toolbar.txt`): `APP.toolbar.refresh()`, `APP.toolbar.syncState()` — any `@pin: Label` ability automatically appears as a clickable HUD + 3D VR button!',
+      '- Module syntax: `@ability: <id>`, optional `@autorun`, `@pin: <Label>`, `@desc: ...`, `@match: phrase1 | a & b`, `@code: ... @end`.',
+      '- CRITICAL: Use `#` comments ONLY outside `@code:`. Inside `@code:`, use `//` ONLY.'
+    ].join('\n');
+
+    const extraFiles = [];
+    for (const [fn, txt] of modEntries) {
+      if (fn === targetFilename) continue;
+      if (fn === 'bot.txt' && /bot|geeny|genie|cape|tentacle|board|visor|wing|الروبوت|جيني/i.test(requestText)) {
+        extraFiles.push(`=== REFERENCE FILE: ${fn} ===\n${txt}`);
+      } else if (fn === 'visual.txt' && /visual|shader|matrix|360|environment|dissolve/i.test(requestText)) {
+        extraFiles.push(`=== REFERENCE FILE: ${fn} ===\n${txt}`);
+      }
+    }
+
+    return [archGuide, '', 'ALL LOADED .TXT MODULES IN REPO:', moduleIndex || '(none)', extraFiles.length ? '\n' + extraFiles.join('\n\n') : ''].join('\n');
+  }
+
+  function autoChooseTargetFile(currentFile, nlRequest) {
+    const req = String(nlRequest || '').toLowerCase();
+    const explicit = req.match(/\b(ai_models|visual|toolbar|bot|instruction\d+)\.txt\b/i);
+    if (explicit) return explicit[0].toLowerCase();
+    if (currentFile === 'instruction1.txt' && /\b(bot|geeny|genie|cape|cloak|wing|visor|tentacle|holo.?board)\b/i.test(req)) {
+      return 'bot.txt';
+    }
+    return currentFile;
+  }
+
+  function stageEditInEditor(filename, prevText, nextText, logMsg) {
+    buildEditorUI();
+    const mount = document.getElementById('modal-editor-body');
+    if (!mount) return;
+    const sel = mount.querySelector('#gh-file-sel');
+    if (Array.from(sel.options).some((o) => o.value === filename)) {
+      sel.value = filename;
+      mount.querySelector('#gh-custom-file').value = '';
+    } else {
+      mount.querySelector('#gh-custom-file').value = filename;
+    }
+    sandboxSnapshot = { filename, prevText: prevText || '' };
+    mount.querySelector('#gh-code-ta').value = nextText;
+    mount.querySelector('#gh-diff').textContent = buildLineDiff(prevText, nextText);
+    mount.querySelector('#gh-commit-msg').value = `Update ${filename} via Geeny AI`;
+    mount.querySelector('#gh-log').textContent = logMsg || `Staged edit for ${filename}. Test in Sandbox, Rollback, or Approve & Commit.`;
+  }
+
+  function buildEditorUI() {
+    const mount = document.getElementById('modal-editor-body');
+    if (!mount) return;
+    injectToolbarCSS();
+
+    if (!mount.dataset.built) {
+      mount.dataset.built = '1';
+      mount.innerHTML = [
+        '<div class="gh-grid">',
+        '  <input id="gh-owner" placeholder="Owner" value="' + (APP.repo.owner || '') + '">',
+        '  <input id="gh-repo" placeholder="Repo" value="' + (APP.repo.name || '') + '">',
+        '  <input id="gh-branch" placeholder="Branch" value="' + (APP.repo.branch || 'main') + '">',
+        '  <input id="gh-pat" type="password" placeholder="GitHub PAT (repo)" value="' + (APP.repo.pat || '') + '">',
+        '</div>',
+        '<div class="tb-row" style="margin-top:8px;">',
+        '  <select id="gh-file-sel" style="flex:1;"></select>',
+        '  <input id="gh-custom-file" placeholder="or new file e.g. instruction2.txt" style="width:190px;">',
+        '  <button type="button" class="btn" id="gh-pull-btn">Fetch from GitHub</button>',
+        '</div>',
+        '<div class="tb-row" style="margin-top:8px;">',
+        '  <input id="gh-nl-prompt" style="flex:1;" placeholder="Describe any edit across any .txt file (e.g. Add a cloth cape to the bot with Algerian flag + toggle)..." />',
+        '  <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="gh-auto-route" checked> Auto-Pick File</label>',
+        '  <button type="button" class="btn active" id="gh-ai-btn">AI Edit</button>',
+        '</div>',
+        '<textarea id="gh-code-ta" spellcheck="false" style="width:100%;min-height:210px;font-family:ui-monospace,monospace;font-size:12px;margin-top:8px;"></textarea>',
+        '<div id="gh-diff" class="gh-diff" style="margin-top:8px;">Diff preview will appear here.</div>',
+        '<div class="tb-row" style="margin-top:8px;">',
+        '  <input id="gh-commit-msg" style="flex:1;" placeholder="Commit message..." />',
+        '  <button type="button" class="btn" id="gh-sandbox-btn">Test in Sandbox</button>',
+        '  <button type="button" class="btn warn" id="gh-rollback-btn">Rollback Sandbox</button>',
+        '  <button type="button" class="btn active" id="gh-commit-btn">Approve & Commit</button>',
+        '</div>',
+        '<div id="gh-log" style="font-size:12px;color:#38bdf8;margin-top:6px;">Ready.</div>',
+        '<div class="tb-row" style="justify-content:space-between;margin-top:10px;">',
+        '  <strong style="font-size:12px;color:#cbd5e1;">Last Updates (GitHub Commits)</strong>',
+        '  <button type="button" class="btn" id="gh-commits-btn">Refresh Commits</button>',
+        '</div>',
+        '<div id="gh-commits-box" class="gh-commits" style="margin-top:5px;"><span style="font-size:11px;color:#94a3b8;">Click Refresh Commits after entering Owner/Repo/PAT.</span></div>'
+      ].join('');
+
+      const setLog = (msg) => { mount.querySelector('#gh-log').textContent = String(msg || ''); };
+      const activeFilename = () => {
+        const custom = mount.querySelector('#gh-custom-file').value.trim();
+        return custom || mount.querySelector('#gh-file-sel').value;
+      };
+
+      function loadFileIntoTextarea(fnOverride) {
+        const fn = fnOverride || mount.querySelector('#gh-file-sel').value;
+        mount.querySelector('#gh-file-sel').value = fn;
+        mount.querySelector('#gh-custom-file').value = '';
+        mount.querySelector('#gh-code-ta').value = APP.modules?.[fn] || '';
+        mount.querySelector('#gh-diff').textContent = `(Loaded live "${fn}")`;
+      }
+
+      mount.querySelector('#gh-file-sel').addEventListener('change', () => loadFileIntoTextarea());
+
+      mount.querySelector('#gh-pull-btn').addEventListener('click', async () => {
+        saveRepoCfg();
+        const cfg = getRepoCfg();
+        const fn = activeFilename();
+        setLog(`Fetching ${fn} from GitHub...`);
+        try {
+          const data = await ghApiFetch(`/contents/${encodeURIComponent(fn)}?ref=${encodeURIComponent(cfg.branch)}`);
+          const txt = decodeB64(data.content);
+          const cur = mount.querySelector('#gh-code-ta').value;
+          mount.querySelector('#gh-code-ta').value = txt;
+          mount.querySelector('#gh-diff').textContent = buildLineDiff(cur, txt);
+          setLog(`Fetched ${fn} from GitHub.`);
+        } catch (e) { setLog('Fetch error: ' + e.message); }
+      });
+
+      mount.querySelector('#gh-ai-btn').addEventListener('click', async () => {
+        if (!APP.ai?.chat) { setLog('AI module not loaded.'); return; }
+        const req = mount.querySelector('#gh-nl-prompt').value.trim();
+        if (!req) { setLog('Enter a natural-language instruction first.'); return; }
+
+        let fn = activeFilename();
+        if (mount.querySelector('#gh-auto-route').checked) {
+          const routed = autoChooseTargetFile(fn, req);
+          if (routed !== fn) {
+            fn = routed;
+            if (Array.from(mount.querySelector('#gh-file-sel').options).some((o) => o.value === fn)) {
+              loadFileIntoTextarea(fn);
+            } else {
+              mount.querySelector('#gh-custom-file').value = fn;
+              mount.querySelector('#gh-code-ta').value = APP.modules?.[fn] || '';
+            }
+          }
+        }
+
+        const cur = mount.querySelector('#gh-code-ta').value;
+        const fullContext = buildFullAppContextForEdit(fn, req);
+        setLog(`Generating edit for ${fn} via ${APP.ai.getSelectedModel().id}...`);
+
+        const sysPrompt = [
+          'You are an expert NexusXR WebXR Three.js .txt module engineer with FULL access to the codebase.',
+          fullContext,
+          '',
+          'OUTPUT FORMAT (CHOOSE THE CLEANEST FASTEST OPTION):',
+          'Option 1 (BEST when adding new features/accessories like a cape, wings, abilities, toggles): Output ONLY the new @ability block(s) wrapped as:',
+          '<<<APPEND_ABILITY',
+          '@ability: <new_id>',
+          '@autorun',
+          '@pin: <Button Label>',
+          '@match: <voice phrases>',
+          '@code:',
+          '(function () { ... })();',
+          '@end',
+          '<<<END_ABILITY',
+          '',
+          'Option 2 (when modifying specific existing lines): Output surgical patch block(s):',
+          '<<<SEARCH',
+          '<exact lines from current file>',
+          '<<<REPLACE',
+          '<replacement lines>',
+          '<<<END_PATCH',
+          '',
+          'Option 3 (for small files like instructionN.txt): Output the complete file.',
+          '',
+          'TECHNICAL RULES:',
+          '- To attach accessories to Geeny (like a cloth cape), attach to `APP.bot.bodyGroup || APP.bot.root` (back shoulders local z = -0.15, y = 0.04), animate with `APP.onUpdate`, clean up previous instances via `APP._capeCleanup`, and support `APP.importedImages` / procedural CanvasTexture!',
+          '- Never put `#` comment lines inside `@code:`; use `//` inside JS.'
+        ].join('\n');
+
+        let res = await APP.ai.chat({
+          systemPrompt: sysPrompt,
+          prompt: `Target file: ${fn}\n\nUser request:\n${req}\n\nCurrent ${fn} content:\n\`\`\`txt\n${cur}\n\`\`\``
+        });
+
+        if (!res.ok) { setLog('AI Error: ' + res.error); return; }
+
+        let next = applyAIModuleOutput(res.text, cur, fn);
+        let check = validateModuleSyntax(fn, next);
+
+        if (!check.ok) {
+          setLog(`Syntax issue (${check.error}), auto-repairing...`);
+          const fixRes = await APP.ai.chat({
+            systemPrompt: sysPrompt,
+            prompt: `Your previous output produced an error:\n${check.error}\n\nReturn ONLY a clean <<<APPEND_ABILITY ... <<<END_ABILITY block or valid complete file with @ability:, @code:, and @end tags.`
+          });
+          if (fixRes.ok) {
+            next = applyAIModuleOutput(fixRes.text, cur, fn);
+            check = validateModuleSyntax(fn, next);
+          }
+        }
+
+        sandboxSnapshot = { filename: fn, prevText: cur };
+        mount.querySelector('#gh-code-ta').value = next;
+        mount.querySelector('#gh-diff').textContent = buildLineDiff(cur, next);
+        mount.querySelector('#gh-commit-msg').value = req.slice(0, 68);
+
+        if (check.ok) {
+          setLog(`Ready for ${fn} (${check.count} abilities validated). Click "Test in Sandbox" to run it live!`);
+        } else {
+          setLog(`Warning in ${fn}: ${check.error}`);
+        }
+      });
+
+      mount.querySelector('#gh-sandbox-btn').addEventListener('click', async () => {
+        const fn = activeFilename();
+        const next = mount.querySelector('#gh-code-ta').value;
+        const check = validateModuleSyntax(fn, next);
+        if (!check.ok) { setLog('Cannot run Sandbox — ' + check.error); return; }
+        if (!sandboxSnapshot || sandboxSnapshot.filename !== fn) {
+          sandboxSnapshot = { filename: fn, prevText: APP.modules?.[fn] || '' };
+        }
+        try {
+          await APP.reloadModuleText?.(fn, next);
+          refresh();
+          setLog(`Sandbox LIVE for "${fn}"! Test it now, Rollback, or Approve & Commit.`);
+        } catch (e) {
+          setLog('Sandbox runtime error: ' + e.message);
+        }
+      });
+
+      mount.querySelector('#gh-rollback-btn').addEventListener('click', async () => {
+        if (!sandboxSnapshot) { setLog('No active sandbox snapshot.'); return; }
+        const { filename, prevText } = sandboxSnapshot;
+        await APP.reloadModuleText?.(filename, prevText);
+        mount.querySelector('#gh-code-ta').value = prevText;
+        mount.querySelector('#gh-diff').textContent = '(Rolled back)';
+        refresh();
+        sandboxSnapshot = null;
+        setLog(`Rolled back "${filename}".`);
+      });
+
+      async function loadCommits() {
+        saveRepoCfg();
+        const cfg = getRepoCfg();
+        const box = mount.querySelector('#gh-commits-box');
+        box.innerHTML = '<span style="font-size:11px;color:#94a3b8;">Loading commits...</span>';
+        try {
+          const list = await ghApiFetch(`/commits?sha=${encodeURIComponent(cfg.branch)}&per_page=8`);
+          box.innerHTML = '';
+          for (const c of list) {
+            const row = document.createElement('div');
+            row.className = 'gh-c-row';
+            const msg = (c.commit?.message || '').split('\n')[0].slice(0, 52);
+            row.innerHTML = `<span><code>${c.sha.slice(0, 7)}</code> ${msg}</span><button type="button" class="btn" style="padding:3px 8px;font-size:11px;">Restore File</button>`;
+            row.querySelector('button').onclick = async () => {
+              const fn = activeFilename();
+              setLog(`Loading ${fn} from ${c.sha.slice(0, 7)}...`);
+              try {
+                const fileObj = await ghApiFetch(`/contents/${encodeURIComponent(fn)}?ref=${encodeURIComponent(c.sha)}`);
+                const restored = decodeB64(fileObj.content);
+                const cur = mount.querySelector('#gh-code-ta').value;
+                mount.querySelector('#gh-code-ta').value = restored;
+                mount.querySelector('#gh-diff').textContent = buildLineDiff(cur, restored);
+                mount.querySelector('#gh-commit-msg').value = `Revert ${fn} to ${c.sha.slice(0, 7)}`;
+                setLog(`Loaded ${fn} from ${c.sha.slice(0, 7)}. Test in Sandbox or Commit.`);
+              } catch (err) { setLog('Restore error: ' + err.message); }
+            };
+            box.appendChild(row);
+          }
+        } catch (err) {
+          box.innerHTML = `<span style="font-size:11px;color:#fda4af;">${err.message}</span>`;
+        }
+      }
+
+      mount.querySelector('#gh-commits-btn').addEventListener('click', loadCommits);
+
+      mount.querySelector('#gh-commit-btn').addEventListener('click', async () => {
+        saveRepoCfg();
+        const cfg = getRepoCfg();
+        const fn = activeFilename();
+        const content = mount.querySelector('#gh-code-ta').value;
+        const msg = mount.querySelector('#gh-commit-msg').value.trim() || `Update ${fn} via NexusXR`;
+        setLog(`Committing ${fn} via Git Data API...`);
+        try {
+          const refData = await ghApiFetch(`/git/refs/heads/${encodeURIComponent(cfg.branch)}`);
+          const headSha = refData.object.sha;
+          const headCommit = await ghApiFetch(`/git/commits/${headSha}`);
+          const blob = await ghApiFetch('/git/blobs', {
+            method: 'POST',
+            body: JSON.stringify({ content: encodeB64(content), encoding: 'base64' })
+          });
+          const tree = await ghApiFetch('/git/trees', {
+            method: 'POST',
+            body: JSON.stringify({
+              base_tree: headCommit.tree.sha,
+              tree: [{ path: fn, mode: '100644', type: 'blob', sha: blob.sha }]
+            })
+          });
+          const commit = await ghApiFetch('/git/commits', {
+            method: 'POST',
+            body: JSON.stringify({ message: msg, tree: tree.sha, parents: [headSha] })
+          });
+          await ghApiFetch(`/git/refs/heads/${encodeURIComponent(cfg.branch)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ sha: commit.sha, force: false })
+          });
+          sandboxSnapshot = null;
+          await APP.reloadModuleText?.(fn, content);
+          setLog(`Committed ${fn} (${commit.sha.slice(0, 7)}).`);
+          loadCommits();
+        } catch (err) {
+          setLog('Commit error: ' + err.message);
+        }
+      });
+    }
+
+    const sel = mount.querySelector('#gh-file-sel');
+    const prev = sel.value;
+    const files = Array.from(new Set([
+      ...Object.keys(APP.modules || {}),
+      'ai_models.txt', 'visual.txt', 'toolbar.txt', 'bot.txt', 'instruction1.txt'
+    ]));
+    sel.innerHTML = '';
+    for (const f of files) {
+      const opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = f;
+      sel.appendChild(opt);
+    }
+    if (prev && files.includes(prev)) sel.value = prev;
+    else if (files.includes('bot.txt')) sel.value = 'bot.txt';
+
+    const chosen = sel.value;
+    mount.querySelector('#gh-code-ta').value = APP.modules?.[chosen] || '';
+  }
+
+  function openGitHubEditor(nlPrompt) {
+    buildEditorUI();
+    if (nlPrompt) {
+      const inp = document.querySelector('#modal-editor-body #gh-nl-prompt');
+      if (inp) inp.value = String(nlPrompt);
+    }
+    APP.ui.openModal('modal-editor');
+  }
+
+  // ====================================================================
+  // 4. WIRE HOOKS & CLEANUP
+  // ====================================================================
+  function refresh() {
+    renderPinChips();
+    syncState();
+  }
+
+  build2DHUD();
+  refresh();
+
+  const unsubFrame = APP.onUpdate ? APP.onUpdate((dt, elapsed) => vrMenu.update(dt, elapsed)) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(vrMenu.update);
+
+  const unsubs = [
+    APP.on?.('modules:loaded', refresh),
+    APP.on?.('ability:registered', refresh),
+    APP.on?.('mode:changed', syncState),
+    APP.on?.('mic:changed', syncState),
+    APP.on?.('drawing:gravity_changed', syncState),
+    APP.on?.('bot:state_changed', syncState),
+    APP.on?.('visual:env_changed', syncState),
+    APP.on?.('ai:changed', syncState),
+    APP.on?.('xr:start', () => vrMenu.show(true))
+  ].filter(Boolean);
+
+  APP._toolbarCleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame();
+    else APP.frameHooks?.delete(vrMenu.update);
+    unsubs.forEach((u) => { try { u(); } catch (_) {} });
+    if (APP.pokeTargets) {
+      APP.pokeTargets.delete(vrMenu.screenMesh);
+      APP.pokeTargets.delete(vrMenu.orbMesh);
+      APP.pokeTargets.delete(vrMenu.dragBar);
+    }
+    if (vrMenu.root.parent) vrMenu.root.parent.remove(vrMenu.root);
+  };
+
+  APP.toolbar = {
+    vrMenu,
+    refresh,
+    syncState,
+    stripOuterCodeFences,
+    applyAIModuleOutput,
+    validateModuleSyntax,
+    stageEditInEditor,
+    openGitHubEditor
+  };
+
+  APP.registerAbilityHandler?.('toolbar_hud_and_github', function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('github') || low.includes('edit') || low.includes('جيتهب')) {
+      openGitHubEditor();
+      return { ok: true, message: 'Opened GitHub .txt Editor.' };
+    }
+    vrMenu.toggle();
+    return { ok: true, message: 'Toggled 3D Spatial VR Menu.' };
+  });
+})();
+@end
