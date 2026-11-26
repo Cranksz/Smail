@@ -1,0 +1,1154 @@
+# ======================================================================
+# ai_models.txt — OpenRouter-First AI Client + Gemini 3.8 Live Scope
+#                 (System-Only Voice Relay vs Full) + Claude + APP.fx
+# ======================================================================
+
+@ability: ai_models_manager
+@autorun
+@desc: OpenRouter client (Gemini 4 Hydrogen, ChatGPT GPT-6 Astra/Sol/Luna, Claude 5.5, :free models), Direct Claude, Gemini 3.8 Live (with System-Only Voice Relay -> Builder AI), built-in APP.fx, and Anti-503 Cascade.
+@match: ai models | select model | api keys | switch model
+@code:
+(function () {
+  const LS_PREFIX = 'wxrmr_ai_v4_';
+  const STORAGE_KEYS = {
+    selectedModel: LS_PREFIX + 'selected_model',
+    workerModel: LS_PREFIX + 'worker_model',
+    liveScope: LS_PREFIX + 'live_scope', // 'system_only' | 'full'
+    cascadeEnabled: LS_PREFIX + 'cascade_enabled',
+    geminiKey: LS_PREFIX + 'key_gemini',
+    openrouterKey: LS_PREFIX + 'key_openrouter',
+    anthropicKey: LS_PREFIX + 'key_anthropic',
+    orCache: LS_PREFIX + 'openrouter_free_cache'
+  };
+
+  const STATIC_MODELS = [
+    // --- OPENROUTER: GEMINI HYDROGEN, CHATGPT, CLAUDE & FREE ---
+    {
+      id: 'google/gemini-4-hydrogen',
+      label: 'Gemini 4 Hydrogen (via OpenRouter)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Google Gemini 4 Hydrogen via OpenRouter (coding, 3D & agentic tools).'
+    },
+    {
+      id: 'openai/gpt-6-astra',
+      label: 'ChatGPT GPT-6 Astra (via OpenRouter)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'OpenAI flagship GPT-6 Astra via OpenRouter.'
+    },
+    {
+      id: 'openai/gpt-6.2-astra',
+      label: 'ChatGPT GPT-6.2 Astra (via OpenRouter)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'OpenAI GPT-6.2 Astra with strong 3D & spatial visual reasoning via OpenRouter.'
+    },
+    {
+      id: 'openai/gpt-6-sol',
+      label: 'ChatGPT GPT-6 Sol (via OpenRouter)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Cost-efficient high-end OpenAI GPT-6 Sol via OpenRouter.'
+    },
+    {
+      id: 'openai/gpt-6-luna',
+      label: 'ChatGPT GPT-6 Luna (via OpenRouter - Fast)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Fast, low-cost OpenAI GPT-6 Luna via OpenRouter.'
+    },
+    {
+      id: 'anthropic/claude-sonnet-5.5',
+      label: 'Claude Sonnet 5.5 (via OpenRouter)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Anthropic Claude Sonnet 5.5 via OpenRouter.'
+    },
+    {
+      id: 'anthropic/claude-haiku-5.5',
+      label: 'Claude Haiku 5.5 (via OpenRouter - Fast)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Fast Anthropic Claude Haiku 5.5 via OpenRouter.'
+    },
+    {
+      id: 'anthropic/claude-opus-5.5',
+      label: 'Claude Opus 5.5 (via OpenRouter)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Flagship Anthropic Claude Opus 5.5 via OpenRouter.'
+    },
+    {
+      id: 'openrouter/free',
+      label: 'OpenRouter Free Router ($0 :free Auto)',
+      provider: 'openrouter',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Auto-routes to active $0 OpenRouter free models (plus live :free list below).'
+    },
+
+    // --- DIRECT ANTHROPIC CLAUDE ---
+    {
+      id: 'claude-sonnet-5-5',
+      label: 'Claude Sonnet 5.5 (Direct Anthropic sk-ant-...)',
+      provider: 'anthropic',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Direct Anthropic Claude Sonnet 5.5 via browser CORS.'
+    },
+    {
+      id: 'claude-haiku-5-5',
+      label: 'Claude Haiku 5.5 (Direct Anthropic sk-ant-...)',
+      provider: 'anthropic',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Fast direct Anthropic Claude Haiku 5.5.'
+    },
+    {
+      id: 'claude-opus-5-5',
+      label: 'Claude Opus 5.5 (Direct Anthropic sk-ant-...)',
+      provider: 'anthropic',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: false,
+      supportsRest: true,
+      notes: 'Flagship direct Anthropic Claude Opus 5.5.'
+    },
+
+    // --- GEMINI 3.8 LIVE (Voice + Vision WebSocket) ---
+    {
+      id: 'gemini-3.8-live',
+      label: 'Gemini 3.8 Live (Realtime Voice & Vision WS)',
+      provider: 'gemini',
+      supportsVision: true,
+      supportsTools: true,
+      supportsLiveWS: true,
+      supportsRest: false,
+      notes: 'Low-latency voice & vision WS. Choose "System Only" to answer in voice while Builder AI builds 3D!'
+    }
+  ];
+
+  const PROVIDERS = {
+    openrouter: { name: 'OpenRouter', signupUrl: 'https://openrouter.ai/keys' },
+    anthropic: { name: 'Anthropic Claude', signupUrl: 'https://console.anthropic.com' },
+    gemini: { name: 'Google Gemini 3.8 Live', signupUrl: 'https://aistudio.google.com/apikey' }
+  };
+
+  function safeLSGet(k, fb) {
+    try { const v = localStorage.getItem(k); return v !== null ? v : fb; } catch (_) { return fb; }
+  }
+  function safeLSSet(k, v) {
+    try {
+      if (v === null || v === undefined || v === '') localStorage.removeItem(k);
+      else localStorage.setItem(k, String(v));
+    } catch (_) {}
+  }
+  function cleanKey(val) {
+    return String(val || '').replace(/[\r\n\t"']/g, '').trim();
+  }
+
+  let dynamicOpenRouterModels = [];
+  let selectedModelId = safeLSGet(STORAGE_KEYS.selectedModel, 'google/gemini-4-hydrogen');
+  let workerModelId = safeLSGet(STORAGE_KEYS.workerModel, 'google/gemini-4-hydrogen');
+  let liveScope = safeLSGet(STORAGE_KEYS.liveScope, 'system_only'); // 'system_only' | 'full'
+  let cascadeEnabled = safeLSGet(STORAGE_KEYS.cascadeEnabled, '1') !== '0';
+  const orStatus = { loading: false, count: 0, lastFetched: 0, error: '' };
+
+  try {
+    const cached = JSON.parse(safeLSGet(STORAGE_KEYS.orCache, '{}'));
+    if (cached && Array.isArray(cached.models)) {
+      dynamicOpenRouterModels = cached.models;
+      orStatus.count = cached.models.length;
+      orStatus.lastFetched = cached.ts || 0;
+    }
+  } catch (_) {}
+
+  // Migrate legacy keys if present
+  const keysObj = {
+    get openrouter() { return cleanKey(safeLSGet(STORAGE_KEYS.openrouterKey, safeLSGet('wxrmr_ai_v3_key_openrouter', ''))); },
+    set openrouter(v) {
+      const c = cleanKey(v);
+      safeLSSet(STORAGE_KEYS.openrouterKey, c);
+      if (c) refreshOpenRouterFree(true);
+    },
+    get anthropic() { return cleanKey(safeLSGet(STORAGE_KEYS.anthropicKey, safeLSGet('wxrmr_ai_v3_key_anthropic', ''))); },
+    set anthropic(v) { safeLSSet(STORAGE_KEYS.anthropicKey, cleanKey(v)); },
+    get gemini() { return cleanKey(safeLSGet(STORAGE_KEYS.geminiKey, safeLSGet('wxrmr_ai_v3_key_gemini', ''))); },
+    set gemini(v) { safeLSSet(STORAGE_KEYS.geminiKey, cleanKey(v)); }
+  };
+
+  function getKey(provider) { return (keysObj[provider] || '').split(/[,\s]+/).filter(Boolean)[0] || ''; }
+  function setKey(provider, val) { if (provider in keysObj) keysObj[provider] = val; renderUI(); }
+
+  function getAllModels() {
+    const list = [...STATIC_MODELS];
+    const seen = new Set(list.map((m) => m.id));
+    for (const m of dynamicOpenRouterModels) {
+      if (!seen.has(m.id)) { seen.add(m.id); list.push(m); }
+    }
+    return list;
+  }
+
+  function getSelectedModel() {
+    const all = getAllModels();
+    const found = all.find((m) => m.id === selectedModelId);
+    if (found) return found;
+    selectedModelId = 'google/gemini-4-hydrogen';
+    safeLSSet(STORAGE_KEYS.selectedModel, selectedModelId);
+    return all.find((m) => m.id === selectedModelId) || all[0];
+  }
+
+  function getWorkerModel() {
+    const all = getAllModels().filter((m) => m.supportsRest);
+    const found = all.find((m) => m.id === workerModelId);
+    if (found) return found;
+    workerModelId = 'google/gemini-4-hydrogen';
+    safeLSSet(STORAGE_KEYS.workerModel, workerModelId);
+    return all.find((m) => m.id === workerModelId) || all[0];
+  }
+
+  function selectModel(id) {
+    const found = getAllModels().find((m) => m.id === id);
+    if (!found) return { ok: false, error: 'Model not in registry: ' + id };
+    selectedModelId = found.id;
+    safeLSSet(STORAGE_KEYS.selectedModel, selectedModelId);
+    if (found.supportsRest) {
+      workerModelId = found.id;
+      safeLSSet(STORAGE_KEYS.workerModel, workerModelId);
+    }
+    renderUI();
+    APP.emit?.('ai:changed', found);
+    APP.toolbar?.syncState?.();
+    return { ok: true, model: found };
+  }
+
+  function setWorkerModel(id) {
+    const found = getAllModels().find((m) => m.id === id && m.supportsRest);
+    if (!found) return { ok: false, error: 'Worker model must be a REST model.' };
+    workerModelId = found.id;
+    safeLSSet(STORAGE_KEYS.workerModel, workerModelId);
+    renderUI();
+    APP.emit?.('ai:changed', getSelectedModel());
+    APP.toolbar?.syncState?.();
+    return { ok: true, model: found };
+  }
+
+  function setLiveScope(scope) {
+    liveScope = scope === 'full' ? 'full' : 'system_only';
+    safeLSSet(STORAGE_KEYS.liveScope, liveScope);
+    renderUI();
+    APP.emit?.('ai:liveScope_changed', liveScope);
+    APP.toolbar?.syncState?.();
+    return liveScope;
+  }
+
+  async function refreshOpenRouterFree(force) {
+    if (orStatus.loading) return;
+    if (!force && orStatus.lastFetched && Date.now() - orStatus.lastFetched < 5 * 60 * 1000 && dynamicOpenRouterModels.length) return;
+    orStatus.loading = true;
+    orStatus.error = '';
+    renderUI();
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/models');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const rows = Array.isArray(data.data) ? data.data : [];
+      const freeList = [];
+      for (const item of rows) {
+        if (!item || !item.id || item.id === 'openrouter/free') continue;
+        const p = item.pricing || {};
+        const isZero = String(p.prompt ?? '') === '0' && String(p.completion ?? '') === '0' &&
+          Number(p.request || 0) === 0 && Number(p.image || 0) === 0;
+        if (!isZero || !item.id.endsWith(':free')) continue;
+        const outMods = item.architecture?.output_modalities || ['text'];
+        if (!outMods.includes('text')) continue;
+        const inMods = item.architecture?.input_modalities || ['text'];
+        const sp = Array.isArray(item.supported_parameters) ? item.supported_parameters : [];
+        freeList.push({
+          id: item.id,
+          label: (item.name || item.id) + ' (OpenRouter :free)',
+          provider: 'openrouter',
+          isFreeOR: true,
+          supportsVision: inMods.includes('image'),
+          supportsTools: sp.includes('tools'),
+          supportsLiveWS: false,
+          supportsRest: true,
+          notes: 'Live $0 :free OpenRouter endpoint.'
+        });
+      }
+      freeList.sort((a, b) => (b.supportsTools - a.supportsTools) || a.label.localeCompare(b.label));
+      dynamicOpenRouterModels = freeList;
+      orStatus.count = freeList.length;
+      orStatus.lastFetched = Date.now();
+      safeLSSet(STORAGE_KEYS.orCache, JSON.stringify({ ts: orStatus.lastFetched, models: freeList }));
+    } catch (e) {
+      orStatus.error = e.message || 'Failed to fetch OpenRouter :free models';
+    } finally {
+      orStatus.loading = false;
+      renderUI();
+    }
+  }
+
+  function formatApiError(status, rawText, provider, modelId) {
+    let detail = '';
+    try {
+      const p = JSON.parse(rawText || '{}');
+      detail = p.error?.message || p.choices?.[0]?.error?.message || p.message || rawText || '';
+    } catch (_) {
+      detail = String(rawText || '').slice(0, 240);
+    }
+    const pInfo = PROVIDERS[provider] || { name: provider };
+    if (status === 401 || status === 403) return `Invalid/rejected key (${status}) for ${pInfo.name}. ${detail}`;
+    if (status === 402) return `Credits required (402) on ${pInfo.name} for "${modelId}". Pick a :free OpenRouter model or add credits. ${detail}`;
+    if (status === 404) return `Model "${modelId}" unavailable (404) on ${pInfo.name}. ${detail}`;
+    if (status === 429) return `Rate limit (429) on ${pInfo.name} for "${modelId}". ${detail}`;
+    if (status === 503 || /high demand|overloaded|unavailable/i.test(detail)) return `${pInfo.name} "${modelId}" busy (503). ${detail}`;
+    return `${pInfo.name} error (${status || 'network'}) for "${modelId}": ${detail}`;
+  }
+
+  function isTransientError(err) {
+    return /\b(503|429|502|504|404)\b|high demand|overloaded|temporarily|rate limit|unavailable/i.test(String(err?.message || err || ''));
+  }
+
+  // ====================================================================
+  // BUILT-IN REALISTIC WORLD SIMULATION ENGINE: APP.fx
+  // ====================================================================
+  function removeExistingWorldFX(name) {
+    const low = String(name || '').toLowerCase();
+    const list = (APP.entities || []).filter((e) => e && e.category === 'world_fx' && (!low || e.name.toLowerCase() === low));
+    for (const ent of list) APP.removeEntity?.(ent, false);
+  }
+
+  function registerWorldFXGroup(name, group, onUpdateFn) {
+    APP.scene.add(group);
+    const ent = APP.registerEntity(group, {
+      name,
+      category: 'world_fx',
+      grabbable: false,
+      holdable: false,
+      physics: { enabled: false, gravity: false },
+      onUpdate: typeof onUpdateFn === 'function'
+        ? (dt, e) => onUpdateFn(Math.min(0.05, dt || 0.016), performance.now() * 0.001, e)
+        : null
+    });
+    APP.lastEntityId = ent.id;
+    return { ok: true, id: ent.id, name: ent.name, group, message: `Activated ${name}.` };
+  }
+
+  const fxEngine = {
+    clear(name) {
+      removeExistingWorldFX(name || '');
+      return { ok: true, message: name ? `Cleared ${name}.` : 'Cleared all world effects.' };
+    },
+    water(opts = {}) {
+      const THREE = APP.THREE;
+      if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+      removeExistingWorldFX('Water Simulation');
+      const size = Number(opts.size || 10), yLevel = Number(opts.y || 0.035), group = new THREE.Group();
+      group.name = 'Water Simulation';
+      const uniforms = {
+        uTime: { value: 0 },
+        uDeepCol: { value: new THREE.Color(opts.deepColor || 0x042b44) },
+        uShallowCol: { value: new THREE.Color(opts.color || 0x0ea5e9) },
+        uFoamCol: { value: new THREE.Color(0xdcf6ff) }
+      };
+      const mat = new THREE.ShaderMaterial({
+        uniforms, transparent: true, side: THREE.DoubleSide,
+        vertexShader: [
+          'uniform float uTime; varying vec3 vWorldPos; varying vec3 vNormalW; varying float vCrest;',
+          'void main() {',
+          '  vec3 p = position;',
+          '  float w1 = sin(p.x * 2.2 + uTime * 2.1) * cos(p.y * 1.9 + uTime * 1.7) * 0.045;',
+          '  float w2 = sin(p.x * 5.4 - uTime * 3.3 + p.y * 3.1) * 0.018;',
+          '  float w3 = cos(length(p.xy) * 4.5 - uTime * 3.8) * 0.014;',
+          '  float h = w1 + w2 + w3; p.z += h; vCrest = smoothstep(0.015, 0.068, h);',
+          '  float dx = 2.2 * cos(p.x * 2.2 + uTime * 2.1) * cos(p.y * 1.9 + uTime * 1.7) * 0.045 + 5.4 * cos(p.x * 5.4 - uTime * 3.3 + p.y * 3.1) * 0.018;',
+          '  float dy = -1.9 * sin(p.x * 2.2 + uTime * 2.1) * sin(p.y * 1.9 + uTime * 1.7) * 0.045 + 3.1 * cos(p.x * 5.4 - uTime * 3.3 + p.y * 3.1) * 0.018;',
+          '  vec4 wp = modelMatrix * vec4(p, 1.0); vWorldPos = wp.xyz; vNormalW = normalize(mat3(modelMatrix) * normalize(vec3(-dx, -dy, 1.0)));',
+          '  gl_Position = projectionMatrix * viewMatrix * wp;',
+          '}'
+        ].join('\n'),
+        fragmentShader: [
+          'uniform float uTime; uniform vec3 uDeepCol; uniform vec3 uShallowCol; uniform vec3 uFoamCol;',
+          'varying vec3 vWorldPos; varying vec3 vNormalW; varying float vCrest;',
+          'void main() {',
+          '  vec3 V = normalize(cameraPosition - vWorldPos); vec3 N = normalize(vNormalW);',
+          '  float fresnel = pow(1.0 - max(0.0, dot(V, N)), 3.2); vec3 H = normalize(normalize(vec3(0.45, 0.85, 0.35)) + V);',
+          '  float spec = pow(max(0.0, dot(N, H)), 96.0); float caustic = sin(vWorldPos.x * 7.5 + uTime * 2.5) * cos(vWorldPos.z * 7.5 - uTime * 2.1);',
+          '  vec3 base = mix(uDeepCol, uShallowCol, 0.35 + fresnel * 0.65 + vCrest * 0.25) + vec3(0.12, 0.32, 0.42) * max(0.0, caustic) * 0.35;',
+          '  base = mix(base, uFoamCol, vCrest * 0.45) + vec3(1.0, 0.98, 0.92) * spec * 1.35;',
+          '  float edgeFade = 1.0 - smoothstep(0.36, 0.50, length(vWorldPos.xz - (modelMatrix * vec4(0.0,0.0,0.0,1.0)).xz) / ' + size.toFixed(1) + ');',
+          '  gl_FragColor = vec4(base, clamp((0.68 + fresnel * 0.28 + spec * 0.3) * edgeFade, 0.0, 0.96));',
+          '}'
+        ].join('\n')
+      });
+      const waterMesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size, 72, 72), mat);
+      waterMesh.rotation.x = -Math.PI / 2; waterMesh.position.y = yLevel; group.add(waterMesh);
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0); group.position.set(hp.x, 0, hp.z);
+      return registerWorldFXGroup('Water Simulation', group, (dt, elapsed) => { uniforms.uTime.value = elapsed; });
+    },
+    rain(opts = {}) {
+      const THREE = APP.THREE;
+      if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+      removeExistingWorldFX('Rainstorm Simulation');
+      const group = new THREE.Group(); group.name = 'Rainstorm Simulation';
+      const dropCount = Number(opts.count || 1600), posArr = new Float32Array(dropCount * 6), speeds = new Float32Array(dropCount);
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0), spread = 11.0;
+      for (let i = 0; i < dropCount; i++) {
+        const x = hp.x + (Math.random() - 0.5) * spread, y = Math.random() * 6.0, z = hp.z + (Math.random() - 0.5) * spread;
+        const spd = 7.5 + Math.random() * 4.5; speeds[i] = spd;
+        const len = spd * 0.028, i6 = i * 6;
+        posArr[i6] = x; posArr[i6 + 1] = y; posArr[i6 + 2] = z; posArr[i6 + 3] = x + 0.015; posArr[i6 + 4] = y + len; posArr[i6 + 5] = z + 0.01;
+      }
+      const rainGeo = new THREE.BufferGeometry(); rainGeo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+      const rainLines = new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({ color: 0xa5d8ff, transparent: true, opacity: 0.48, blending: THREE.AdditiveBlending, depthWrite: false }));
+      rainLines.frustumCulled = false; group.add(rainLines);
+      return registerWorldFXGroup('Rainstorm Simulation', group, (dt) => {
+        const curHp = APP.headPos || new THREE.Vector3(0, 1.5, 0), arr = rainGeo.attributes.position.array;
+        for (let i = 0; i < dropCount; i++) {
+          const i6 = i * 6, dy = speeds[i] * dt, dx = 0.45 * dt;
+          arr[i6] -= dx; arr[i6 + 1] -= dy; arr[i6 + 3] -= dx; arr[i6 + 4] -= dy;
+          if (arr[i6 + 1] < 0) {
+            const nx = curHp.x + (Math.random() - 0.5) * spread, ny = 5.4 + Math.random() * 1.2, nz = curHp.z + (Math.random() - 0.5) * spread, len = speeds[i] * 0.028;
+            arr[i6] = nx; arr[i6 + 1] = ny; arr[i6 + 2] = nz; arr[i6 + 3] = nx + 0.015; arr[i6 + 4] = ny + len; arr[i6 + 5] = nz + 0.01;
+          }
+        }
+        rainGeo.attributes.position.needsUpdate = true;
+      });
+    },
+    snow(opts = {}) {
+      const THREE = APP.THREE;
+      if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+      removeExistingWorldFX('Snowfall Simulation');
+      const group = new THREE.Group(); group.name = 'Snowfall Simulation';
+      const count = Number(opts.count || 1400), posArr = new Float32Array(count * 3), phases = new Float32Array(count), speeds = new Float32Array(count);
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0), spread = 11.0;
+      for (let i = 0; i < count; i++) {
+        posArr[i * 3] = hp.x + (Math.random() - 0.5) * spread; posArr[i * 3 + 1] = Math.random() * 5.8; posArr[i * 3 + 2] = hp.z + (Math.random() - 0.5) * spread;
+        phases[i] = Math.random() * 6.283; speeds[i] = 0.45 + Math.random() * 0.75;
+      }
+      const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+      const pts = new THREE.Points(geo, new THREE.ShaderMaterial({
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        uniforms: { uSize: { value: 24.0 * (window.devicePixelRatio || 1) } },
+        vertexShader: 'uniform float uSize; void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = clamp(uSize / max(0.4, -mv.z), 2.0, 18.0); gl_Position = projectionMatrix * mv; }',
+        fragmentShader: 'void main() { float d = length(gl_PointCoord - vec2(0.5)) * 2.0; if (d > 1.0) discard; gl_FragColor = vec4(0.92, 0.96, 1.0, pow(1.0 - d, 2.2) * 0.9); }'
+      }));
+      pts.frustumCulled = false; group.add(pts);
+      return registerWorldFXGroup('Snowfall Simulation', group, (dt, elapsed) => {
+        const curHp = APP.headPos || new THREE.Vector3(0, 1.5, 0), arr = geo.attributes.position.array;
+        for (let i = 0; i < count; i++) {
+          const i3 = i * 3, ph = phases[i] + elapsed * 1.4;
+          arr[i3] += Math.sin(ph) * 0.25 * dt; arr[i3 + 1] -= speeds[i] * dt; arr[i3 + 2] += Math.cos(ph * 0.8) * 0.25 * dt;
+          if (arr[i3 + 1] < 0) { arr[i3] = curHp.x + (Math.random() - 0.5) * spread; arr[i3 + 1] = 5.6 + Math.random() * 0.5; arr[i3 + 2] = curHp.z + (Math.random() - 0.5) * spread; }
+        }
+        geo.attributes.position.needsUpdate = true;
+      });
+    },
+    lavaFloor(opts = {}) {
+      const THREE = APP.THREE;
+      if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+      removeExistingWorldFX('Lava Floor');
+      const group = new THREE.Group(); group.name = 'Lava Floor'; const uniforms = { uTime: { value: 0 } };
+      const mat = new THREE.ShaderMaterial({
+        uniforms, transparent: true, side: THREE.DoubleSide,
+        vertexShader: 'uniform float uTime; varying vec2 vUv; varying vec3 vWPos; void main() { vUv = uv; vec3 p = position; p.z += sin(p.x * 1.3 + uTime * 0.9) * cos(p.y * 1.3 - uTime * 0.7) * 0.03; vec4 wp = modelMatrix * vec4(p, 1.0); vWPos = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }',
+        fragmentShader: 'uniform float uTime; varying vec2 vUv; varying vec3 vWPos; float lHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);} float lNoise(vec2 p){vec2 i=floor(p);vec2 f=fract(p);f=f*f*(3.0-2.0*f);return mix(mix(lHash(i),lHash(i+vec2(1,0)),f.x),mix(lHash(i+vec2(0,1)),lHash(i+vec2(1,1)),f.x),f.y);} float lFbm(vec2 p){float v=0.0;float a=0.55;for(int i=0;i<4;i++){v+=a*lNoise(p);p*=2.05;a*=0.5;}return v;} void main(){vec2 p=vWPos.xz*0.9;float n1=lFbm(p+vec2(uTime*0.08,-uTime*0.06));float n2=lFbm(p*1.8-vec2(uTime*0.05,uTime*0.09)+n1);float crack=smoothstep(0.42,0.74,n2);vec3 col=mix(vec3(0.06,0.03,0.025),mix(vec3(0.95,0.16,0.01),vec3(1.0,0.78,0.18),pow(crack,2.0))*1.45,crack);float fade=1.0-smoothstep(0.38,0.50,length(vUv-0.5));gl_FragColor=vec4(col,fade*0.96);}'
+      });
+      const floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(18, 18, 48, 48), mat);
+      floorMesh.rotation.x = -Math.PI / 2; floorMesh.position.y = 0.015; group.add(floorMesh);
+      const lavaLight = new THREE.PointLight(0xff5500, 2.4, 12); lavaLight.position.set(0, 0.9, 0); group.add(lavaLight);
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0); group.position.set(hp.x, 0, hp.z);
+      return registerWorldFXGroup('Lava Floor', group, (dt, elapsed) => { uniforms.uTime.value = elapsed; lavaLight.intensity = 2.1 + Math.sin(elapsed * 4.2) * 0.45; });
+    }
+  };
+  APP.fx = fxEngine;
+
+  // ====================================================================
+  // UNRESTRICTED WORLD-FX TOOL
+  // ====================================================================
+  const WORLD_FX_TOOL_PURE = {
+    name: 'run_world_fx',
+    description: 'Execute custom room-scale Three.js js_code (shaders, fluids, waves, particles, physics, weather, animations) at 1:1 world scale.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Effect name.' },
+        replace_existing: { type: 'boolean', description: 'Replace previous effect with same name.' },
+        js_code: { type: 'string', description: 'REQUIRED Three.js JS body receiving (APP, scene, group, THREE, V3).' }
+      },
+      required: ['name', 'js_code']
+    }
+  };
+
+  const WORLD_FX_TOOL_HYBRID = {
+    name: 'run_world_fx',
+    description: 'Execute room-scale Three.js simulations/effects: custom js_code OR optional preset ("water"|"rain"|"snow"|"lava").',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Effect name.' },
+        preset: { type: 'string', description: 'Optional preset: water | rain | snow | lava.' },
+        replace_existing: { type: 'boolean', description: 'Replace previous effect with same name.' },
+        js_code: { type: 'string', description: 'Custom JS body receiving (APP, scene, group, THREE, V3).' }
+      },
+      required: ['name']
+    }
+  };
+
+  function executeWorldFX(args = {}, pureAIMode = false) {
+    const p = String(args.preset || '').toLowerCase().trim();
+    if (!pureAIMode && !args.js_code) {
+      if (p === 'water' || /\b(water|ocean|sea|pool)\b/i.test(args.name || '')) return fxEngine.water(args);
+      if (p === 'rain' || /\b(rain|storm)\b/i.test(args.name || '')) return fxEngine.rain(args);
+      if (p === 'snow' || /\b(snow|snowing|blizzard)\b/i.test(args.name || '')) return fxEngine.snow(args);
+      if (p === 'lava' || /\b(lava|magma)\b/i.test(args.name || '')) return fxEngine.lavaFloor(args);
+    }
+
+    const THREE = APP.THREE;
+    if (!THREE || !APP.scene) return { ok: false, error: 'Scene not initialized.' };
+    const clean = String(args.js_code || '').trim().replace(/^```(?:javascript|js)?/i, '').replace(/```$/i, '').trim();
+    if (!clean) return { ok: false, error: 'Missing js_code!' };
+
+    const name = String(args.name || 'WorldFX').trim();
+    if (args.replace_existing) removeExistingWorldFX(name);
+    const group = new THREE.Group(); group.name = name;
+    const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+
+    try {
+      const beforeSceneCount = APP.scene.children.length;
+      const fn = new Function('APP', 'scene', 'group', 'THREE', 'V3', clean);
+      fn(APP, APP.scene, group, THREE, V3);
+      if (group.children.length === 0 && APP.scene.children.length > beforeSceneCount) {
+        const added = APP.scene.children.slice(beforeSceneCount);
+        for (const obj of added) { if (obj && obj !== group) { APP.scene.remove(obj); group.add(obj); } }
+      }
+      const hasUpdate = typeof group.userData?.onUpdate === 'function';
+      if (group.children.length === 0 && !hasUpdate) return { ok: false, error: 'js_code added 0 meshes to `group`.' };
+      const res = registerWorldFXGroup(name, group, hasUpdate ? group.userData.onUpdate : null);
+      APP.visual?.completeConstruction?.(group);
+      return res;
+    } catch (err) {
+      APP.disposeObject3D?.(group);
+      return { ok: false, error: `${err.name}: ${err.message}` };
+    }
+  }
+
+  function tryParseLooseJSON(rawStr) {
+    if (!rawStr) return {};
+    if (typeof rawStr === 'object') return rawStr;
+    try { return JSON.parse(rawStr); } catch (_) {}
+    try {
+      const fixed = String(rawStr).replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, (m) => m.replace(/\r?\n/g, '\\n'));
+      return JSON.parse(fixed);
+    } catch (_) {
+      return {};
+    }
+  }
+
+  const PURE_AI_FX_PROMPT = [
+    '',
+    '100% PURE CREATIVE AI MODE (NO PRESETS!):',
+    '- Write ORIGINAL custom Three.js code inside `create_procedural_object(name, js_code)` or `run_world_fx(name, js_code)`.',
+    '- NEVER refuse or take shortcuts.'
+  ].join('\n');
+
+  const HYBRID_FX_PROMPT = [
+    '',
+    'UNLIMITED WORLD & VFX EXECUTION CAPABILITY:',
+    '- You can create ANY weather, fluid simulation, shader, floor transformation, or 3D object.',
+    '- NEVER refuse ("sorry", "too complicated", "I cannot").'
+  ].join('\n');
+
+  function enhanceOptsFor3DCapability(opts) {
+    const is3DSession = Array.isArray(opts.tools) && opts.tools.some((t) => t && t.name === 'create_procedural_object');
+    if (!is3DSession) return opts;
+
+    const pureAI = !!opts.ignoreInstructions;
+    const fxTool = pureAI ? WORLD_FX_TOOL_PURE : WORLD_FX_TOOL_HYBRID;
+    const nextTools = opts.tools.map((t) => (t && t.name === 'run_world_fx' ? fxTool : t));
+    if (!nextTools.some((t) => t.name === 'run_world_fx')) nextTools.push(fxTool);
+
+    const origOnToolCall = opts.onToolCall;
+    const wrappedOnToolCall = async (name, args) => {
+      if (name === 'run_world_fx') return executeWorldFX(args || {}, pureAI);
+      return typeof origOnToolCall === 'function' ? await origOnToolCall(name, args) : { ok: false, error: 'No tool handler.' };
+    };
+
+    return Object.assign({}, opts, {
+      tools: nextTools,
+      systemPrompt: String(opts.systemPrompt || '') + (pureAI ? PURE_AI_FX_PROMPT : HYBRID_FX_PROMPT),
+      onToolCall: wrappedOnToolCall,
+      _is3DSession: true
+    });
+  }
+
+  function sanitizeSchema(schema) {
+    if (!schema || typeof schema !== 'object') {
+      return { type: 'object', properties: { note: { type: 'string', description: 'Optional note' } } };
+    }
+    const copy = JSON.parse(JSON.stringify(schema));
+    if (!copy.type) copy.type = 'object';
+    if (copy.type === 'object') {
+      if (!copy.properties || typeof copy.properties !== 'object' || Object.keys(copy.properties).length === 0) {
+        copy.properties = { note: { type: 'string', description: 'Optional note' } };
+      } else {
+        for (const k of Object.keys(copy.properties)) {
+          if (copy.properties[k]?.type === 'object') copy.properties[k] = sanitizeSchema(copy.properties[k]);
+        }
+      }
+    }
+    return copy;
+  }
+
+  function normalizeTools(tools) {
+    if (!Array.isArray(tools) || !tools.length) return [];
+    return tools.filter((t) => t && t.name).map((t) => ({
+      name: String(t.name),
+      description: String(t.description || t.name),
+      parameters: sanitizeSchema(t.parameters)
+    }));
+  }
+
+  function extractEmulatedToolCalls(text) {
+    const calls = [];
+    const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
+    let m;
+    while ((m = regex.exec(text)) !== null) {
+      const obj = tryParseLooseJSON(m[1]);
+      if (obj && obj.name) calls.push({ name: obj.name, args: obj.args || obj.arguments || {} });
+    }
+    return { calls, cleanText: String(text || '').replace(regex, '').trim() };
+  }
+
+  // ====================================================================
+  // PROVIDER 1: OpenRouter (Gemini 4 Hydrogen, ChatGPT GPT-6, Claude, :free)
+  // ====================================================================
+  async function runOpenAICompatChat(model, apiKey, opts) {
+    const endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+    const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey };
+    const origin = window.location.origin;
+    headers['HTTP-Referer'] = (origin && origin !== 'null') ? origin : 'https://github.io';
+    headers['X-Title'] = 'NexusXR Mixed Reality Studio';
+
+    const rawTools = normalizeTools(opts.tools);
+    const cleanTools = rawTools.map((t) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.parameters }
+    }));
+
+    const useNativeTools = cleanTools.length > 0 && model.supportsTools !== false;
+
+    async function executeLoop(nativeToolsMode) {
+      const messages = [];
+      let sysPrompt = String(opts.systemPrompt || '');
+      if (!nativeToolsMode && rawTools.length) {
+        const toolSpec = rawTools.map((t) => `- ${t.name}(${Object.keys(t.parameters.properties || {}).join(', ')}): ${t.description}`).join('\n');
+        sysPrompt += '\n\nTO EXECUTE TOOLS, emit:\n<tool_call>{"name":"tool_name","args":{...}}</tool_call>\nAvailable tools:\n' + toolSpec;
+      }
+      if (sysPrompt) messages.push({ role: 'system', content: sysPrompt });
+
+      const inputMsgs = Array.isArray(opts.messages) ? opts.messages : [];
+      for (let i = 0; i < inputMsgs.length; i++) {
+        const m = inputMsgs[i];
+        if (!m) continue;
+        const role = m.role === 'assistant' ? 'assistant' : 'user';
+        if (i === inputMsgs.length - 1 && role === 'user' && opts.imageB64 && model.supportsVision) {
+          const url = String(opts.imageB64).startsWith('data:') ? opts.imageB64 : 'data:image/jpeg;base64,' + opts.imageB64;
+          messages.push({ role: 'user', content: [{ type: 'text', text: String(m.content || '') }, { type: 'image_url', image_url: { url } }] });
+        } else {
+          messages.push({ role, content: String(m.content || '') });
+        }
+      }
+      if (messages.length === (sysPrompt ? 1 : 0)) messages.push({ role: 'user', content: String(opts.prompt || 'Hello') });
+
+      const maxSteps = Math.max(1, Math.min(8, opts.maxSteps || 5));
+      const toolTrace = [];
+      let finalText = '';
+
+      for (let step = 0; step < maxSteps; step++) {
+        const payload = { model: model.id, messages };
+        if (nativeToolsMode && cleanTools.length) { payload.tools = cleanTools; payload.tool_choice = 'auto'; }
+
+        const res = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload) });
+        const rawTxt = await res.text();
+        if (!res.ok) {
+          const err = new Error(formatApiError(res.status, rawTxt, model.provider, model.id));
+          err._raw = rawTxt;
+          throw err;
+        }
+
+        const data = JSON.parse(rawTxt);
+        if (data.error || data.choices?.[0]?.error) {
+          const eObj = data.error || data.choices[0].error;
+          throw new Error(formatApiError(eObj.code || 502, JSON.stringify({ error: eObj }), model.provider, model.id));
+        }
+
+        const msg = data.choices?.[0]?.message;
+        if (!msg) throw new Error('Empty response from OpenRouter');
+
+        const entry = { role: 'assistant', content: msg.content || '' };
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) entry.tool_calls = msg.tool_calls;
+        messages.push(entry);
+
+        if (nativeToolsMode) {
+          if (msg.content) finalText = String(msg.content).trim();
+          const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+          if (!toolCalls.length || typeof opts.onToolCall !== 'function') break;
+
+          for (const tc of toolCalls) {
+            const fnName = tc.function?.name;
+            const args = tryParseLooseJSON(tc.function?.arguments);
+            let resultObj;
+            try {
+              const out = await opts.onToolCall(fnName, args);
+              resultObj = (out && typeof out === 'object') ? out : { result: out === undefined ? 'ok' : out };
+            } catch (err) {
+              resultObj = { ok: false, error: err.message || String(err) };
+            }
+            toolTrace.push({ name: fnName, args, result: resultObj });
+            messages.push({ role: 'tool', tool_call_id: tc.id || ('call_' + fnName + '_' + step), name: fnName, content: JSON.stringify(resultObj) });
+          }
+        } else {
+          const { calls, cleanText } = extractEmulatedToolCalls(msg.content || '');
+          if (cleanText) finalText = cleanText;
+          if (!calls.length || typeof opts.onToolCall !== 'function') break;
+
+          const resultsSummary = [];
+          for (const c of calls) {
+            let resultObj;
+            try {
+              const out = await opts.onToolCall(c.name, c.args || {});
+              resultObj = (out && typeof out === 'object') ? out : { result: out === undefined ? 'ok' : out };
+            } catch (err) {
+              resultObj = { ok: false, error: err.message || String(err) };
+            }
+            toolTrace.push({ name: c.name, args: c.args || {}, result: resultObj });
+            resultsSummary.push(`${c.name} -> ${JSON.stringify(resultObj)}`);
+          }
+          messages.push({ role: 'user', content: 'Tool results:\n' + resultsSummary.join('\n') + '\nFinish or fix any errors.' });
+        }
+      }
+      return { ok: true, modelId: model.id, provider: 'openrouter', text: finalText, toolTrace };
+    }
+
+    try { return await executeLoop(useNativeTools); }
+    catch (err) {
+      if (useNativeTools && /tool|function|404|400/i.test(String(err.message || '') + String(err._raw || ''))) {
+        return await executeLoop(false);
+      }
+      throw err;
+    }
+  }
+
+  // ====================================================================
+  // PROVIDER 2: Direct Anthropic Claude (max_tokens 8192)
+  // ====================================================================
+  async function runAnthropicChat(model, apiKey, opts) {
+    const cleanTools = normalizeTools(opts.tools).map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+    const messages = [];
+    const inputMsgs = Array.isArray(opts.messages) ? opts.messages : [];
+    for (let i = 0; i < inputMsgs.length; i++) {
+      const m = inputMsgs[i];
+      if (!m) continue;
+      const role = m.role === 'assistant' ? 'assistant' : 'user';
+      if (i === inputMsgs.length - 1 && role === 'user' && opts.imageB64) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: opts.imageMime || 'image/jpeg', data: String(opts.imageB64).replace(/^data:image\/\w+;base64,/, '') } },
+            { type: 'text', text: String(m.content || '') }
+          ]
+        });
+      } else {
+        messages.push({ role, content: String(m.content || '') });
+      }
+    }
+    if (!messages.length) messages.push({ role: 'user', content: String(opts.prompt || 'Hello') });
+
+    const maxSteps = Math.max(1, Math.min(8, opts.maxSteps || 5));
+    const toolTrace = [];
+    let finalText = '';
+
+    for (let step = 0; step < maxSteps; step++) {
+      const body = { model: model.id, max_tokens: 8192, messages };
+      if (opts.systemPrompt) body.system = String(opts.systemPrompt);
+      if (cleanTools.length) body.tools = cleanTools;
+
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify(body)
+      });
+      const rawTxt = await res.text();
+      if (!res.ok) throw new Error(formatApiError(res.status, rawTxt, 'anthropic', model.id));
+
+      const data = JSON.parse(rawTxt);
+      const blocks = Array.isArray(data.content) ? data.content : [];
+      messages.push({ role: 'assistant', content: blocks });
+
+      const textChunks = [], toolUses = [];
+      for (const b of blocks) {
+        if (b.type === 'text' && b.text) textChunks.push(b.text);
+        if (b.type === 'tool_use') toolUses.push(b);
+      }
+      if (textChunks.length) finalText = textChunks.join('\n').trim();
+      if (!toolUses.length || typeof opts.onToolCall !== 'function') break;
+
+      const toolResults = [];
+      for (const tu of toolUses) {
+        let resultObj;
+        try {
+          const out = await opts.onToolCall(tu.name, tu.input || {});
+          resultObj = (out && typeof out === 'object') ? out : { result: out === undefined ? 'ok' : out };
+        } catch (err) {
+          resultObj = { ok: false, error: err.message || String(err) };
+        }
+        toolTrace.push({ name: tu.name, args: tu.input || {}, result: resultObj });
+        toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(resultObj) });
+      }
+      messages.push({ role: 'user', content: toolResults });
+    }
+    return { ok: true, modelId: model.id, provider: 'anthropic', text: finalText, toolTrace };
+  }
+
+  async function invokeSingleModel(model, apiKey, opts) {
+    if (model.provider === 'anthropic') return await runAnthropicChat(model, apiKey, opts);
+    return await runOpenAICompatChat(model, apiKey, opts);
+  }
+
+  function buildCascadeCandidates(primaryModel) {
+    const all = getAllModels().filter((m) => m.supportsRest && m.id !== primaryModel.id);
+    const priorityIds = [
+      'google/gemini-4-hydrogen',
+      'openai/gpt-6-astra',
+      'openai/gpt-6-sol',
+      'anthropic/claude-sonnet-5.5',
+      'anthropic/claude-haiku-5.5',
+      'openai/gpt-6-luna',
+      'openrouter/free',
+      'claude-sonnet-5-5',
+      'claude-haiku-5-5'
+    ];
+    const ordered = [];
+    for (const pid of priorityIds) {
+      const m = all.find((x) => x.id === pid);
+      if (m && getKey(m.provider)) ordered.push(m);
+    }
+    for (const m of all) {
+      if (m.isFreeOR && getKey(m.provider) && !ordered.includes(m)) {
+        ordered.push(m);
+        if (ordered.length >= 12) break;
+      }
+    }
+    return ordered;
+  }
+
+  function looksLikeRefusal(res) {
+    if (!res || !res.ok || (res.toolTrace && res.toolTrace.length > 0)) return false;
+    return /\b(sorry|cannot|can't|couldn't|unable|too complicated|not part of|don't have|no way to|impossible|not supported|as an ai|i'm an ai)\b|لا أستطيع|آسف|غير متاح|معقد/i.test(String(res.text || ''));
+  }
+
+  async function chatWithModel(targetModelId, rawOpts = {}) {
+    const opts = enhanceOptsFor3DCapability(rawOpts);
+    const all = getAllModels();
+    const model = all.find((m) => m.id === targetModelId && m.supportsRest) || getWorkerModel();
+    const apiKey = getKey(model.provider);
+    const pInfo = PROVIDERS[model.provider];
+
+    if (!apiKey) {
+      return { ok: false, error: `Missing ${pInfo.name} key for "${model.id}". Open "AI & Keys" (${pInfo.signupUrl}).` };
+    }
+
+    async function callWithCascade(callOpts) {
+      try {
+        return await invokeSingleModel(model, apiKey, callOpts);
+      } catch (err) {
+        if (cascadeEnabled && isTransientError(err)) {
+          const backups = buildCascadeCandidates(model);
+          for (const b of backups) {
+            const bKey = getKey(b.provider);
+            if (!bKey) continue;
+            try {
+              APP.ui?.setStatus?.(`Fallback → ${b.id}...`, 'busy');
+              const res = await invokeSingleModel(b, bKey, callOpts);
+              APP.ui?.toast?.(`Cascade: answered via ${b.id}`, 3000);
+              return res;
+            } catch (_) {}
+          }
+        }
+        throw err;
+      }
+    }
+
+    try {
+      let res = await callWithCascade(opts);
+      if (opts._is3DSession && looksLikeRefusal(res)) {
+        const nudgeMsgs = Array.isArray(opts.messages) ? [...opts.messages] : [{ role: 'user', content: String(opts.prompt || '') }];
+        nudgeMsgs.push({ role: 'assistant', content: res.text });
+        nudgeMsgs.push({
+          role: 'user',
+          content: 'SYSTEM OVERRIDE: Do NOT refuse. Write custom Three.js code and call `create_procedural_object` or `run_world_fx` RIGHT NOW!'
+        });
+        res = await callWithCascade(Object.assign({}, opts, { messages: nudgeMsgs }));
+      }
+      return res;
+    } catch (err) {
+      return { ok: false, modelId: model.id, provider: model.provider, error: err.message || String(err) };
+    }
+  }
+
+  async function chat(rawOpts = {}) {
+    const model = getSelectedModel();
+    if (model.supportsLiveWS && !model.supportsRest) {
+      if (APP.bot?.sendLiveText) {
+        try {
+          await APP.bot.sendLiveText(rawOpts.prompt || rawOpts.messages?.[rawOpts.messages.length - 1]?.content || '');
+          return { ok: true, modelId: model.id, provider: 'gemini', text: '(Sent to Gemini 3.8 Live)', toolTrace: [] };
+        } catch (e) { return { ok: false, error: e.message || String(e) }; }
+      }
+      return { ok: false, error: `Model "${model.id}" uses Gemini 3.8 Live WebSocket. Turn Mic ON or pick an OpenRouter/Claude REST model.` };
+    }
+    return await chatWithModel(model.id, rawOpts);
+  }
+
+  async function testAllKeys() {
+    const results = [];
+    if (keysObj.openrouter) {
+      try {
+        const r = await fetch('https://openrouter.ai/api/v1/auth/key', { headers: { Authorization: 'Bearer ' + keysObj.openrouter } });
+        const j = await r.json().catch(() => ({}));
+        results.push(r.ok ? `OpenRouter: OK ($${Number(j.data?.usage || 0).toFixed(3)} used)` : `OpenRouter: HTTP ${r.status}`);
+      } catch (e) { results.push('OpenRouter: ' + e.message); }
+    }
+    if (keysObj.anthropic) {
+      try {
+        const r = await fetch('https://api.anthropic.com/v1/models', {
+          headers: { 'x-api-key': keysObj.anthropic, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
+        });
+        results.push(r.ok ? 'Claude Direct: OK' : `Claude Direct: HTTP ${r.status}`);
+      } catch (e) { results.push('Claude Direct: ' + e.message); }
+    }
+    if (getKey('gemini')) {
+      try {
+        const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(getKey('gemini')));
+        results.push(r.ok ? 'Gemini 3.8 Live Key: OK' : `Gemini Live Key: HTTP ${r.status}`);
+      } catch (e) { results.push('Gemini Live Key: ' + e.message); }
+    }
+    return results.length ? results.join(' | ') : 'No API keys entered yet.';
+  }
+
+  async function runTurn(userText, opts = {}) {
+    const clean = String(userText || '').trim();
+    if (APP.bot && typeof APP.bot.handleCommand === 'function') {
+      return await APP.bot.handleCommand(clean, opts);
+    }
+
+    const res = await chat({
+      ignoreInstructions: !!opts.ignoreInstructions,
+      systemPrompt: 'You are Geeny, an unlimited WebXR Mixed Reality AI. Write custom Three.js code using create_procedural_object or run_world_fx immediately.',
+      tools: [opts.ignoreInstructions ? WORLD_FX_TOOL_PURE : WORLD_FX_TOOL_HYBRID],
+      prompt: clean,
+      onToolCall: async (n, a) => (n === 'run_world_fx' ? executeWorldFX(a, !!opts.ignoreInstructions) : { ok: false })
+    });
+    if (!res.ok) APP.ui?.toast?.(res.error, 6000);
+    else APP.ui?.toast?.(res.text || 'Done.');
+    return res;
+  }
+
+  function renderUI() {
+    const mount = document.getElementById('modal-ai-body');
+    if (!mount) return;
+    const all = getAllModels();
+    const cur = getSelectedModel();
+    const worker = getWorkerModel();
+
+    if (!mount.dataset.built) {
+      mount.dataset.built = '1';
+      mount.innerHTML = [
+        '<div style="font-size:12px;color:#94a3b8;line-height:1.45;background:rgba(255,255,255,0.04);padding:10px;border-radius:10px;">',
+        '  <strong style="color:#00f0b4;">OpenRouter + Claude + Gemini 3.8 Live Setup:</strong><br>',
+        '  • <strong>OpenRouter</strong> (<code>sk-or-...</code>): Access <em>Gemini 4 Hydrogen</em>, <em>ChatGPT GPT-6 Astra/Sol/Luna</em>, <em>Claude 5.5</em> &amp; free <code>:free</code> models in one key.<br>',
+        '  • <strong>Direct Claude</strong> (<code>sk-ant-...</code>) &amp; <strong>Gemini 3.8 Live</strong> (<code>AIza...</code> for real-time voice).',
+        '</div>',
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;">',
+        '  <label style="font-size:12px;font-weight:600;">Primary Active Model</label>',
+        '  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">',
+        '    <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;">',
+        '      <input type="checkbox" id="aim-cascade-chk" ' + (cascadeEnabled ? 'checked' : '') + '> Auto Cascade',
+        '    </label>',
+        '    <button type="button" class="btn" id="aim-refresh-or">Refresh :free</button>',
+        '    <button type="button" class="btn" id="aim-test-keys">Test Keys</button>',
+        '  </div>',
+        '</div>',
+        '<select id="aim-select" style="width:100%;margin-top:4px;"></select>',
+        '<div id="aim-meta" style="font-size:11px;color:#94a3b8;margin-top:4px;"></div>',
+
+        '<div style="margin-top:10px;padding:9px;border-radius:10px;border:1px solid rgba(56,189,248,0.3);background:rgba(56,189,248,0.06);">',
+        '  <div style="font-size:12px;font-weight:700;color:#7dd3fc;">Gemini 3.8 Live Voice Mode</div>',
+        '  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">',
+        '    <label style="font-size:11px;">Live Scope',
+        '      <select id="aim-live-scope" style="width:100%;margin-top:2px;">',
+        '        <option value="system_only">System Only (Voice answers + Builder AI generates)</option>',
+        '        <option value="full">System + AI Requests (Live handles everything)</option>',
+        '      </select>',
+        '    </label>',
+        '    <label style="font-size:11px;">Builder AI Model (when System Only)',
+        '      <select id="aim-worker-select" style="width:100%;margin-top:2px;"></select>',
+        '    </label>',
+        '  </div>',
+        '</div>',
+
+        '<div id="aim-test-out" style="font-size:11px;color:#00f0b4;margin-top:6px;"></div>',
+        '<div style="display:grid;gap:7px;margin-top:8px;">',
+        '  <label style="font-size:12px;">OpenRouter Key (sk-or-... — Gemini Hydrogen, ChatGPT, Claude &amp; :free)<input id="aim-k-or" type="password" placeholder="sk-or-..." style="width:100%;margin-top:2px;"></label>',
+        '  <label style="font-size:12px;">Google Gemini Key (AIza... — for Gemini 3.8 Live Voice)<input id="aim-k-gemini" type="password" placeholder="AIza..." style="width:100%;margin-top:2px;"></label>',
+        '  <label style="font-size:12px;">Direct Anthropic Claude Key (sk-ant-... optional)<input id="aim-k-anthropic" type="password" placeholder="sk-ant-..." style="width:100%;margin-top:2px;"></label>',
+        '</div>',
+        '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">',
+        '  <button type="button" class="btn active" id="aim-save">Done</button>',
+        '</div>'
+      ].join('');
+
+      mount.querySelector('#aim-refresh-or').onclick = () => refreshOpenRouterFree(true);
+      mount.querySelector('#aim-select').onchange = (e) => selectModel(e.target.value);
+      mount.querySelector('#aim-worker-select').onchange = (e) => setWorkerModel(e.target.value);
+      mount.querySelector('#aim-live-scope').onchange = (e) => setLiveScope(e.target.value);
+      mount.querySelector('#aim-cascade-chk').onchange = (e) => {
+        cascadeEnabled = !!e.target.checked;
+        safeLSSet(STORAGE_KEYS.cascadeEnabled, cascadeEnabled ? '1' : '0');
+      };
+      mount.querySelector('#aim-test-keys').onclick = async () => {
+        const out = mount.querySelector('#aim-test-out');
+        out.textContent = 'Testing configured keys...';
+        out.textContent = await testAllKeys();
+      };
+
+      const bindKeyInput = (sel, prop) => {
+        const el = mount.querySelector(sel);
+        el.addEventListener('input', () => { keysObj[prop] = el.value; });
+        el.addEventListener('change', () => { keysObj[prop] = el.value; });
+      };
+      bindKeyInput('#aim-k-or', 'openrouter');
+      bindKeyInput('#aim-k-gemini', 'gemini');
+      bindKeyInput('#aim-k-anthropic', 'anthropic');
+
+      mount.querySelector('#aim-save').onclick = () => {
+        APP.ui.closeModals();
+        APP.ui.toast(`Active AI: ${getSelectedModel().id}`);
+      };
+    }
+
+    const sel = mount.querySelector('#aim-select');
+    const wSel = mount.querySelector('#aim-worker-select');
+    sel.innerHTML = '';
+    wSel.innerHTML = '';
+
+    const groups = {
+      orPaid: document.createElement('optgroup'),
+      orFree: document.createElement('optgroup'),
+      anthropic: document.createElement('optgroup'),
+      gemini: document.createElement('optgroup')
+    };
+    groups.orPaid.label = 'OpenRouter (Gemini Hydrogen · ChatGPT GPT-6 · Claude 5.5)';
+    groups.orFree.label = 'OpenRouter Free ($0 :free Models)';
+    groups.anthropic.label = 'Direct Anthropic Claude (sk-ant-)';
+    groups.gemini.label = 'Gemini 3.8 Live (Voice + Vision WebSocket)';
+
+    for (const m of all) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label;
+      if (m.id === cur.id) opt.selected = true;
+
+      if (m.provider === 'gemini') groups.gemini.appendChild(opt);
+      else if (m.provider === 'anthropic') groups.anthropic.appendChild(opt);
+      else if (m.id === 'openrouter/free' || m.isFreeOR) groups.orFree.appendChild(opt);
+      else groups.orPaid.appendChild(opt);
+
+      if (m.supportsRest) {
+        const wOpt = document.createElement('option');
+        wOpt.value = m.id;
+        wOpt.textContent = m.label;
+        if (m.id === worker.id) wOpt.selected = true;
+        wSel.appendChild(wOpt);
+      }
+    }
+    sel.appendChild(groups.orPaid);
+    sel.appendChild(groups.orFree);
+    sel.appendChild(groups.anthropic);
+    sel.appendChild(groups.gemini);
+
+    mount.querySelector('#aim-live-scope').value = liveScope;
+    mount.querySelector('#aim-meta').textContent =
+      `${cur.notes || ''} | Vision: ${cur.supportsVision ? 'Yes' : 'No'} | Tools: ${cur.supportsTools ? 'Yes' : 'No'} | ` +
+      (orStatus.loading ? 'Refreshing OpenRouter :free...' : `OpenRouter :free models: ${orStatus.count}`);
+
+    mount.querySelector('#aim-k-or').value = keysObj.openrouter;
+    mount.querySelector('#aim-k-gemini').value = keysObj.gemini;
+    mount.querySelector('#aim-k-anthropic').value = keysObj.anthropic;
+  }
+
+  APP.ai = {
+    PROVIDERS,
+    keys: keysObj,
+    getModels: getAllModels,
+    getSelectedModel,
+    getWorkerModel,
+    setWorkerModel,
+    selectModel,
+    getLiveScope: () => liveScope,
+    setLiveScope,
+    isLiveModelSelected: () => !!getSelectedModel().supportsLiveWS,
+    getKey,
+    setKey,
+    refreshOpenRouterFree,
+    testAllKeys,
+    executeWorldFX,
+    formatApiError,
+    chatWithModel,
+    chat,
+    runTurn,
+    openPanel: () => { renderUI(); APP.ui.openModal('modal-ai'); }
+  };
+
+  renderUI();
+  refreshOpenRouterFree(false);
+})();
+@end
