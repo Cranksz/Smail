@@ -1,0 +1,1763 @@
+# ======================================================================
+# bot.txt — Geeny: Hi-Tech Dynamic Companion, 18-Seg Long Tentacle,
+#           Extendable Holo-Board, Spatial Memory & Gemini 3.8 Live
+# ======================================================================
+
+@ability: robot_companion_sphere
+@autorun
+@desc: Geeny — dynamic hi-tech flying robot with long 18-segment IK tentacle, extendable holographic tutorial/notes/image board, continuous spatial memory (modify_entity), and Gemini 3.8 Live voice.
+@match: geeny | genie | robot | bot | tentacle | grab | hand me | give me | show me | release | come here | board | notes | الروبوت | جيني | امسك | اعطني | اترك | تعال | اللوح
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return;
+
+  if (typeof APP._botCleanup === 'function') {
+    try { APP._botCleanup(); } catch (_) {}
+  }
+
+  const scene = APP.scene;
+
+  // ====================================================================
+  // 1. GEENY HI-TECH CHASSIS, DUAL VISOR EYES, BANKING WINGS & CORE
+  // ====================================================================
+  const botRoot = new THREE.Group();
+  botRoot.name = 'APP_GEENY_ROBOT';
+  botRoot.position.set(0.46, 1.48, -1.05);
+  scene.add(botRoot);
+
+  const bodyGroup = new THREE.Group();
+  botRoot.add(bodyGroup);
+
+  const armorMat = new THREE.MeshStandardMaterial({
+    color: 0x161f2e,
+    metalness: 0.90,
+    roughness: 0.22
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    metalness: 0.85,
+    roughness: 0.30
+  });
+  const plasmaMat = new THREE.MeshStandardMaterial({
+    color: 0x00f0b4,
+    emissive: 0x00ff9d,
+    emissiveIntensity: 1.35,
+    roughness: 0.15,
+    metalness: 0.1
+  });
+
+  // Inner luminous plasma reactor core
+  const reactorCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.115, 2), plasmaMat);
+  bodyGroup.add(reactorCore);
+
+  // Upper & lower armored carapace domes (split equator reveals glowing core)
+  const topShell = new THREE.Mesh(
+    new THREE.SphereGeometry(0.152, 24, 16, 0, Math.PI * 2, 0.15, Math.PI * 0.40),
+    armorMat
+  );
+  topShell.position.y = 0.012;
+  topShell.castShadow = true;
+  bodyGroup.add(topShell);
+
+  const botShell = new THREE.Mesh(
+    new THREE.SphereGeometry(0.146, 24, 16, 0, Math.PI * 2, Math.PI * 0.56, Math.PI * 0.38),
+    armorMat
+  );
+  botShell.position.y = -0.012;
+  botShell.castShadow = true;
+  bodyGroup.add(botShell);
+
+  // Equatorial precision tech ring
+  const eqRing = new THREE.Mesh(new THREE.TorusGeometry(0.156, 0.009, 10, 48), trimMat);
+  eqRing.rotation.x = Math.PI / 2;
+  bodyGroup.add(eqRing);
+
+  // Dorsal rotating telemetry gyroscope
+  const gyroRing1 = new THREE.Mesh(
+    new THREE.TorusGeometry(0.205, 0.004, 8, 56),
+    new THREE.MeshBasicMaterial({ color: 0x00f0b4, transparent: true, opacity: 0.72, blending: THREE.AdditiveBlending })
+  );
+  gyroRing1.rotation.x = Math.PI * 0.38;
+  bodyGroup.add(gyroRing1);
+
+  const gyroRing2 = new THREE.Mesh(
+    new THREE.TorusGeometry(0.232, 0.003, 8, 56),
+    new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending })
+  );
+  gyroRing2.rotation.y = Math.PI * 0.25;
+  bodyGroup.add(gyroRing2);
+
+  // Wraparound Sapphire Visor + Dual Expressive Holographic Eyes
+  const visorGroup = new THREE.Group();
+  bodyGroup.add(visorGroup);
+
+  const visorGlass = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.154, 0.154, 0.068, 28, 1, true, -Math.PI * 0.36, Math.PI * 0.72),
+    new THREE.MeshStandardMaterial({
+      color: 0x050a14,
+      metalness: 0.95,
+      roughness: 0.08,
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide
+    })
+  );
+  visorGlass.position.y = 0.016;
+  visorGroup.add(visorGlass);
+
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x5efce8 });
+  const eyeL = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.022, 6, 12), eyeMat);
+  eyeL.position.set(-0.044, 0.020, 0.149);
+  const eyeR = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.022, 6, 12), eyeMat);
+  eyeR.position.set(0.044, 0.020, 0.149);
+  visorGroup.add(eyeL, eyeR);
+
+  // Articulated Left & Right Cyber Stabilizer Wings (bank dynamically with velocity)
+  function createWing(sideSign) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sideSign * 0.165, 0.015, -0.02);
+
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.008, 0.075), armorMat);
+    blade.position.set(sideSign * 0.055, 0, -0.01);
+    blade.rotation.y = sideSign * -0.28;
+    blade.rotation.z = sideSign * 0.18;
+
+    const edgeGlow = new THREE.Mesh(
+      new THREE.BoxGeometry(0.105, 0.004, 0.006),
+      new THREE.MeshBasicMaterial({ color: 0x00f0b4, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending })
+    );
+    edgeGlow.position.set(sideSign * 0.055, 0, 0.028);
+    edgeGlow.rotation.y = sideSign * -0.28;
+    edgeGlow.rotation.z = sideSign * 0.18;
+
+    const thruster = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.016, 0.020, 0.032, 14),
+      trimMat
+    );
+    thruster.rotation.x = Math.PI / 2;
+    thruster.position.set(sideSign * 0.022, -0.012, -0.03);
+
+    pivot.add(blade, edgeGlow, thruster);
+    bodyGroup.add(pivot);
+    return pivot;
+  }
+  const wingL = createWing(-1);
+  const wingR = createWing(1);
+
+  const botLight = new THREE.PointLight(0x00f0b4, 0.65, 2.8);
+  botLight.position.set(0, 0, 0.18);
+  bodyGroup.add(botLight);
+
+  // ====================================================================
+  // 2. EXTENDABLE HOLOGRAPHIC BOARD & TELESCOPING ARM
+  // ====================================================================
+  const boardPivot = new THREE.Group();
+  botRoot.add(boardPivot);
+
+  // Telescoping projector boom arm extending from Geeny's side
+  const boomArm = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.012, 0.016, 1.0, 12),
+    trimMat
+  );
+  boomArm.visible = false;
+  boardPivot.add(boomArm);
+
+  const BOARD_W = 0.86;
+  const BOARD_H = 0.56;
+  const boardContainer = new THREE.Group();
+  boardContainer.visible = false;
+  boardPivot.add(boardContainer);
+
+  const boardCanvas = document.createElement('canvas');
+  boardCanvas.width = 1280;
+  boardCanvas.height = 840;
+  const bCtx = boardCanvas.getContext('2d');
+  const boardTex = new THREE.CanvasTexture(boardCanvas);
+  boardTex.colorSpace = THREE.SRGBColorSpace;
+  boardTex.needsUpdate = true;
+
+  const boardScreen = new THREE.Mesh(
+    new THREE.PlaneGeometry(BOARD_W, BOARD_H),
+    new THREE.MeshBasicMaterial({ map: boardTex, transparent: true, opacity: 0.96, side: THREE.DoubleSide })
+  );
+  boardContainer.add(boardScreen);
+
+  const boardFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(BOARD_W + 0.028, BOARD_H + 0.028, 0.012),
+    new THREE.MeshStandardMaterial({ color: 0x091322, metalness: 0.7, roughness: 0.3 })
+  );
+  boardFrame.position.z = -0.008;
+  boardContainer.add(boardFrame);
+
+  const boardState = {
+    visible: false,
+    extend: 0, // 0 = retracted inside Geeny, 1 = extended beside/in front
+    title: 'GEENY HOLO-BOARD',
+    mode: 'notes', // 'tutorial' | 'notes' | 'image'
+    steps: [],
+    currentStep: 0,
+    notes: [],
+    imageObj: null,
+    caption: '',
+    hitZones: [],
+    lastClick: 0
+  };
+
+  function drawBoardRoundedRect(x, y, w, h, r, fill, stroke) {
+    bCtx.beginPath();
+    bCtx.moveTo(x + r, y);
+    bCtx.arcTo(x + w, y, x + w, y + h, r);
+    bCtx.arcTo(x + w, y + h, x, y + h, r);
+    bCtx.arcTo(x, y + h, x, y, r);
+    bCtx.arcTo(x, y, x + w, y, r);
+    bCtx.closePath();
+    if (fill) { bCtx.fillStyle = fill; bCtx.fill(); }
+    if (stroke) { bCtx.strokeStyle = stroke; bCtx.lineWidth = 3; bCtx.stroke(); }
+  }
+
+  function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
+    const words = String(text || '').split(/\s+/);
+    let line = '';
+    let cy = y;
+    for (let i = 0; i < words.length; i++) {
+      const test = line ? line + ' ' + words[i] : words[i];
+      if (ctx.measureText(test).width > maxWidth && line) {
+        ctx.fillText(line, x, cy);
+        line = words[i];
+        cy += lineHeight;
+      } else {
+        line = test;
+      }
+    }
+    if (line) ctx.fillText(line, x, cy);
+    return cy + lineHeight;
+  }
+
+  function executeDrawCommands(cmds, area) {
+    if (!Array.isArray(cmds)) return;
+    const ox = area.x, oy = area.y, aw = area.w, ah = area.h;
+    const px = (nx) => ox + Number(nx || 0) * aw;
+    const py = (ny) => oy + Number(ny || 0) * ah;
+
+    for (const c of cmds) {
+      if (!c || !c.type) continue;
+      bCtx.save();
+      bCtx.strokeStyle = c.color || '#00f0b4';
+      bCtx.fillStyle = c.fill || c.color || 'rgba(0,240,180,0.18)';
+      bCtx.lineWidth = c.width || 5;
+      bCtx.lineCap = 'round';
+      bCtx.lineJoin = 'round';
+
+      if (c.type === 'circle') {
+        bCtx.beginPath();
+        bCtx.arc(px(c.cx ?? 0.5), py(c.cy ?? 0.5), (c.r ?? 0.15) * Math.min(aw, ah), 0, Math.PI * 2);
+        if (c.filled) bCtx.fill();
+        bCtx.stroke();
+      } else if (c.type === 'ellipse') {
+        bCtx.beginPath();
+        bCtx.ellipse(px(c.cx ?? 0.5), py(c.cy ?? 0.5), (c.rx ?? 0.2) * aw, (c.ry ?? 0.15) * ah, c.rot || 0, 0, Math.PI * 2);
+        if (c.filled) bCtx.fill();
+        bCtx.stroke();
+      } else if (c.type === 'line') {
+        bCtx.beginPath();
+        bCtx.moveTo(px(c.x1), py(c.y1));
+        bCtx.lineTo(px(c.x2), py(c.y2));
+        bCtx.stroke();
+      } else if (c.type === 'arc') {
+        bCtx.beginPath();
+        bCtx.arc(px(c.cx ?? 0.5), py(c.cy ?? 0.5), (c.r ?? 0.1) * Math.min(aw, ah), c.start ?? 0, c.end ?? Math.PI);
+        bCtx.stroke();
+      } else if (c.type === 'poly' && Array.isArray(c.points) && c.points.length >= 2) {
+        bCtx.beginPath();
+        bCtx.moveTo(px(c.points[0][0]), py(c.points[0][1]));
+        for (let i = 1; i < c.points.length; i++) bCtx.lineTo(px(c.points[i][0]), py(c.points[i][1]));
+        if (c.closed) bCtx.closePath();
+        if (c.filled) bCtx.fill();
+        bCtx.stroke();
+      } else if (c.type === 'curve') {
+        bCtx.beginPath();
+        bCtx.moveTo(px(c.x1), py(c.y1));
+        bCtx.quadraticCurveTo(px(c.cx), py(c.cy), px(c.x2), py(c.y2));
+        bCtx.stroke();
+      } else if (c.type === 'text') {
+        bCtx.fillStyle = c.color || '#e2f8ff';
+        bCtx.font = 'bold ' + (c.size || 24) + 'px system-ui, sans-serif';
+        bCtx.textAlign = 'center';
+        bCtx.fillText(String(c.text || ''), px(c.x ?? 0.5), py(c.y ?? 0.5));
+      }
+      bCtx.restore();
+    }
+  }
+
+  function redrawBoard() {
+    boardState.hitZones = [];
+    const W = boardCanvas.width, H = boardCanvas.height;
+    bCtx.clearRect(0, 0, W, H);
+
+    // Holographic glass panel background + subtle grid
+    drawBoardRoundedRect(8, 8, W - 16, H - 16, 26, 'rgba(6, 14, 28, 0.94)', '#00f0b4');
+    bCtx.strokeStyle = 'rgba(56, 189, 248, 0.08)';
+    bCtx.lineWidth = 1;
+    for (let gx = 40; gx < W - 20; gx += 48) {
+      bCtx.beginPath(); bCtx.moveTo(gx, 88); bCtx.lineTo(gx, H - 86); bCtx.stroke();
+    }
+    for (let gy = 96; gy < H - 86; gy += 48) {
+      bCtx.beginPath(); bCtx.moveTo(24, gy); bCtx.lineTo(W - 24, gy); bCtx.stroke();
+    }
+
+    // Header
+    bCtx.fillStyle = '#00f0b4';
+    bCtx.font = 'bold 34px system-ui, sans-serif';
+    bCtx.textAlign = 'left';
+    bCtx.textBaseline = 'middle';
+    bCtx.fillText('GEENY // ' + String(boardState.title || 'HOLO-BOARD').toUpperCase().slice(0, 38), 36, 52);
+
+    // Close button
+    const cls = { x: W - 164, y: 24, w: 132, h: 52 };
+    drawBoardRoundedRect(cls.x, cls.y, cls.w, cls.h, 12, '#3d1520', '#f87171');
+    bCtx.fillStyle = '#fee2e2';
+    bCtx.font = 'bold 24px system-ui, sans-serif';
+    bCtx.textAlign = 'center';
+    bCtx.fillText('Hide', cls.x + cls.w / 2, cls.y + cls.h / 2);
+    boardState.hitZones.push({
+      id: 'close',
+      u0: cls.x / W, u1: (cls.x + cls.w) / W,
+      v0: 1 - (cls.y + cls.h) / H, v1: 1 - cls.y / H,
+      action: () => hideBoard()
+    });
+
+    if (boardState.mode === 'tutorial' && boardState.steps.length > 0) {
+      const idx = Math.max(0, Math.min(boardState.steps.length - 1, boardState.currentStep));
+      const step = boardState.steps[idx];
+
+      // Sketch canvas box on left + step guide on right
+      const sketchBox = { x: 36, y: 102, w: 660, h: 618 };
+      drawBoardRoundedRect(sketchBox.x, sketchBox.y, sketchBox.w, sketchBox.h, 18, 'rgba(3, 8, 18, 0.85)', '#1e3a5f');
+
+      // Accumulate drawing steps 0..idx so the drawing builds up progressively!
+      for (let s = 0; s <= idx; s++) {
+        const st = boardState.steps[s];
+        if (st && Array.isArray(st.draw_commands)) {
+          executeDrawCommands(st.draw_commands, {
+            x: sketchBox.x + 24,
+            y: sketchBox.y + 24,
+            w: sketchBox.w - 48,
+            h: sketchBox.h - 48
+          });
+        }
+      }
+
+      // Right explanation pane
+      const rx = 724, rw = W - rx - 36;
+      drawBoardRoundedRect(rx, 102, rw, 618, 18, 'rgba(12, 24, 44, 0.8)', '#254a78');
+      bCtx.fillStyle = '#38bdf8';
+      bCtx.font = 'bold 28px system-ui, sans-serif';
+      bCtx.textAlign = 'left';
+      bCtx.fillText(`Step ${idx + 1} / ${boardState.steps.length}`, rx + 24, 146);
+
+      bCtx.fillStyle = '#00f0b4';
+      bCtx.font = 'bold 30px system-ui, sans-serif';
+      let nextY = wrapCanvasText(bCtx, step.title || '', rx + 24, 198, rw - 48, 38);
+
+      bCtx.fillStyle = '#e2e8f0';
+      bCtx.font = '25px system-ui, sans-serif';
+      wrapCanvasText(bCtx, step.caption || '', rx + 24, nextY + 18, rw - 48, 36);
+    } else if (boardState.mode === 'image' && boardState.imageObj) {
+      const img = boardState.imageObj;
+      const box = { x: 40, y: 102, w: W - 80, h: 580 };
+      drawBoardRoundedRect(box.x, box.y, box.w, box.h, 18, 'rgba(4, 9, 18, 0.9)', '#254a78');
+      const aspect = (img.width || 1) / (img.height || 1);
+      let dw = box.w - 30, dh = dw / aspect;
+      if (dh > box.h - 30) { dh = box.h - 30; dw = dh * aspect; }
+      bCtx.drawImage(img, box.x + (box.w - dw) / 2, box.y + (box.h - dh) / 2, dw, dh);
+      if (boardState.caption) {
+        bCtx.fillStyle = '#cbd5e1';
+        bCtx.font = '26px system-ui, sans-serif';
+        bCtx.textAlign = 'center';
+        bCtx.fillText(boardState.caption.slice(0, 76), W / 2, 718);
+      }
+    } else {
+      // Structured Notes / Bullet Points
+      drawBoardRoundedRect(36, 102, W - 72, 620, 18, 'rgba(10, 20, 38, 0.85)', '#1e3a5f');
+      let cy = 148;
+      bCtx.textAlign = 'left';
+      const lines = boardState.notes.length ? boardState.notes : [boardState.caption || 'Ready to project notes, diagrams, or tutorials.'];
+      for (let i = 0; i < lines.length; i++) {
+        bCtx.fillStyle = '#00f0b4';
+        bCtx.font = 'bold 28px system-ui, sans-serif';
+        bCtx.fillText('•', 62, cy);
+        bCtx.fillStyle = '#e2f1ff';
+        bCtx.font = '26px system-ui, sans-serif';
+        cy = wrapCanvasText(bCtx, lines[i], 96, cy, W - 160, 36) + 12;
+        if (cy > 690) break;
+      }
+    }
+
+    // Footer Step Controls when in Tutorial mode
+    if (boardState.mode === 'tutorial' && boardState.steps.length > 1) {
+      const fy = H - 84;
+      const prev = { x: 36, y: fy, w: 200, h: 56 };
+      const next = { x: W - 236, y: fy, w: 200, h: 56 };
+      drawBoardRoundedRect(prev.x, prev.y, prev.w, prev.h, 14, '#132640', '#38bdf8');
+      drawBoardRoundedRect(next.x, next.y, next.w, next.h, 14, '#0f5c52', '#00f0b4');
+      bCtx.fillStyle = '#e0f2fe';
+      bCtx.font = 'bold 24px system-ui, sans-serif';
+      bCtx.textAlign = 'center';
+      bCtx.fillText('< Prev Step', prev.x + prev.w / 2, prev.y + prev.h / 2);
+      bCtx.fillText('Next Step >', next.x + next.w / 2, next.y + next.h / 2);
+      boardState.hitZones.push({
+        id: 'prev', u0: prev.x / W, u1: (prev.x + prev.w) / W, v0: 1 - (prev.y + prev.h) / H, v1: 1 - prev.y / H,
+        action: () => stepBoard(-1)
+      });
+      boardState.hitZones.push({
+        id: 'next', u0: next.x / W, u1: (next.x + next.w) / W, v0: 1 - (next.y + next.h) / H, v1: 1 - next.y / H,
+        action: () => stepBoard(1)
+      });
+    }
+
+    boardTex.needsUpdate = true;
+  }
+
+  boardScreen.userData.onPoke = function (hit) {
+    if (!boardState.visible || !hit || !hit.uv) return;
+    const now = performance.now();
+    if (now - boardState.lastClick < 280) return;
+    const uv = hit.uv;
+    for (const z of boardState.hitZones) {
+      if (uv.x >= z.u0 && uv.x <= z.u1 && uv.y >= z.v0 && uv.y <= z.v1) {
+        boardState.lastClick = now;
+        z.action();
+        break;
+      }
+    }
+  };
+  APP.pokeTargets?.add(boardScreen);
+
+  function stepBoard(delta) {
+    if (!boardState.steps.length) return;
+    boardState.currentStep = Math.max(0, Math.min(boardState.steps.length - 1, boardState.currentStep + delta));
+    redrawBoard();
+    const st = boardState.steps[boardState.currentStep];
+    if (st?.caption) APP.speakTTS?.(`${st.title}. ${st.caption}`);
+  }
+
+  function showBoard(opts = {}) {
+    if (!botEnabled) setEnabled(true);
+    boardState.visible = true;
+    boardState.title = opts.title || 'GEENY HOLO-BOARD';
+    boardState.mode = opts.mode || (Array.isArray(opts.steps) && opts.steps.length ? 'tutorial' : opts.imageObj ? 'image' : 'notes');
+    boardState.steps = Array.isArray(opts.steps) ? opts.steps : [];
+    boardState.currentStep = Math.max(0, opts.stepIndex || 0);
+    boardState.notes = Array.isArray(opts.notes) ? opts.notes : [];
+    boardState.imageObj = opts.imageObj || null;
+    boardState.caption = opts.caption || '';
+
+    boardContainer.visible = true;
+    boomArm.visible = true;
+    redrawBoard();
+
+    // Bring Geeny comfortably into view so user can read the board easily
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+    if (flat.lengthSq() < 0.01) flat.set(0, 0, -1);
+    const right = new THREE.Vector3().crossVectors(flat, new THREE.Vector3(0, 1, 0)).normalize();
+    state.worldAnchor.copy(hp).addScaledVector(flat, 1.05).addScaledVector(right, 0.36);
+    state.worldAnchor.y = Math.max(1.05, hp.y + 0.04);
+
+    return { ok: true, message: 'Geeny extended holographic board: ' + boardState.title };
+  }
+
+  function hideBoard() {
+    boardState.visible = false;
+    return { ok: true, message: 'Geeny retracted holographic board.' };
+  }
+
+  // Built-in offline fallback tutorial for "how to draw a cat" (also serves as reference)
+  function getCatDrawingTutorial() {
+    return {
+      title: 'How to Draw a Cat',
+      mode: 'tutorial',
+      steps: [
+        {
+          title: '1. Head & Body Circles',
+          caption: 'Draw a soft circle for the head and a larger oval underneath for the body.',
+          draw_commands: [
+            { type: 'circle', cx: 0.5, cy: 0.32, r: 0.14, color: '#38bdf8', width: 5 },
+            { type: 'ellipse', cx: 0.5, cy: 0.62, rx: 0.17, ry: 0.20, color: '#38bdf8', width: 5 }
+          ]
+        },
+        {
+          title: '2. Pointed Cat Ears',
+          caption: 'Add two triangular ears on top of the head with small inner triangles.',
+          draw_commands: [
+            { type: 'poly', points: [[0.38, 0.23], [0.33, 0.08], [0.46, 0.18]], color: '#00f0b4', width: 5 },
+            { type: 'poly', points: [[0.62, 0.23], [0.67, 0.08], [0.54, 0.18]], color: '#00f0b4', width: 5 }
+          ]
+        },
+        {
+          title: '3. Eyes, Nose & Whiskers',
+          caption: 'Sketch almond eyes, a tiny triangle nose, a W-mouth, and 3 whiskers per side.',
+          draw_commands: [
+            { type: 'ellipse', cx: 0.44, cy: 0.31, rx: 0.025, ry: 0.032, color: '#fbbf24', filled: true },
+            { type: 'ellipse', cx: 0.56, cy: 0.31, rx: 0.025, ry: 0.032, color: '#fbbf24', filled: true },
+            { type: 'poly', points: [[0.48, 0.36], [0.52, 0.36], [0.50, 0.385]], closed: true, color: '#f472b6', filled: true },
+            { type: 'line', x1: 0.38, y1: 0.36, x2: 0.24, y2: 0.34, color: '#e2e8f0', width: 3 },
+            { type: 'line', x1: 0.38, y1: 0.38, x2: 0.24, y2: 0.39, color: '#e2e8f0', width: 3 },
+            { type: 'line', x1: 0.62, y1: 0.36, x2: 0.76, y2: 0.34, color: '#e2e8f0', width: 3 },
+            { type: 'line', x1: 0.62, y1: 0.38, x2: 0.76, y2: 0.39, color: '#e2e8f0', width: 3 }
+          ]
+        },
+        {
+          title: '4. Paws & Sweeping Tail',
+          caption: 'Finish with two front paws at the bottom and a curved S-shaped tail!',
+          draw_commands: [
+            { type: 'ellipse', cx: 0.43, cy: 0.82, rx: 0.045, ry: 0.03, color: '#00f0b4', width: 5 },
+            { type: 'ellipse', cx: 0.57, cy: 0.82, rx: 0.045, ry: 0.03, color: '#00f0b4', width: 5 },
+            { type: 'curve', x1: 0.66, y1: 0.72, cx: 0.88, cy: 0.68, x2: 0.80, y2: 0.42, color: '#00f0b4', width: 7 }
+          ]
+        }
+      ]
+    };
+  }
+
+  // ====================================================================
+  // 3. LONG 18-SEGMENT DYNAMIC TENTACLE + SERVO CLAW
+  // ====================================================================
+  const TENTACLE_SEGMENTS = 18;
+  const tentacleGroup = new THREE.Group();
+  tentacleGroup.name = 'APP_GEENY_TENTACLE';
+  scene.add(tentacleGroup);
+
+  const segMatDark = new THREE.MeshStandardMaterial({ color: 0x152030, metalness: 0.88, roughness: 0.24 });
+  const segMatGlow = new THREE.MeshStandardMaterial({
+    color: 0x00f0b4,
+    emissive: 0x0ea5e9,
+    emissiveIntensity: 0.95,
+    roughness: 0.22
+  });
+
+  const segments = [];
+  for (let i = 0; i < TENTACLE_SEGMENTS; i++) {
+    const t = i / (TENTACLE_SEGMENTS - 1);
+    const radius = THREE.MathUtils.lerp(0.028, 0.0095, t);
+    const segGroup = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.88, radius, 0.068, 12), segMatDark);
+    body.rotation.x = Math.PI / 2;
+    segGroup.add(body);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius * 0.98, radius * 0.16, 6, 16), segMatGlow);
+    segGroup.add(ring);
+    tentacleGroup.add(segGroup);
+    segments.push(segGroup);
+  }
+
+  const clawGroup = new THREE.Group();
+  tentacleGroup.add(clawGroup);
+  const palmMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.013, 0.028, 14), segMatDark);
+  palmMesh.rotation.x = Math.PI / 2;
+  clawGroup.add(palmMesh);
+
+  const prongs = [];
+  for (let p = 0; p < 3; p++) {
+    const pivot = new THREE.Group();
+    pivot.rotation.z = (p / 3) * Math.PI * 2;
+    const fp = new THREE.Group();
+    fp.position.set(0.015, 0, 0.012);
+    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.007, 0.008, 0.040), segMatDark);
+    finger.position.set(0.004, 0, 0.020);
+    const tipGlow = new THREE.Mesh(new THREE.SphereGeometry(0.005, 8, 8), segMatGlow);
+    tipGlow.position.set(-0.002, 0, 0.041);
+    fp.add(finger, tipGlow);
+    pivot.add(fp);
+    clawGroup.add(pivot);
+    prongs.push(fp);
+  }
+
+  const showBeam = new THREE.Mesh(
+    new THREE.ConeGeometry(0.14, 0.60, 24, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0x00f0b4,
+      transparent: true,
+      opacity: 0.24,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    })
+  );
+  showBeam.rotation.x = -Math.PI / 2;
+  showBeam.position.z = 0.32;
+  showBeam.visible = false;
+  clawGroup.add(showBeam);
+
+  // ====================================================================
+  // 4. SPRING-DAMPED FLIGHT PHYSICS + LONG TENTACLE IK
+  // ====================================================================
+  let botEnabled = true;
+  let audioEnergy = 0;
+  let clawClosure = 0.2;
+  let clawTargetClosure = 0.2;
+  let blinkTimer = 3.0;
+
+  const state = {
+    mode: 'idle',
+    targetObj: null,
+    heldObj: null,
+    heldEnt: null,
+    heldRadius: 0.12,
+    worldAnchor: new THREE.Vector3(0.46, 1.48, -1.05),
+    hoverTargetPos: new THREE.Vector3(0.46, 1.48, -1.05),
+    velocity: new THREE.Vector3(),
+    tipTargetPos: new THREE.Vector3(0.46, 1.02, -1.05),
+    currentTipPos: new THREE.Vector3(0.46, 1.02, -1.05),
+    showTimer: 0,
+    grabProgress: 0,
+    nextThoughtTime: 5.0,
+    lookTargetPos: new THREE.Vector3(0, 1.5, 0)
+  };
+
+  const vP0 = new THREE.Vector3();
+  const vC1 = new THREE.Vector3();
+  const vC2 = new THREE.Vector3();
+  const vP3 = new THREE.Vector3();
+  const vPt = new THREE.Vector3();
+  const vNext = new THREE.Vector3();
+  const vObjCenter = new THREE.Vector3();
+  const vObjSize = new THREE.Vector3();
+  const tmpBox = new THREE.Box3();
+  const tmpVecA = new THREE.Vector3();
+  const tmpVecB = new THREE.Vector3();
+
+  function getEntityRecord(target) {
+    if (!target) return null;
+    if (typeof target === 'object' && target.group) return target;
+    if (target.isObject3D && target.userData?.entity) return target.userData.entity;
+    return APP.findEntity ? APP.findEntity(target) : null;
+  }
+
+  function getEntityObject3D(target) {
+    if (!target) return null;
+    if (target.isObject3D) return target;
+    if (target.group?.isObject3D) return target.group;
+    if (target.mesh?.isObject3D) return target.mesh;
+    const rec = getEntityRecord(target);
+    return rec ? (rec.group || rec.mesh) : null;
+  }
+
+  function computeObjCenterAndRadius(obj) {
+    obj.updateMatrixWorld(true);
+    tmpBox.setFromObject(obj);
+    if (tmpBox.isEmpty()) {
+      obj.getWorldPosition(vObjCenter);
+      return { center: vObjCenter.clone(), radius: 0.12 };
+    }
+    tmpBox.getCenter(vObjCenter);
+    tmpBox.getSize(vObjSize);
+    const radius = Math.max(0.06, Math.min(0.32, Math.max(vObjSize.x, vObjSize.z) * 0.45));
+    return { center: vObjCenter.clone(), radius };
+  }
+
+  function releaseHeldEntity() {
+    if (state.heldEnt) { state.heldEnt.heldByBot = false; state.heldEnt = null; }
+    if (state.heldObj) {
+      state.heldObj.userData = state.heldObj.userData || {};
+      state.heldObj.userData.heldByBot = false;
+      state.heldObj = null;
+    }
+  }
+
+  function tentacle_release() {
+    releaseHeldEntity();
+    state.mode = 'idle';
+    state.targetObj = null;
+    state.worldAnchor.copy(botRoot.position);
+    clawTargetClosure = 0.08;
+    showBeam.visible = false;
+    return { ok: true, message: 'Geeny released the object.' };
+  }
+
+  function tentacle_grab(target) {
+    if (!botEnabled) setEnabled(true);
+    const obj = getEntityObject3D(target || 'latest');
+    if (!obj) return { ok: false, error: 'Target object not found to grab: ' + String(target || '') };
+    releaseHeldEntity();
+    state.mode = 'grabbing';
+    state.targetObj = obj;
+    state.grabProgress = 0;
+    clawTargetClosure = 0.0;
+    showBeam.visible = false;
+    return { ok: true, message: 'Geeny extending long tentacle to grab ' + (obj.userData?.entity?.name || obj.name || 'object') + '.' };
+  }
+
+  function tentacle_hand_to_user(target) {
+    if (!botEnabled) setEnabled(true);
+    let obj = getEntityObject3D(target || 'latest');
+    if (!obj && state.heldObj) obj = state.heldObj;
+    if (!obj) return { ok: false, error: 'No target object found to hand to user.' };
+    if (state.heldObj !== obj) {
+      releaseHeldEntity();
+      state.targetObj = obj;
+      const info = computeObjCenterAndRadius(obj);
+      state.heldObj = obj;
+      state.heldEnt = getEntityRecord(obj);
+      state.heldRadius = info.radius;
+      if (state.heldEnt) state.heldEnt.heldByBot = true;
+      obj.userData = obj.userData || {};
+      obj.userData.heldByBot = true;
+    }
+    state.mode = 'handing';
+    clawTargetClosure = 0.85;
+    showBeam.visible = false;
+    return { ok: true, message: 'Geeny bringing ' + (state.heldEnt?.name || obj.name || 'object') + ' to your hand.' };
+  }
+
+  function tentacle_show(target) {
+    if (!botEnabled) setEnabled(true);
+    const obj = getEntityObject3D(target || 'latest');
+    if (!obj) return { ok: false, error: 'Target object not found to showcase.' };
+    if (!state.heldObj || state.heldObj === obj) releaseHeldEntity();
+    state.mode = 'showing';
+    state.targetObj = obj;
+    state.showTimer = 4.5;
+    clawTargetClosure = 0.25;
+    showBeam.visible = true;
+    return { ok: true, message: 'Geeny showcasing ' + (obj.userData?.entity?.name || obj.name || 'object') + '.' };
+  }
+
+  function evalCubicBezier(p0, c1, c2, p3, t, out) {
+    const u = 1 - t;
+    out.set(0, 0, 0)
+      .addScaledVector(p0, u * u * u)
+      .addScaledVector(c1, 3 * u * u * t)
+      .addScaledVector(c2, 3 * u * t * t)
+      .addScaledVector(p3, t * t * t);
+    return out;
+  }
+
+  function updateTentacleIK(dt, elapsed) {
+    vP0.set(0, -0.14, 0);
+    botRoot.localToWorld(vP0);
+
+    const tipLerp = 1 - Math.exp(-9.5 * dt);
+    state.currentTipPos.lerp(state.tipTargetPos, tipLerp);
+    vP3.copy(state.currentTipPos);
+
+    const dist = vP0.distanceTo(vP3);
+    // Velocity lag curves the long tentacle organically behind flight motion
+    vC1.copy(vP0)
+      .add(new THREE.Vector3(0, -Math.max(0.24, dist * 0.48), 0))
+      .addScaledVector(state.velocity, -0.18);
+
+    tmpVecA.subVectors(vP3, vP0).normalize();
+    vC2.copy(vP3)
+      .addScaledVector(tmpVecA, -Math.max(0.18, dist * 0.36))
+      .addScaledVector(state.velocity, -0.12);
+    vC2.y += Math.sin(elapsed * 2.2) * 0.045 + 0.08;
+
+    for (let i = 0; i < TENTACLE_SEGMENTS; i++) {
+      const t = i / TENTACLE_SEGMENTS;
+      const tNext = (i + 1) / TENTACLE_SEGMENTS;
+      evalCubicBezier(vP0, vC1, vC2, vP3, t, vPt);
+      evalCubicBezier(vP0, vC1, vC2, vP3, tNext, vNext);
+      segments[i].position.copy(vPt);
+      segments[i].lookAt(vNext);
+    }
+
+    clawGroup.position.copy(vP3);
+    if (state.mode === 'showing' && state.targetObj) {
+      const info = computeObjCenterAndRadius(state.targetObj);
+      clawGroup.lookAt(info.center);
+      const beamDist = Math.max(0.15, Math.min(0.95, vP3.distanceTo(info.center)));
+      showBeam.scale.set(1, 1, beamDist / 0.60);
+      showBeam.position.z = beamDist * 0.52;
+    } else {
+      evalCubicBezier(vP0, vC1, vC2, vP3, 0.9, tmpVecB);
+      tmpVecA.subVectors(vP3, tmpVecB).normalize();
+      if (tmpVecA.lengthSq() > 0.001) clawGroup.lookAt(tmpVecB.copy(vP3).add(tmpVecA));
+    }
+
+    clawClosure += (clawTargetClosure - clawClosure) * Math.min(1, dt * 10);
+    const openAngle = THREE.MathUtils.lerp(0.62, -0.14, clawClosure);
+    for (let p = 0; p < prongs.length; p++) prongs[p].rotation.y = openAngle;
+  }
+
+  function updateRobot(dt, elapsed) {
+    if (!botEnabled) return;
+    const delta = Math.min(0.05, dt || 0.016);
+    const now = elapsed || (performance.now() * 0.001);
+
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+    const flatFwd = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+    if (flatFwd.lengthSq() < 0.01) flatFwd.set(0, 0, -1);
+    const right = new THREE.Vector3().crossVectors(flatFwd, new THREE.Vector3(0, 1, 0)).normalize();
+
+    if (state.mode === 'idle') {
+      const distToUser = state.worldAnchor.distanceTo(hp);
+      if (distToUser > 3.0) {
+        state.worldAnchor.copy(hp).addScaledVector(flatFwd, 1.15).addScaledVector(right, 0.45);
+        state.worldAnchor.y = Math.max(1.05, hp.y + 0.04);
+      } else if (distToUser < 0.45) {
+        tmpVecA.subVectors(state.worldAnchor, hp).setY(0).normalize();
+        if (tmpVecA.lengthSq() < 0.01) tmpVecA.copy(flatFwd);
+        state.worldAnchor.copy(hp).addScaledVector(tmpVecA, 0.72);
+        state.worldAnchor.y = Math.max(1.05, hp.y + 0.04);
+      }
+
+      if (now > state.nextThoughtTime && !boardState.visible) {
+        state.nextThoughtTime = now + 7 + Math.random() * 5;
+        const ents = Array.isArray(APP.entities) ? APP.entities : [];
+        if (ents.length > 0 && Math.random() < 0.58) {
+          const pick = ents[Math.floor(Math.random() * ents.length)];
+          const obj = pick?.group || pick?.mesh;
+          if (obj && !pick.isHeld) {
+            const info = computeObjCenterAndRadius(obj);
+            if (info.center.distanceTo(hp) < 2.6) {
+              state.worldAnchor.copy(info.center).add(new THREE.Vector3((Math.random() - 0.5) * 0.45, 0.38, (Math.random() - 0.5) * 0.45));
+              state.lookTargetPos.copy(info.center);
+            }
+          }
+        } else {
+          state.lookTargetPos.copy(hp);
+        }
+      } else if (APP.botSpeaking || APP.micLevel > 0.12 || boardState.visible) {
+        state.lookTargetPos.copy(hp);
+      }
+
+      state.hoverTargetPos.copy(state.worldAnchor).add(new THREE.Vector3(
+        Math.sin(now * 0.7) * 0.055,
+        Math.sin(now * 1.7) * 0.035,
+        Math.cos(now * 0.6) * 0.045
+      ));
+
+      // Long tentacle gracefully sweeps underneath Geeny in idle
+      state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(
+        Math.sin(now * 1.25) * 0.14,
+        -0.46 + Math.cos(now * 1.55) * 0.05,
+        -0.08 + Math.cos(now * 0.9) * 0.10
+      ));
+    } else if (state.mode === 'grabbing') {
+      if (!state.targetObj || !state.targetObj.parent) {
+        tentacle_release();
+      } else {
+        const info = computeObjCenterAndRadius(state.targetObj);
+        state.hoverTargetPos.copy(info.center).add(new THREE.Vector3(0.28, 0.46, 0.22));
+        state.tipTargetPos.copy(info.center);
+        state.lookTargetPos.copy(info.center);
+
+        if (state.currentTipPos.distanceTo(info.center) < 0.16) {
+          state.grabProgress += delta;
+          clawTargetClosure = 0.88;
+          if (state.grabProgress > 0.22) {
+            state.heldObj = state.targetObj;
+            state.heldEnt = getEntityRecord(state.heldObj);
+            state.heldRadius = info.radius;
+            if (state.heldEnt) state.heldEnt.heldByBot = true;
+            state.heldObj.userData = state.heldObj.userData || {};
+            state.heldObj.userData.heldByBot = true;
+            state.mode = 'holding';
+          }
+        }
+      }
+    } else if (state.mode === 'holding') {
+      if (!state.heldObj || !state.heldObj.parent) {
+        tentacle_release();
+      } else {
+        state.hoverTargetPos.copy(state.worldAnchor).add(new THREE.Vector3(0, Math.sin(now * 1.5) * 0.025, 0));
+        state.tipTargetPos.copy(botRoot.position).add(new THREE.Vector3(-0.10, -0.44, 0.22));
+        state.lookTargetPos.copy(hp);
+      }
+    } else if (state.mode === 'handing') {
+      if (!state.heldObj || !state.heldObj.parent) {
+        tentacle_release();
+      } else {
+        state.hoverTargetPos.copy(hp).addScaledVector(flatFwd, 0.72);
+        state.hoverTargetPos.y = Math.max(0.92, hp.y + 0.02);
+
+        let handAnchor = null;
+        let handGrabbing = false;
+        const hands = APP.hands || {};
+        for (const k of Object.keys(hands)) {
+          const h = hands[k];
+          if (!h || !h.active) continue;
+          const pos = h.isHand ? h.fingerTips?.index : h.pos;
+          if (pos) {
+            if (!handAnchor || pos.distanceTo(state.currentTipPos) < handAnchor.distanceTo(state.currentTipPos)) {
+              handAnchor = pos;
+            }
+            if ((h.pinching || h.trigger || h.gripping) && pos.distanceTo(state.currentTipPos) < 0.22) {
+              handGrabbing = true;
+            }
+          }
+        }
+
+        if (handAnchor && handAnchor.distanceTo(hp) < 1.1) {
+          state.tipTargetPos.copy(handAnchor).addScaledVector(flatFwd, -0.05);
+        } else {
+          state.tipTargetPos.copy(hp).addScaledVector(flatFwd, 0.42);
+          state.tipTargetPos.y = Math.max(0.75, hp.y - 0.20);
+        }
+        state.lookTargetPos.copy(hp);
+
+        if (handGrabbing || state.heldEnt?.grabbedByHand) tentacle_release();
+      }
+    } else if (state.mode === 'showing') {
+      if (!state.targetObj || !state.targetObj.parent) {
+        tentacle_release();
+      } else {
+        const info = computeObjCenterAndRadius(state.targetObj);
+        state.hoverTargetPos.copy(info.center).add(new THREE.Vector3(0.36, 0.40 + Math.sin(now * 2.0) * 0.03, 0.22));
+        state.tipTargetPos.copy(info.center).add(new THREE.Vector3(0.18, 0.12, 0.12));
+        state.worldAnchor.copy(state.hoverTargetPos);
+        state.lookTargetPos.copy(info.center);
+
+        state.showTimer -= delta;
+        if (state.showTimer <= 0) tentacle_release();
+      }
+    }
+
+    // Spring-damper flight physics + dynamic banking tilt
+    const stiffness = 22.0;
+    const damping = 8.4;
+    tmpVecA.subVectors(state.hoverTargetPos, botRoot.position).multiplyScalar(stiffness);
+    state.velocity.addScaledVector(tmpVecA, delta);
+    state.velocity.multiplyScalar(Math.exp(-damping * delta));
+    botRoot.position.addScaledVector(state.velocity, delta);
+
+    // Orient Geeny chassis smoothly toward lookTargetPos + bank into lateral motion
+    bodyGroup.lookAt(state.lookTargetPos);
+    const localVelX = state.velocity.x;
+    const speed = state.velocity.length();
+    bodyGroup.rotateZ(THREE.MathUtils.clamp(-localVelX * 0.22, -0.35, 0.35));
+    bodyGroup.rotateX(THREE.MathUtils.clamp(speed * 0.12, -0.22, 0.22));
+
+    // Wing stabilizer dynamic flare
+    const wingFlutter = Math.sin(now * 4.5) * 0.06 + Math.min(0.28, speed * 0.25);
+    wingL.rotation.z = wingFlutter;
+    wingR.rotation.z = -wingFlutter;
+
+    // Eye blink & audio reaction
+    blinkTimer -= delta;
+    let eyeScaleY = 1.0;
+    if (blinkTimer <= 0) {
+      if (blinkTimer > -0.11) eyeScaleY = 0.12;
+      else blinkTimer = 2.6 + Math.random() * 3.8;
+    }
+    eyeL.scale.y = eyeScaleY;
+    eyeR.scale.y = eyeScaleY;
+
+    reactorCore.rotation.y = now * 1.4;
+    reactorCore.rotation.x = now * 0.8;
+    gyroRing1.rotation.z = now * 1.2;
+    gyroRing2.rotation.x = now * 0.9;
+
+    updateTentacleIK(delta, now);
+
+    // Animate extendable holographic board & telescoping arm
+    const targetExt = boardState.visible ? 1.0 : 0.0;
+    boardState.extend += (targetExt - boardState.extend) * Math.min(1, delta * 8.5);
+    if (boardState.extend > 0.02) {
+      boardContainer.visible = true;
+      boomArm.visible = true;
+      const offsetX = -0.58 * boardState.extend;
+      const offsetY = 0.06 * boardState.extend;
+      const offsetZ = 0.12 * boardState.extend;
+      boardContainer.position.set(offsetX, offsetY, offsetZ);
+      boardContainer.scale.setScalar(Math.max(0.05, boardState.extend));
+      boardPivot.lookAt(hp.x, botRoot.position.y, hp.z);
+
+      // Connect telescoping arm from chassis edge to board frame edge
+      const armStart = new THREE.Vector3(-0.14, 0, 0);
+      const armEnd = new THREE.Vector3(offsetX + BOARD_W * 0.45 * boardState.extend, offsetY, offsetZ);
+      const armLen = Math.max(0.05, armStart.distanceTo(armEnd));
+      boomArm.position.lerpVectors(armStart, armEnd, 0.5);
+      boomArm.scale.set(1, armLen, 1);
+      boomArm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), armEnd.clone().sub(armStart).normalize());
+    } else {
+      boardContainer.visible = false;
+      boomArm.visible = false;
+    }
+
+    if (state.heldObj && (state.mode === 'holding' || state.mode === 'handing')) {
+      const forwardDir = new THREE.Vector3(0, 0, 1).applyQuaternion(clawGroup.quaternion);
+      tmpVecA.copy(clawGroup.position).addScaledVector(forwardDir, 0.045 + state.heldRadius * 0.35);
+      state.heldObj.position.lerp(tmpVecA, 1 - Math.exp(-16 * delta));
+      if (state.heldEnt?.physics?.vel) state.heldEnt.physics.vel.set(0, 0, 0);
+    }
+
+    const targetEnergy = (APP.botSpeaking || APP.ttsSpeaking)
+      ? 0.55 + Math.abs(Math.sin(now * 16.0)) * 0.45
+      : (APP.micLevel || 0);
+    audioEnergy += (targetEnergy - audioEnergy) * Math.min(1, delta * 12);
+    plasmaMat.emissiveIntensity = 1.1 + audioEnergy * 2.4;
+    botLight.intensity = 0.6 + audioEnergy * 1.2;
+  }
+
+  function setEnabled(val) {
+    botEnabled = !!val;
+    botRoot.visible = botEnabled;
+    tentacleGroup.visible = botEnabled;
+    if (!botEnabled) {
+      tentacle_release();
+      hideBoard();
+      disconnectLive();
+    }
+    APP.emit?.('bot:state_changed', botEnabled);
+    APP.toolbar?.syncState?.();
+    return botEnabled;
+  }
+
+  // ====================================================================
+  // 5. CONTINUOUS SPATIAL MEMORY & MODIFY_ENTITY ENGINE
+  // ====================================================================
+  function buildSceneMemorySnapshot() {
+    const ents = APP.entities || [];
+    if (!ents.length) return 'Scene is currently empty.';
+    const lines = [];
+    for (let i = Math.max(0, ents.length - 12); i < ents.length; i++) {
+      const e = ents[i];
+      if (!e || !e.group) continue;
+      e.group.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(e.group);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const partNames = [];
+      e.group.traverse((c) => {
+        if (c !== e.group && c.name) partNames.push(c.name);
+      });
+      const wp = e.group.position;
+      lines.push(
+        `• id="${e.id}" name="${e.name}" pos=[${wp.x.toFixed(2)},${wp.y.toFixed(2)},${wp.z.toFixed(2)}] ` +
+        `localSize=[w:${size.x.toFixed(2)},h:${size.y.toFixed(2)},d:${size.z.toFixed(2)}] ` +
+        `topY=${size.y.toFixed(2)} parts=[${partNames.slice(0, 10).join(',')}]` +
+        (e.meta?.summary ? ` (${e.meta.summary})` : '')
+      );
+    }
+    if (APP.lastEntityId) lines.push(`Most recently referenced entity: "${APP.lastEntityId}".`);
+    return lines.join('\n');
+  }
+
+  function modifyExistingEntity(entityId, action, jsCode, summaryNote) {
+    const ent = getEntityRecord(entityId || APP.lastEntityId || 'latest');
+    if (!ent || !ent.group) {
+      return { ok: false, error: `Entity "${entityId}" not found in scene. Existing entities: ${(APP.entities || []).map(e => e.id + ':' + e.name).join(', ')}` };
+    }
+    const targetGroup = ent.group;
+    targetGroup.updateMatrixWorld(true);
+
+    // Compute local bounding box relative to targetGroup so attachments align accurately
+    const localBox = new THREE.Box3();
+    const invRoot = targetGroup.matrixWorld.clone().invert();
+    targetGroup.traverse((c) => {
+      if (c.isMesh && c.geometry) {
+        c.geometry.computeBoundingBox();
+        const b = c.geometry.boundingBox.clone();
+        const relMat = invRoot.clone().multiply(c.matrixWorld);
+        b.applyMatrix4(relMat);
+        localBox.union(b);
+      }
+    });
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    if (!localBox.isEmpty()) {
+      localBox.getSize(size);
+      localBox.getCenter(center);
+    }
+
+    const info = {
+      box: localBox,
+      size,
+      center,
+      minY: isFinite(localBox.min.y) ? localBox.min.y : 0,
+      maxY: isFinite(localBox.max.y) ? localBox.max.y : size.y,
+      topY: isFinite(localBox.max.y) ? localBox.max.y : size.y,
+      findPart: (q) => {
+        const low = String(q || '').toLowerCase();
+        let found = null;
+        targetGroup.traverse((c) => {
+          if (!found && c !== targetGroup && String(c.name || '').toLowerCase().includes(low)) found = c;
+        });
+        return found;
+      }
+    };
+
+    try {
+      const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+      const clean = String(jsCode || '').trim().replace(/^```(?:javascript|js)?/i, '').replace(/```$/i, '').trim();
+      const fn = new Function('APP', 'targetGroup', 'THREE', 'V3', 'info', clean);
+      fn(APP, targetGroup, THREE, V3, info);
+
+      targetGroup.traverse((c) => {
+        if (c.isMesh) {
+          c.castShadow = true;
+          c.receiveShadow = true;
+          c.userData.entity = ent;
+        }
+      });
+
+      if (summaryNote) {
+        ent.meta = ent.meta || {};
+        ent.meta.summary = ((ent.meta.summary || '') + '; ' + summaryNote).slice(-180);
+      }
+      APP.lastEntityId = ent.id;
+      APP.visual?.applyDissolveShader?.(targetGroup, 'materialize');
+      tentacle_show(ent);
+      return { ok: true, id: ent.id, name: ent.name, message: `Modified ${ent.name} (${action}).` };
+    } catch (err) {
+      return { ok: false, error: `${err.name}: ${err.message}` };
+    }
+  }
+
+  // ====================================================================
+  // 6. TOOL DECLARATIONS & SMART PROMPT
+  // ====================================================================
+  const BOT_TOOLS = [
+    {
+      name: 'create_procedural_object',
+      description: 'Create a brand-new 3D Three.js object in the scene. Name every key sub-part (e.g. head.name="head", body.name="body") so future edits can attach directly to them!',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Object name (e.g. Cat, Dragon, Sword).' },
+          js_code: {
+            type: 'string',
+            description: 'JS body receiving (APP, group, THREE, V3). Sculpt multi-part meshes, assign `.name` to parts (like "head", "body", "top"), add to `group`. Use `APP.craft.mat/organicSphere/lathe/tube/bevelBox` or THREE.'
+          },
+          holdable: { type: 'boolean', description: 'True if user can hold it.' }
+        },
+        required: ['name', 'js_code']
+      }
+    },
+    {
+      name: 'modify_entity',
+      description: 'Modify, attach accessories to (e.g. put a hat on an existing cat, add wings, recolor, animate), or upgrade an EXISTING scene entity directly inside its local group!',
+      parameters: {
+        type: 'object',
+        properties: {
+          entity_id: { type: 'string', description: 'Target entity ID (from Scene Memory, e.g. "ent_1") or name or "latest".' },
+          action: { type: 'string', description: 'attach | recolor | scale | animate | upgrade' },
+          summary: { type: 'string', description: 'Short note describing what was added/changed.' },
+          js_code: {
+            type: 'string',
+            description: 'JS body receiving (APP, targetGroup, THREE, V3, info). Use `info.findPart("head")` or `info.topY` / `info.center` in local coordinates, and `targetGroup.add(newPart)`. NEVER create a separate root entity here.'
+          }
+        },
+        required: ['entity_id', 'js_code']
+      }
+    },
+    {
+      name: 'show_holo_board',
+      description: 'Extend Geeny holographic board to display a step-by-step drawing/tutorial (with vector draw_commands), structured notes, or a loaded picture from assets.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Board header title.' },
+          mode: { type: 'string', description: 'tutorial | notes | image' },
+          notes: { type: 'array', items: { type: 'string' }, description: 'Bullet points when mode is notes.' },
+          image_name: { type: 'string', description: 'Asset image name when mode is image.' },
+          steps: {
+            type: 'array',
+            description: 'Drawing/tutorial steps when mode is tutorial.',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', description: 'Step title' },
+                caption: { type: 'string', description: 'Short explanation of this step' },
+                draw_commands: {
+                  type: 'array',
+                  description: 'Vector strokes in normalized 0..1 coordinates: {type:"circle"|"ellipse"|"line"|"arc"|"poly"|"curve"|"text", cx, cy, r, rx, ry, x1, y1, x2, y2, points, color, filled, width}',
+                  items: { type: 'object', properties: { type: { type: 'string', description: 'Shape type' }, color: { type: 'string', description: 'Hex color' } } }
+                }
+              }
+            }
+          }
+        },
+        required: ['title', 'mode']
+      }
+    },
+    {
+      name: 'hide_holo_board',
+      description: 'Retract Geeny holographic board back into its body.',
+      parameters: { type: 'object', properties: { reason: { type: 'string', description: 'Optional reason' } } }
+    },
+    {
+      name: 'tentacle_grab',
+      description: 'Grab an existing scene object with Geeny long robotic tentacle.',
+      parameters: { type: 'object', properties: { target: { type: 'string', description: 'Entity ID, name, or "latest".' } }, required: ['target'] }
+    },
+    {
+      name: 'tentacle_hand_to_user',
+      description: 'Bring an object to the user hand until they pinch/grab it.',
+      parameters: { type: 'object', properties: { target: { type: 'string', description: 'Entity ID, name, or "latest".' } }, required: ['target'] }
+    },
+    {
+      name: 'tentacle_show',
+      description: 'Showcase an object with Geeny tentacle and holographic beam.',
+      parameters: { type: 'object', properties: { target: { type: 'string', description: 'Entity ID, name, or "latest".' } }, required: ['target'] }
+    },
+    {
+      name: 'tentacle_release',
+      description: 'Release any held object from Geeny tentacle.',
+      parameters: { type: 'object', properties: { reason: { type: 'string', description: 'Optional reason' } } }
+    },
+    {
+      name: 'open_portal',
+      description: 'Open a dancing 3D portal showing a 360 image or .glb world inside.',
+      parameters: { type: 'object', properties: { world: { type: 'string', description: 'World/asset name (e.g. forest) or empty for random.' } } }
+    },
+    {
+      name: 'set_environment',
+      description: 'Cinematically dissolve environment into default (AR passthrough), matrix_black, construct_gray, or 360:<image_name>.',
+      parameters: { type: 'object', properties: { environment: { type: 'string', description: 'default | matrix_black | construct_gray | 360:<name>' } }, required: ['environment'] }
+    },
+    {
+      name: 'run_instruction',
+      description: 'Run an instruction ability (e.g. "make a pen", "drawing gravity on").',
+      parameters: { type: 'object', properties: { command: { type: 'string', description: 'Instruction command' } }, required: ['command'] }
+    },
+    {
+      name: 'spawn_repo_asset',
+      description: 'Spawn a .glb, image, or video asset from repo /assets/ or local imports.',
+      parameters: { type: 'object', properties: { name: { type: 'string', description: 'Asset name' } }, required: ['name'] }
+    }
+  ];
+
+  async function resolveBoardImage(name) {
+    const key = String(name || '').replace(/\.[^.]+$/, '').toLowerCase().trim();
+    if (!key) return null;
+    let url = null;
+    if (APP.importedImages) {
+      const rec = APP.importedImages.get(key) || Array.from(APP.importedImages.values()).find((r) => r.cleanName.includes(key));
+      if (rec) url = rec.url;
+    }
+    if (!url) {
+      for (const p of [`./assets/${key}.jpg`, `./assets/${key}.png`, `./assets/${key}.webp`, `./${key}.jpg`, `./${key}.png`]) {
+        try { const h = await fetch(p, { method: 'HEAD' }); if (h.ok) { url = p; break; } } catch (_) {}
+      }
+    }
+    if (!url) return null;
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  async function executeToolCall(name, args) {
+    const a = args || {};
+    if (name === 'create_procedural_object') {
+      if (typeof APP.createProcedural !== 'function') return { ok: false, error: 'APP.createProcedural missing.' };
+      const res = APP.createProcedural(a.js_code, { name: a.name || 'AI Creation', holdable: a.holdable !== false });
+      if (res?.ok && res.entity) {
+        APP.lastEntityId = res.entity.id;
+        return { ok: true, id: res.entity.id, name: res.entity.name };
+      }
+      return res;
+    }
+    if (name === 'modify_entity') {
+      return modifyExistingEntity(a.entity_id, a.action || 'attach', a.js_code, a.summary || a.action);
+    }
+    if (name === 'show_holo_board') {
+      if (a.mode === 'image' && a.image_name) {
+        const img = await resolveBoardImage(a.image_name);
+        if (img) return showBoard({ title: a.title || a.image_name, mode: 'image', imageObj: img, caption: a.title });
+      }
+      if (a.mode === 'tutorial' && (!Array.isArray(a.steps) || !a.steps.length) && /cat|قط/i.test(a.title || '')) {
+        return showBoard(getCatDrawingTutorial());
+      }
+      return showBoard(a);
+    }
+    if (name === 'hide_holo_board') return hideBoard();
+    if (name === 'tentacle_grab') return tentacle_grab(a.target || 'latest');
+    if (name === 'tentacle_hand_to_user') return tentacle_hand_to_user(a.target || 'latest');
+    if (name === 'tentacle_show') return tentacle_show(a.target || 'latest');
+    if (name === 'tentacle_release') return tentacle_release();
+    if (name === 'open_portal') {
+      if (typeof APP.openPortal === 'function') return await APP.openPortal(a.world || '');
+      return await APP.runInstructionMatch?.('portal ' + (a.world || '')) || { ok: false, error: 'Portal ability unavailable.' };
+    }
+    if (name === 'set_environment') {
+      if (APP.visual?.setEnvironment) {
+        const env = APP.visual.setEnvironment(a.environment || 'default');
+        return { ok: true, environment: env };
+      }
+      return { ok: false, error: 'Visual module unavailable.' };
+    }
+    if (name === 'run_instruction') {
+      return await APP.runInstructionMatch?.(a.command || '') || { ok: false, error: 'No matching instruction.' };
+    }
+    if (name === 'spawn_repo_asset') {
+      const spawner = APP.spawnAsset || APP.spawnAssetByName;
+      return spawner ? await spawner(a.name || '') : { ok: false, error: 'Spawner unavailable.' };
+    }
+    return { ok: false, error: 'Unknown tool: ' + name };
+  }
+
+  function buildSystemPrompt(ignoreInstructions) {
+    const mode = APP.execMode || 'ai_instructions';
+    const useInst = !ignoreInstructions && mode === 'ai_instructions';
+    const instSummary = useInst && typeof APP.getInstructionSummaryForAI === 'function' ? APP.getInstructionSummaryForAI() : '';
+    const sceneMemory = buildSceneMemorySnapshot();
+
+    const lines = [
+      'You are Geeny, an intelligent, dynamic hi-tech flying robot companion in WebXR Mixed Reality.',
+      `User language: ${APP.lang || 'en-US'}.`,
+      '',
+      'LIVE SCENE MEMORY (use exact entity IDs for modifications!):',
+      sceneMemory,
+      '',
+      'CRITICAL BEHAVIOR RULES:',
+      '1. CONTINUOUS CONTEXT & ATTACHMENTS: If the user says "give it a hat", "put glasses on it", "add wings to the cat", "make it bigger", or modifies an existing object, NEVER create a separate disconnected object! ALWAYS call `modify_entity` targeting that entity ID (`info.findPart("head")` or `info.topY` in local coords) so the new piece becomes a child inside `targetGroup`!',
+      '2. SCULPTING NEW OBJECTS: When creating something new via `create_procedural_object`, ALWAYS name important parts (`head.name="head"`, `body.name="body"`) so future edits attach accurately, build rich multi-part geometry with `APP.craft`, and animate moving parts with `group.userData.onUpdate = (dt, ent) => { ... }`.',
+      '3. HOLOGRAPHIC BOARD: When asked to explain a tutorial, teach how to draw something (e.g. "show me how to draw a cat"), write notes, or display a picture, ALWAYS call `show_holo_board` with clear step-by-step `draw_commands` or `notes` or `image_name`, and explain it concisely!',
+      '4. PORTALS & ENVIRONMENTS: Use `open_portal` for portals and `set_environment` for Matrix / Construct / Passthrough / 360° photo transitions.',
+      '5. NEVER say "I cannot make that". Act immediately with tool calls, fix any JS error returned by a tool, and reply concisely (1-2 sentences).'
+    ];
+
+    if (useInst && instSummary) {
+      lines.push(
+        '',
+        'ACTIVE INSTRUCTION MODULES:',
+        instSummary,
+        'Use `run_instruction` for functional tools ("make a pen", "drawing gravity", "portal"). For creative "make X" / "اصنع X" requests, sculpt an original enhanced 3D creation via `create_procedural_object`.'
+      );
+    }
+
+    return lines.join('\n');
+  }
+
+  // ====================================================================
+  // 7. GEMINI 3.8 LIVE WEBSOCKET (Audio + Vision + Tools)
+  // ====================================================================
+  let liveWS = null;
+  let liveConnected = false;
+  let audioCtx = null;
+  let micStream = null;
+  let micWorkletNode = null;
+  let micScriptNode = null;
+  let visionTimer = null;
+  let nextPlayTime = 0;
+  const activePlaySources = new Set();
+
+  function ensureUnlockedAudioContext() {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AC();
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    try {
+      const buf = audioCtx.createBuffer(1, 128, audioCtx.sampleRate);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start(0);
+    } catch (_) {}
+    return audioCtx;
+  }
+
+  function floatTo16BitPCMBase64(float32, inputSampleRate) {
+    const targetRate = 16000;
+    const ratio = inputSampleRate / targetRate;
+    const outLen = Math.max(1, Math.floor(float32.length / ratio));
+    const buf = new ArrayBuffer(outLen * 2);
+    const view = new DataView(buf);
+    let sumSq = 0;
+    for (let i = 0; i < outLen; i++) {
+      const pos = i * ratio;
+      const i0 = Math.floor(pos);
+      const i1 = Math.min(float32.length - 1, i0 + 1);
+      const frac = pos - i0;
+      const s = Math.max(-1, Math.min(1, float32[i0] * (1 - frac) + float32[i1] * frac));
+      sumSq += s * s;
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    APP.micLevel = Math.min(1, Math.sqrt(sumSq / outLen) * 5.0);
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function stopLiveAudioPlayback() {
+    activePlaySources.forEach((src) => { try { src.stop(); } catch (_) {} });
+    activePlaySources.clear();
+    nextPlayTime = audioCtx ? audioCtx.currentTime : 0;
+    APP.botSpeaking = false;
+  }
+
+  function playPCM24kBase64(b64) {
+    if (!b64) return;
+    const ctx = ensureUnlockedAudioContext();
+    const bin = atob(b64);
+    const sampleCount = Math.floor(bin.length / 2);
+    if (sampleCount <= 0) return;
+
+    const floatBuf = new Float32Array(sampleCount);
+    for (let i = 0; i < sampleCount; i++) {
+      const lo = bin.charCodeAt(i * 2);
+      const hi = bin.charCodeAt(i * 2 + 1);
+      let val = (hi << 8) | lo;
+      if (val >= 0x8000) val -= 0x10000;
+      floatBuf[i] = val / 32768;
+    }
+
+    const audioBuf = ctx.createBuffer(1, sampleCount, 24000);
+    audioBuf.getChannelData(0).set(floatBuf);
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now + 0.025;
+    src.start(nextPlayTime);
+    nextPlayTime += audioBuf.duration;
+
+    APP.botSpeaking = true;
+    activePlaySources.add(src);
+    src.onended = function () {
+      activePlaySources.delete(src);
+      if (activePlaySources.size === 0) APP.botSpeaking = false;
+    };
+  }
+
+  async function startMicStreamingForLive() {
+    if (!navigator.mediaDevices?.getUserMedia) return;
+    const ctx = ensureUnlockedAudioContext();
+    stopMicStreamingForLive();
+
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
+    });
+    const source = ctx.createMediaStreamSource(micStream);
+    const muteGain = ctx.createGain();
+    muteGain.gain.value = 0;
+    muteGain.connect(ctx.destination);
+
+    let usedWorklet = false;
+    if (ctx.audioWorklet && typeof Blob !== 'undefined') {
+      try {
+        const workletCode = [
+          'class PCM16Cap extends AudioWorkletProcessor {',
+          '  process(inputs) { const ch = inputs[0]?.[0]; if (ch) this.port.postMessage(ch); return true; }',
+          '}',
+          'registerProcessor("wxr-geeny-pcm16", PCM16Cap);'
+        ].join('\n');
+        const url = URL.createObjectURL(new Blob([workletCode], { type: 'application/javascript' }));
+        await ctx.audioWorklet.addModule(url);
+        URL.revokeObjectURL(url);
+        micWorkletNode = new AudioWorkletNode(ctx, 'wxr-geeny-pcm16');
+        micWorkletNode.port.onmessage = function (ev) {
+          if (!liveWS || liveWS.readyState !== 1 || APP.botSpeaking) return;
+          const b64 = floatTo16BitPCMBase64(ev.data, ctx.sampleRate);
+          liveWS.send(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: b64 } } }));
+        };
+        source.connect(micWorkletNode);
+        micWorkletNode.connect(muteGain);
+        usedWorklet = true;
+      } catch (_) {}
+    }
+
+    if (!usedWorklet) {
+      micScriptNode = ctx.createScriptProcessor(2048, 1, 1);
+      micScriptNode.onaudioprocess = function (e) {
+        if (!liveWS || liveWS.readyState !== 1 || APP.botSpeaking) return;
+        const b64 = floatTo16BitPCMBase64(e.inputBuffer.getChannelData(0), ctx.sampleRate);
+        liveWS.send(JSON.stringify({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: b64 } } }));
+      };
+      source.connect(micScriptNode);
+      micScriptNode.connect(muteGain);
+    }
+  }
+
+  function stopMicStreamingForLive() {
+    if (micWorkletNode) { try { micWorkletNode.disconnect(); } catch (_) {} micWorkletNode = null; }
+    if (micScriptNode) { try { micScriptNode.disconnect(); } catch (_) {} micScriptNode = null; }
+    if (micStream) { micStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} }); micStream = null; }
+    APP.micLevel = 0;
+  }
+
+  async function connectLive(enableMicStream) {
+    ensureUnlockedAudioContext();
+    if (!APP.ai) return { ok: false, error: 'APP.ai unavailable.' };
+    const model = APP.ai.getSelectedModel();
+    if (!model.supportsLiveWS) return { ok: false, error: `"${model.id}" is not a Live WebSocket model.` };
+    const apiKey = APP.ai.getKey('gemini');
+    if (!apiKey) return { ok: false, error: 'Missing Google AI Studio key (AIza...).' };
+
+    disconnectLive();
+    const wsUrl = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' +
+      encodeURIComponent(apiKey);
+
+    return new Promise((resolve) => {
+      try { liveWS = new WebSocket(wsUrl); }
+      catch (e) { resolve({ ok: false, error: 'WebSocket error: ' + e.message }); return; }
+
+      let settled = false;
+      liveWS.onopen = function () {
+        liveWS.send(JSON.stringify({
+          setup: {
+            model: 'models/' + model.id,
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } } }
+            },
+            systemInstruction: { parts: [{ text: buildSystemPrompt(APP.execMode === 'ai') }] },
+            tools: [{ functionDeclarations: BOT_TOOLS }],
+            inputAudioTranscription: {},
+            outputAudioTranscription: {}
+          }
+        }));
+      };
+
+      liveWS.onmessage = async function (evt) {
+        let msg;
+        try {
+          msg = JSON.parse(typeof evt.data === 'string' ? evt.data : await evt.data.text());
+        } catch (_) { return; }
+
+        if (msg.setupComplete) {
+          liveConnected = true;
+          APP.ui?.setStatus?.(`Geeny Live (${model.id})`, 'ok');
+          APP.ui?.toast?.(`Geeny Live Voice connected (${model.id})`);
+          if (enableMicStream) {
+            startMicStreamingForLive().catch((err) => APP.ui?.toast?.('Live Mic Error: ' + err.message));
+          }
+          visionTimer = setInterval(() => {
+            if (!liveWS || liveWS.readyState !== 1) return;
+            const b64 = APP.captureVisionFrame?.() || APP.latestVisionB64;
+            if (b64) {
+              liveWS.send(JSON.stringify({
+                realtimeInput: { video: { mimeType: 'image/jpeg', data: String(b64).replace(/^data:image\/\w+;base64,/, '') } }
+              }));
+            }
+          }, 1500);
+          if (!settled) { settled = true; resolve({ ok: true }); }
+          return;
+        }
+
+        if (msg.serverContent) {
+          if (msg.serverContent.interrupted) stopLiveAudioPlayback();
+          const turn = msg.serverContent.modelTurn;
+          if (turn?.parts) {
+            for (const part of turn.parts) {
+              if (part.inlineData?.data && (!part.inlineData.mimeType || part.inlineData.mimeType.includes('pcm') || part.inlineData.mimeType.startsWith('audio/'))) {
+                playPCM24kBase64(part.inlineData.data);
+              }
+              if (part.text) APP.ui?.toast?.('Geeny: ' + part.text.slice(0, 140));
+            }
+          }
+          if (msg.serverContent.outputTranscription?.text) {
+            APP.ui?.toast?.('Geeny: ' + msg.serverContent.outputTranscription.text.slice(0, 140));
+          }
+        }
+
+        if (msg.toolCall?.functionCalls) {
+          const responses = [];
+          for (const fc of msg.toolCall.functionCalls) {
+            const out = await executeToolCall(fc.name, fc.args || {});
+            responses.push({ id: fc.id, name: fc.name, response: out || { ok: true } });
+          }
+          if (liveWS && liveWS.readyState === 1) {
+            liveWS.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
+          }
+        }
+      };
+
+      liveWS.onerror = function () {
+        if (!settled) { settled = true; resolve({ ok: false, error: `Gemini Live connection failed for "${model.id}".` }); }
+      };
+      liveWS.onclose = function (ev) {
+        liveConnected = false;
+        stopMicStreamingForLive();
+        if (visionTimer) { clearInterval(visionTimer); visionTimer = null; }
+        if (!settled) { settled = true; resolve({ ok: false, error: `Gemini Live closed (${ev.code})` }); }
+      };
+    });
+  }
+
+  function disconnectLive() {
+    liveConnected = false;
+    stopMicStreamingForLive();
+    stopLiveAudioPlayback();
+    if (visionTimer) { clearInterval(visionTimer); visionTimer = null; }
+    if (liveWS) { try { liveWS.close(); } catch (_) {} liveWS = null; }
+  }
+
+  async function setLiveMic(enabled) {
+    ensureUnlockedAudioContext();
+    if (enabled) {
+      if (!liveConnected) {
+        const res = await connectLive(true);
+        if (!res.ok) {
+          APP.ui?.toast?.(res.error, 6000);
+          APP.micActive = false;
+          APP.toolbar?.syncState?.();
+        }
+      } else {
+        await startMicStreamingForLive();
+      }
+    } else {
+      stopMicStreamingForLive();
+    }
+  }
+
+  async function sendLiveText(text) {
+    ensureUnlockedAudioContext();
+    if (!liveConnected || !liveWS || liveWS.readyState !== 1) {
+      const res = await connectLive(!!APP.micActive);
+      if (!res.ok) throw new Error(res.error);
+    }
+    liveWS.send(JSON.stringify({
+      clientContent: { turns: [{ role: 'user', parts: [{ text: String(text) }] }], turnComplete: true }
+    }));
+  }
+
+  // ====================================================================
+  // 8. EPISODIC TURN HANDLER (20-Turn Memory)
+  // ====================================================================
+  const chatHistory = [];
+
+  async function handleCommand(userText, opts = {}) {
+    if (!APP.ai) return { ok: false, error: 'AI module (ai_models.txt) not loaded.' };
+    const model = APP.ai.getSelectedModel();
+
+    if (model.supportsLiveWS && !model.supportsRest) {
+      try {
+        await sendLiveText(userText);
+        return { ok: true, text: '(Sent to Geeny Live)' };
+      } catch (e) {
+        APP.ui?.setStatus?.('Live Error', 'err');
+        APP.ui?.toast?.(e.message, 6000);
+        return { ok: false, error: e.message };
+      }
+    }
+
+    const visionB64 = model.supportsVision ? (APP.captureVisionFrame?.() || APP.latestVisionB64) : undefined;
+    chatHistory.push({ role: 'user', content: String(userText) });
+    if (chatHistory.length > 20) chatHistory.splice(0, chatHistory.length - 20);
+
+    APP.ui?.setStatus?.(`Geeny thinking (${model.id})...`, 'busy');
+
+    const res = await APP.ai.chat({
+      systemPrompt: buildSystemPrompt(!!opts.ignoreInstructions),
+      messages: chatHistory,
+      tools: BOT_TOOLS,
+      imageB64: visionB64,
+      onToolCall: executeToolCall,
+      maxSteps: 6
+    });
+
+    if (!res.ok) {
+      APP.ui?.setStatus?.('AI Error', 'err');
+      APP.ui?.toast?.(res.error, 6500);
+      return res;
+    }
+
+    // Record tool actions into episodic memory so Geeny remembers exact created IDs & modifications
+    const toolSummary = (res.toolTrace || [])
+      .map((t) => `[${t.name}: ${JSON.stringify(t.result)}]`)
+      .join(' ');
+    const replyText = res.text || (toolSummary ? 'Done!' : 'Ready.');
+    chatHistory.push({
+      role: 'assistant',
+      content: toolSummary ? `${replyText}\n(Executed: ${toolSummary})` : replyText
+    });
+
+    APP.ui?.setStatus?.('Ready', 'ok');
+    APP.ui?.toast?.('Geeny: ' + replyText);
+    APP.speakTTS?.(replyText);
+    return res;
+  }
+
+  // ====================================================================
+  // 9. HOOKS & EXPORTS
+  // ====================================================================
+  const unsubFrame = APP.onUpdate ? APP.onUpdate(updateRobot) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(updateRobot);
+  const unsubBotToggle = APP.on?.('bot:toggle', () => setEnabled(!botEnabled));
+
+  APP._botCleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame();
+    else APP.frameHooks?.delete(updateRobot);
+    if (typeof unsubBotToggle === 'function') unsubBotToggle();
+    APP.pokeTargets?.delete(boardScreen);
+    disconnectLive();
+    if (botRoot.parent) botRoot.parent.remove(botRoot);
+    if (tentacleGroup.parent) tentacleGroup.parent.remove(tentacleGroup);
+  };
+
+  APP.bot = {
+    name: 'Geeny',
+    root: botRoot,
+    tentacleGroup,
+    get heldEntity() { return state.heldEnt; },
+    set heldEntity(v) { if (!v) releaseHeldEntity(); },
+    isEnabled: () => botEnabled,
+    setEnabled,
+    toggle: () => setEnabled(!botEnabled),
+    tentacle_grab,
+    tentacle_hand_to_user,
+    tentacle_show,
+    tentacle_release,
+    showBoard,
+    hideBoard,
+    stepBoard,
+    modifyEntity: modifyExistingEntity,
+    onEntityCreated: function (ent) {
+      if (!ent) return;
+      APP.lastEntityId = ent.id;
+      if (botEnabled && state.mode === 'idle') tentacle_show(ent);
+    },
+    setLiveMic,
+    connectLive,
+    disconnectLive,
+    isLiveConnected: () => liveConnected,
+    sendLiveText,
+    handleCommand,
+    update: updateRobot
+  };
+
+  APP.registerAbilityHandler?.('robot_companion_sphere', function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('hide board') || low.includes('close board') || low.includes('اخف اللوح')) return hideBoard();
+    if (low.includes('draw') && low.includes('cat')) {
+      const r = showBoard(getCatDrawingTutorial());
+      APP.speakTTS?.('Here is how to draw a cat! Step 1: start with a circle for the head and an oval for the body.');
+      return r;
+    }
+    if (low.includes('board') || low.includes('notes') || low.includes('اللوح')) {
+      return showBoard({
+        title: 'Geeny Notes',
+        mode: 'notes',
+        notes: [
+          'Ask me: "Hey Geeny, show me how to draw a cat"',
+          'Build and attach: "make a cat" then "give it a hat"',
+          'Say "show a portal to the forest" to open a 3D world portal'
+        ]
+      });
+    }
+    if (low.includes('release') || low.includes('drop') || low.includes('اترك')) return tentacle_release();
+    if (low.includes('hand me') || low.includes('give me') || low.includes('اعطني')) return tentacle_hand_to_user('latest');
+    if (low.includes('grab') || low.includes('امسك')) return tentacle_grab('latest');
+    if (low.includes('show') || low.includes('ارني')) return tentacle_show('latest');
+    if (low.includes('come here') || low.includes('تعال')) {
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+      const hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+      const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize();
+      state.worldAnchor.copy(hp).addScaledVector(flat, 0.95);
+      state.worldAnchor.y = Math.max(1.0, hp.y + 0.04);
+      state.mode = 'idle';
+      return { ok: true, message: 'Geeny flew closer.' };
+    }
+    if (low.includes('off') || low.includes('hide')) {
+      setEnabled(false);
+      return { ok: true, message: 'Geeny hidden.' };
+    }
+    setEnabled(true);
+    return { ok: true, message: 'Geeny online.' };
+  });
+})();
+@end
