@@ -1245,4 +1245,76 @@
   APP._inst4Cleanup = () => {
     S.disposed = true; try { unsub && unsub(); } catch (_) {}
     listeners.forEach((fn) => { try { fn(); } catch (_) {} });
-    try { if (worker) worker.terminate(); } catch (_) {} pend.forEach((p) => p.re
+    try { if (worker) worker.terminate(); } catch (_) {} pend.forEach((p) => p.rej(new Error('disposed'))); pend.clear(); worker = null;
+    S.reveals.forEach((rv) => { rv.root && rv.root.traverse((o) => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { m.clippingPlanes = null; m.needsUpdate = true; }); }); }); S.reveals = [];
+    endAllStrokes(); S.cursors.forEach((c) => APP.scene.remove(c)); S.cursors.clear();
+    S.undo.forEach((r) => { cleanHolo(r); if (r.group) { r.rawEnt ? (() => { try { APP.removeEntity(r.rawEnt, false); } catch (_) { disposeDeep(r.group); } })() : disposeDeep(r.group); } });
+    if (S.rawGroup) { S.rawEnt ? (() => { try { APP.removeEntity(S.rawEnt, false); } catch (_) { disposeDeep(S.rawGroup); } })() : disposeDeep(S.rawGroup); }
+    try { [P.screen, P.bar, P.orb].forEach((m) => APP.pokeTargets && APP.pokeTargets.delete(m)); } catch (_) {}
+    try { APP.scene.remove(P.root); P.tex.dispose(); disposeDeep(P.root); } catch (_) {}
+    try { hud.remove(); } catch (_) {}
+    disposers.forEach((fn) => { try { fn(); } catch (_) {} });
+    try { APP.renderer.localClippingEnabled = !!S.prevLocal; } catch (_) {}
+    if (APP._inst4 && APP._inst4.state === S) APP._inst4 = null;
+  };
+  toast('Sculpt module ready — press the Sculpt toggle, hold Grip (G) + Trigger to draw', 3200);
+})();
+@end
+
+@ability: sculpt_toggle
+@pin: Sculpt ON/OFF
+@desc: Toggle 3D air-drawing (sculpt) mode on or off
+@match: sculpt on | sculpt off | toggle sculpt | start sculpting | stop sculpting
+@code:
+(async function () {
+  if (!APP._inst4) { APP.ui?.toast?.('Sculpt module not loaded yet', 2500); return; }
+  APP._inst4.toggle();
+})();
+@end
+
+@ability: sculpt_undo
+@pin: Sculpt Undo
+@desc: Remove the last manifested sculpture and restore its raw strokes for editing
+@match: undo sculpt | undo drawing | restore strokes
+@code:
+(async function () {
+  if (!APP._inst4) { APP.ui?.toast?.('Sculpt module not loaded yet', 2500); return; }
+  APP._inst4.undo();
+})();
+@end
+
+@ability: sculpt_mode_cycle
+@pin: Sculpt Mode
+@desc: Cycle output mode A (AI refine) / B (GLB match) / C (generative 3D)
+@match: sculpt mode | change sculpt mode | output mode
+@code:
+(async function () {
+  if (!APP._inst4) { APP.ui?.toast?.('Sculpt module not loaded yet', 2500); return; }
+  APP._inst4.cycleMode();
+})();
+@end
+
+@ability: sculpt_name_hint
+@pin: Name my drawing
+@desc: Tell the sculpt tool what you are drawing so it skips recognition and matches the named GLB directly
+@match: i'm drawing | i am drawing | i will draw | i'm going to draw | i am going to draw | i want to draw | i'm making a | draw a
+@code:
+(async function () {
+  if (!APP._inst4) { APP.ui?.toast?.('Sculpt module not loaded yet', 2500); return; }
+  // Wire this to whatever your host exposes the user's last spoken words in (e.g. the Gemini Live transcript).
+  const said = APP.lastUtterance || APP.lastTranscript || window.lastUtterance || '';
+  APP._inst4.setHint(said);
+})();
+@end
+
+@ability: sculpt_name_mode
+@pin: Name first / Auto
+@desc: Switch between saying the object first (direct GLB match) and automatic recognition
+@match: name first | say it first | recognise automatically | auto recognise | auto mode
+@code:
+(async function () {
+  if (!APP._inst4) { APP.ui?.toast?.('Sculpt module not loaded yet', 2500); return; }
+  APP._inst4.setNameMode(APP._inst4.state.nameMode === 'said' ? 'auto' : 'said');
+})();
+@end
+
