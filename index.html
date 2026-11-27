@@ -1,0 +1,2139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>NexusXR — Modular Mixed Reality Studio</title>
+  <style>
+    :root {
+      --bg-glass: rgba(10, 16, 26, 0.80);
+      --border-glass: rgba(0, 240, 180, 0.28);
+      --accent: #00f0b4;
+      --accent-2: #38bdf8;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      overflow: hidden; background: #05080d; color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      touch-action: none; user-select: none;
+    }
+    canvas#xr-canvas {
+      position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+      z-index: 1;
+    }
+    #hud-root {
+      position: fixed; inset: 0; z-index: 10; pointer-events: none;
+      display: flex; flex-direction: column; justify-content: space-between;
+      padding: env(safe-area-inset-top, 10px) 12px env(safe-area-inset-bottom, 12px);
+    }
+    #hud-root .interactive { pointer-events: auto; }
+    .glass {
+      background: var(--bg-glass);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid var(--border-glass);
+      border-radius: 14px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+    }
+    .btn {
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px;
+      padding: 7px 11px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform .12s, background .15s, border-color .15s;
+      display: inline-flex; align-items: center; gap: 5px;
+      white-space: nowrap;
+    }
+    .btn:hover { background: rgba(255,255,255,0.15); }
+    .btn:active { transform: scale(0.96); }
+    .btn.active {
+      background: rgba(0, 240, 180, 0.22);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .btn.danger { border-color: rgba(239,68,68,0.55); color: #fecaca; }
+    .btn.warn { border-color: rgba(245,158,11,0.55); color: #fde68a; }
+    input, select, textarea {
+      background: rgba(0,0,0,0.45);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 9px;
+      padding: 7px 10px;
+      font-size: 13px;
+      outline: none;
+    }
+    input[type="range"] {
+      padding: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    #top-bar {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 8px 12px;
+    }
+    #status-pill {
+      display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted);
+      max-width: 58vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+    .dot.busy { background: var(--warn); animation: pulse 1s infinite; }
+    .dot.err { background: var(--danger); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    #log-toast {
+      align-self: center;
+      max-width: min(92vw, 660px);
+      padding: 8px 14px;
+      font-size: 13px;
+      line-height: 1.4;
+      text-align: center;
+      opacity: 0;
+      transform: translateY(-6px);
+      transition: opacity .25s, transform .25s;
+      pointer-events: none;
+    }
+    #log-toast.show { opacity: 1; transform: translateY(0); }
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 30;
+      background: rgba(0,0,0,0.68); backdrop-filter: blur(6px);
+      display: none; align-items: center; justify-content: center; padding: 14px;
+      pointer-events: auto;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+      width: min(95vw, 780px); max-height: 88vh; overflow-y: auto;
+      padding: 16px; display: flex; flex-direction: column; gap: 12px;
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;
+    }
+    .modal-header h3 { margin: 0; font-size: 16px; color: var(--accent); }
+    #bottom-hud-mount { width: min(96vw, 880px); margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+    #core-bottom-bar { display: flex; flex-direction: column; gap: 7px; padding: 9px 11px; }
+    .core-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .slider-wrap {
+      display: inline-flex; align-items: center; gap: 7px;
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(0,240,180,0.28);
+      border-radius: 10px; padding: 4px 10px; font-size: 11px; font-weight: 700;
+    }
+    .hidden { display: none !important; }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.173.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="xr-canvas"></canvas>
+
+  <div id="hud-root">
+    <!-- Top Status & XR Entry Bar -->
+    <div id="top-bar" class="glass interactive">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <strong style="color:var(--accent);letter-spacing:.4px;">NexusXR</strong>
+        <div id="status-pill">
+          <span id="status-dot" class="dot"></span>
+          <span id="status-text">Initializing WebXR Core...</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <button id="btn-enter-ar" class="btn active">Enter AR</button>
+        <button id="btn-enter-vr" class="btn">Enter VR</button>
+        <button id="btn-open-ai" class="btn">AI & Keys</button>
+        <button id="btn-open-assets" class="btn">Assets</button>
+        <button id="btn-open-editor" class="btn">GitHub .txt</button>
+      </div>
+    </div>
+
+    <!-- Floating Toast Feedback -->
+    <div id="log-toast" class="glass"></div>
+
+    <!-- Bottom HUD Mount -->
+    <div id="bottom-hud-mount" class="interactive">
+      <div id="core-bottom-bar" class="glass">
+        <div class="core-row">
+          <div class="slider-wrap" title="0% = 100% AI Creativity, 50% = Balanced, 100% = 100% Deterministic Instructions">
+            <span style="color:#38bdf8;">AI</span>
+            <input id="core-ai-slider" type="range" min="0" max="100" step="5" value="50" style="width:118px;" />
+            <span style="color:#00f0b4;">Inst</span>
+            <span id="core-slider-label" style="color:#e2e8f0;min-width:96px;text-align:center;">50% AI · 50% Inst</span>
+          </div>
+          <select id="core-lang-select" title="Voice Language" style="padding:5px 8px;font-size:12px;">
+            <option value="en-US">en-US</option>
+            <option value="ar-DZ">ar-DZ (العربية)</option>
+          </select>
+          <button id="core-mic-btn" class="btn">Mic: OFF</button>
+          <button id="core-grav-btn" class="btn">Draw Gravity: OFF</button>
+          <button id="core-clear-btn" class="btn danger">Clear All</button>
+        </div>
+        <div class="core-row">
+          <input id="core-cmd-input" type="text" style="flex:1;min-width:190px;" placeholder="Type command (e.g. make water, make it rain, make a pen, portal to forest)..." />
+          <button id="core-send-btn" class="btn active">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared Modal Containers -->
+  <div id="modal-ai" class="modal-backdrop">
+    <div class="modal-card glass">
+      <div class="modal-header">
+        <h3>AI Models & API Keys</h3>
+        <button class="btn" id="btn-close-ai">Close</button>
+      </div>
+      <div id="modal-ai-body"></div>
+    </div>
+  </div>
+
+  <div id="modal-assets" class="modal-backdrop">
+    <div class="modal-card glass">
+      <div class="modal-header">
+        <h3>Repo & Local Assets (.glb, .png, .jpg, .mp4)</h3>
+        <button class="btn" id="btn-close-assets">Close</button>
+      </div>
+      <div id="modal-assets-body">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <label class="btn active" style="cursor:pointer;">
+            + Import Local Files
+            <input id="local-asset-input" type="file" multiple accept=".glb,.gltf,.png,.jpg,.jpeg,.webp,.mp4,.webm" style="display:none;" />
+          </label>
+          <button class="btn" id="btn-refresh-assets">Scan Repo /assets/</button>
+          <span style="font-size:12px;color:var(--muted);">Click any asset below to spawn in front of you.</span>
+        </div>
+        <div id="asset-tray-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:10px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-editor" class="modal-backdrop">
+    <div class="modal-card glass">
+      <div class="modal-header">
+        <h3>GitHub .txt Natural-Language Editor & Sandbox</h3>
+        <button class="btn" id="btn-close-editor">Close</button>
+      </div>
+      <div id="modal-editor-body"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+    import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+    import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
+    import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+    // =========================================================================
+    // 1. RENDERER, SCENE, LIGHTING & REFLECTIONS
+    // =========================================================================
+    const canvas = document.getElementById('xr-canvas');
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance'
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.xr.enabled = true;
+    renderer.localClippingEnabled = true;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.03, 120);
+    camera.position.set(0, 1.55, 0.2);
+
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnvTexture = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environment = roomEnvTexture;
+
+    const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(128, {
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter
+    });
+    const cubeCamera = new THREE.CubeCamera(0.1, 30, cubeRenderTarget);
+    scene.add(cubeCamera);
+
+    const hemiLight = new THREE.HemisphereLight(0xdbeafe, 0x1e293b, 0.85);
+    scene.add(hemiLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.35);
+    dirLight.position.set(2.5, 4.5, 2.5);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.set(1024, 1024);
+    dirLight.shadow.camera.near = 0.2;
+    dirLight.shadow.camera.far = 16;
+    dirLight.shadow.camera.left = -4;
+    dirLight.shadow.camera.right = 4;
+    dirLight.shadow.camera.top = 4;
+    dirLight.shadow.camera.bottom = -4;
+    dirLight.shadow.bias = -0.0005;
+    scene.add(dirLight);
+
+    let xrEstimatedLight = null;
+    try {
+      xrEstimatedLight = new XREstimatedLight(renderer);
+      xrEstimatedLight.addEventListener('estimationstart', () => {
+        scene.add(xrEstimatedLight);
+        hemiLight.intensity = 0.25;
+        if (xrEstimatedLight.environment) scene.environment = xrEstimatedLight.environment;
+      });
+      xrEstimatedLight.addEventListener('estimationend', () => {
+        scene.remove(xrEstimatedLight);
+        hemiLight.intensity = 0.85;
+        scene.environment = roomEnvTexture;
+      });
+    } catch (_) {}
+
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.173.0/examples/jsm/libs/draco/');
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.setDRACOLoader(dracoLoader);
+
+    // =========================================================================
+    // 2. EVENT BUS & SHARED GLOBAL NAMESPACE: window.APP
+    // =========================================================================
+    const eventListeners = new Map();
+    const savedWeightRaw = localStorage.getItem('APP_INST_WEIGHT');
+    const initialWeight = savedWeightRaw !== null ? Math.max(0, Math.min(100, Number(savedWeightRaw))) : 50;
+
+    function weightToMode(w) {
+      if (w <= 0) return 'ai';
+      if (w >= 100) return 'instructions';
+      return 'ai_instructions';
+    }
+
+    const APP = window.APP = {
+      THREE,
+      GLTFLoader,
+      DRACOLoader,
+      RoundedBoxGeometry,
+      gltfLoader,
+      scene,
+      camera,
+      renderer,
+      cubeCamera,
+      cubeRenderTarget,
+      roomEnvTexture,
+      defaultEnvironmentTex: roomEnvTexture,
+      ambientLight: hemiLight,
+      dirLight,
+      lights: { hemiLight, dirLight },
+
+      instWeight: initialWeight,
+      execMode: weightToMode(initialWeight),
+      lang: localStorage.getItem('APP_LANG') || 'en-US',
+      drawingGravity: false,
+      drawingEnabled: false,
+      desktopDrawActive: false,
+      activeEnv: 'default',
+      xrMode: 'none',
+      isAR: false,
+      isVR: false,
+      micActive: false,
+      micLevel: 0,
+      isSpeakingTTS: false,
+      ttsSpeaking: false,
+      botSpeaking: false,
+
+      headPos: new THREE.Vector3(0, 1.55, 0.2),
+      headFwd: new THREE.Vector3(0, 0, -1),
+      headQuat: new THREE.Quaternion(),
+
+      hands: {},
+      entities: [],
+      planes: [],
+      xrPlanes: [],
+      frameHooks: new Set(),
+      pokeTargets: new Set(),
+      modules: {},
+      abilities: new Map(),
+      abilityHandlers: new Map(),
+      autorunHandles: [],
+      sandboxFiles: {},
+
+      importedGLBs: new Map(),
+      importedImages: new Map(),
+      importedVideos: new Map(),
+
+      ai: null,
+      visual: null,
+      toolbar: null,
+      bot: null,
+      latestVisionB64: null,
+
+      repo: {
+        owner: localStorage.getItem('GH_OWNER') || '',
+        name: localStorage.getItem('GH_REPO') || '',
+        branch: localStorage.getItem('GH_BRANCH') || 'main',
+        pat: localStorage.getItem('GH_PAT') || ''
+      },
+
+      on(event, fn) {
+        if (!eventListeners.has(event)) eventListeners.set(event, new Set());
+        eventListeners.get(event).add(fn);
+        return () => eventListeners.get(event)?.delete(fn);
+      },
+      emit(event, payload) {
+        if (event === 'status') APP.ui.toast(String(payload), 3500);
+        const set = eventListeners.get(event);
+        if (!set) return;
+        for (const fn of set) {
+          try { fn(payload); } catch (e) { console.warn(`[APP.on ${event}]`, e); }
+        }
+      },
+      onUpdate(fn) {
+        APP.frameHooks.add(fn);
+        return () => APP.frameHooks.delete(fn);
+      },
+      registerAbilityHandler(id, fn) {
+        APP.abilityHandlers.set(id, fn);
+      }
+    };
+
+    (function normalizeAndInferRepo() {
+      const cleanSeg = (v) => String(v || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+      const rawOwner = cleanSeg(APP.repo.owner);
+      const rawName = cleanSeg(APP.repo.name);
+      if (rawOwner.includes('/')) {
+        const [o, n] = rawOwner.split('/');
+        APP.repo.owner = o || '';
+        if (!rawName && n) APP.repo.name = n;
+      } else {
+        APP.repo.owner = rawOwner;
+      }
+      if (rawName.includes('/')) {
+        const parts = rawName.split('/');
+        if (!APP.repo.owner) APP.repo.owner = parts[0] || '';
+        APP.repo.name = parts[1] || parts[0] || '';
+      } else if (rawName) {
+        APP.repo.name = rawName;
+      }
+      if (!APP.repo.owner && location.hostname.endsWith('.github.io')) {
+        APP.repo.owner = location.hostname.split('.')[0];
+        const parts = location.pathname.split('/').filter(Boolean);
+        if (!APP.repo.name) {
+          APP.repo.name = (parts.length > 0 && !/\.html?$/i.test(parts[0])) ? parts[0] : `${APP.repo.owner}.github.io`;
+        }
+      }
+    })();
+
+    APP.formatBlendLabel = function formatBlendLabel(w) {
+      const inst = Math.round(w);
+      const ai = 100 - inst;
+      if (inst === 0) return '100% AI';
+      if (inst === 100) return '100% Inst';
+      return `${ai}% AI · ${inst}% Inst`;
+    };
+
+    APP.setInstWeight = function setInstWeight(val) {
+      const clamped = Math.max(0, Math.min(100, Math.round(Number(val) || 0)));
+      APP.instWeight = clamped;
+      APP.execMode = weightToMode(clamped);
+      localStorage.setItem('APP_INST_WEIGHT', String(clamped));
+      localStorage.setItem('APP_EXEC_MODE', APP.execMode);
+      syncCoreHUD();
+      APP.emit('mode:changed', APP.execMode);
+      APP.emit('instWeight:changed', clamped);
+      return clamped;
+    };
+
+    APP.setExecMode = function setExecMode(mode) {
+      if (mode === 'ai') return APP.setInstWeight(0);
+      if (mode === 'instructions') return APP.setInstWeight(100);
+      if (mode === 'ai_instructions') return APP.setInstWeight(50);
+      return APP.instWeight;
+    };
+
+    APP.setLang = function setLang(lang) {
+      APP.lang = lang === 'ar-DZ' ? 'ar-DZ' : 'en-US';
+      localStorage.setItem('APP_LANG', APP.lang);
+      syncCoreHUD();
+      if (APP.micActive) {
+        APP.toggleMic(false).then(() => APP.toggleMic(true));
+      }
+      return APP.lang;
+    };
+
+    APP.setDrawingGravity = function setDrawingGravity(val) {
+      APP.drawingGravity = !!val;
+      syncCoreHUD();
+      APP.emit('drawing:gravity_changed', APP.drawingGravity);
+      return APP.drawingGravity;
+    };
+
+    // =========================================================================
+    // 3. UI STATUS, TOASTS, MODALS & CORE BOTTOM HUD
+    // =========================================================================
+    let toastTimer = null;
+    APP.ui = {
+      setStatus(text, state = 'ok') {
+        const el = document.getElementById('status-text');
+        const dot = document.getElementById('status-dot');
+        if (el) el.textContent = text;
+        if (dot) {
+          dot.className = 'dot' + (state === 'busy' ? ' busy' : state === 'err' ? ' err' : '');
+        }
+      },
+      toast(msg, duration = 4200) {
+        const el = document.getElementById('log-toast');
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+        console.log('[NexusXR]', msg);
+      },
+      openModal(id) {
+        APP.ui.closeModals();
+        const m = document.getElementById(id);
+        if (m) m.classList.add('open');
+      },
+      closeModals() {
+        document.querySelectorAll('.modal-backdrop').forEach(el => el.classList.remove('open'));
+      }
+    };
+
+    function syncCoreHUD() {
+      const slider = document.getElementById('core-ai-slider');
+      const label = document.getElementById('core-slider-label');
+      if (slider) slider.value = String(APP.instWeight);
+      if (label) label.textContent = APP.formatBlendLabel(APP.instWeight);
+
+      const langSel = document.getElementById('core-lang-select');
+      if (langSel) langSel.value = APP.lang;
+      const micBtn = document.getElementById('core-mic-btn');
+      if (micBtn) {
+        micBtn.textContent = `Mic: ${APP.micActive ? 'ON' : 'OFF'}`;
+        micBtn.classList.toggle('active', APP.micActive);
+      }
+      const gravBtn = document.getElementById('core-grav-btn');
+      if (gravBtn) {
+        gravBtn.textContent = `Draw Gravity: ${APP.drawingGravity ? 'ON' : 'OFF'}`;
+        gravBtn.classList.toggle('active', APP.drawingGravity);
+      }
+    }
+
+    document.getElementById('btn-open-ai').onclick = () => {
+      if (APP.ai?.openPanel) APP.ai.openPanel();
+      else APP.ui.openModal('modal-ai');
+    };
+    document.getElementById('btn-open-assets').onclick = () => {
+      APP.renderAssetTray();
+      APP.ui.openModal('modal-assets');
+    };
+    document.getElementById('btn-open-editor').onclick = () => {
+      if (APP.toolbar?.openGitHubEditor) APP.toolbar.openGitHubEditor();
+      else APP.ui.openModal('modal-editor');
+    };
+    document.getElementById('btn-close-ai').onclick = () => APP.ui.closeModals();
+    document.getElementById('btn-close-assets').onclick = () => APP.ui.closeModals();
+    document.getElementById('btn-close-editor').onclick = () => APP.ui.closeModals();
+    document.querySelectorAll('.modal-backdrop').forEach(el => {
+      el.addEventListener('click', (e) => { if (e.target === el) APP.ui.closeModals(); });
+    });
+
+    const coreSlider = document.getElementById('core-ai-slider');
+    coreSlider.addEventListener('input', (e) => APP.setInstWeight(e.target.value));
+    document.getElementById('core-lang-select').addEventListener('change', (e) => APP.setLang(e.target.value));
+    document.getElementById('core-mic-btn').addEventListener('click', () => APP.toggleMic());
+    document.getElementById('core-grav-btn').addEventListener('click', () => APP.setDrawingGravity(!APP.drawingGravity));
+    document.getElementById('core-clear-btn').addEventListener('click', () => APP.clearAllEntities());
+
+    function submitCoreInput() {
+      const inp = document.getElementById('core-cmd-input');
+      const val = (inp.value || '').trim();
+      if (!val) return;
+      inp.value = '';
+      APP.executeCommand(val, 'text');
+    }
+    document.getElementById('core-send-btn').addEventListener('click', submitCoreInput);
+    document.getElementById('core-cmd-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submitCoreInput(); }
+    });
+    syncCoreHUD();
+
+    // =========================================================================
+    // 4. THREE.JS RESOURCE CLEANUP & ENTITY REGISTRY
+    // =========================================================================
+    APP.disposeObject3D = function disposeObject3D(root) {
+      if (!root) return;
+      root.traverse((obj) => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const m of mats) {
+            if (!m) continue;
+            for (const key of Object.keys(m)) {
+              const val = m[key];
+              if (val && val.isTexture) {
+                if (val.image && val.image instanceof HTMLVideoElement) {
+                  try { val.image.pause(); } catch (_) {}
+                }
+                val.dispose();
+              }
+            }
+            m.dispose();
+          }
+        }
+      });
+    };
+
+    let entityCounter = 0;
+    APP.registerEntity = function registerEntity(group, opts = {}) {
+      const id = opts.id || `ent_${++entityCounter}`;
+      const record = {
+        id,
+        name: opts.name || id,
+        category: opts.category || 'object',
+        group,
+        mesh: group,
+        grabbable: opts.grabbable !== false,
+        holdable: !!opts.holdable,
+        isPen: !!opts.isPen,
+        isStroke: !!opts.isStroke,
+        nibMesh: opts.nibMesh || null,
+        holdOffsetPos: opts.holdOffsetPos ? opts.holdOffsetPos.clone() : new THREE.Vector3(0, 0, 0),
+        holdOffsetQuat: opts.holdOffsetQuat ? opts.holdOffsetQuat.clone() : new THREE.Quaternion(),
+        isHeld: false,
+        heldBy: null,
+        heldByBot: false,
+        grabbedByHand: false,
+        attachedHandKey: null,
+        physics: Object.assign({
+          enabled: true,
+          gravity: opts.hasGravity ?? false,
+          vel: opts.velocity ? opts.velocity.clone() : new THREE.Vector3(),
+          bounce: opts.restitution ?? 0.42,
+          friction: 0.92,
+          radius: 0.12,
+          grounded: false
+        }, opts.physics || {}),
+        onUpdate: opts.onUpdate || null,
+        onGrab: opts.onGrab || null,
+        onRelease: opts.onRelease || null,
+        meta: opts.meta || {}
+      };
+
+      if (!opts.physics?.radius) {
+        const box = new THREE.Box3().setFromObject(group);
+        if (!box.isEmpty()) {
+          const size = new THREE.Vector3();
+          box.getSize(size);
+          record.physics.radius = Math.max(0.05, Math.min(size.x, size.z) * 0.45);
+          record.meta.halfHeight = size.y * 0.5;
+        }
+      }
+
+      group.userData.entity = record;
+      group.traverse((c) => {
+        if (c.isMesh) {
+          c.castShadow = true;
+          c.receiveShadow = true;
+          c.userData.entity = record;
+        }
+      });
+
+      if (!group.parent) scene.add(group);
+      APP.entities.push(record);
+      return record;
+    };
+
+    APP.findEntity = function findEntity(query) {
+      if (!query) return null;
+      if (typeof query === 'object' && query.group) return query;
+      const q = String(query).toLowerCase().trim();
+      if (q === 'latest' || q === 'last' || q === 'it') {
+        return APP.entities[APP.entities.length - 1] || null;
+      }
+      return (
+        APP.entities.find(e => e.id.toLowerCase() === q) ||
+        APP.entities.find(e => e.name.toLowerCase() === q) ||
+        APP.entities.slice().reverse().find(e => e.name.toLowerCase().includes(q) || e.category.toLowerCase().includes(q)) ||
+        null
+      );
+    };
+
+    APP.removeEntity = function removeEntity(entityOrId, withDissolve = true) {
+      const ent = APP.findEntity(entityOrId);
+      if (!ent) return false;
+      const idx = APP.entities.indexOf(ent);
+      if (idx !== -1) APP.entities.splice(idx, 1);
+
+      if (ent.heldBy && ent.heldBy.heldEntity === ent) ent.heldBy.heldEntity = null;
+      if (APP.bot && APP.bot.heldEntity === ent) APP.bot.heldEntity = null;
+
+      const cleanup = () => {
+        if (ent.group.parent) ent.group.parent.remove(ent.group);
+        APP.disposeObject3D(ent.group);
+      };
+
+      if (withDissolve && APP.visual && typeof APP.visual.dissolveAndRemove === 'function') {
+        APP.visual.dissolveAndRemove(ent.group, cleanup);
+      } else if (withDissolve && typeof APP.dissolveObject === 'function') {
+        APP.dissolveObject(ent.group, { removeOnDone: true });
+      } else {
+        cleanup();
+      }
+      return true;
+    };
+
+    APP.clearAllEntities = function clearAllEntities() {
+      const copy = [...APP.entities];
+      copy.forEach(e => APP.removeEntity(e, true));
+      APP.ui.toast('Cleared all objects.');
+    };
+    APP.clearAll = APP.clearAllEntities;
+
+    // =========================================================================
+    // 5. SAFE PROCEDURAL BUILDER (APP.craft & APP.createProcedural)
+    // =========================================================================
+    APP.craft = {
+      mat(color = 0x38bdf8, opts = {}) {
+        return new THREE.MeshStandardMaterial({
+          color,
+          roughness: opts.roughness ?? 0.38,
+          metalness: opts.metalness ?? 0.25,
+          emissive: opts.emissive ?? 0x000000,
+          emissiveIntensity: opts.emissiveIntensity ?? 1.0,
+          transparent: !!opts.transparent,
+          opacity: opts.opacity ?? 1.0,
+          side: opts.doubleSided ? THREE.DoubleSide : THREE.FrontSide
+        });
+      },
+      organicSphere(radius = 0.2, detail = 24, noiseAmp = 0.12, seed = 1) {
+        const geo = new THREE.SphereGeometry(radius, detail, detail);
+        const pos = geo.attributes.position;
+        const v = new THREE.Vector3();
+        const fn = typeof noiseAmp === 'function' ? noiseAmp : null;
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i);
+          if (fn) {
+            const mult = fn(v.x, v.y, v.z);
+            if (typeof mult === 'number' && isFinite(mult)) v.multiplyScalar(mult);
+          } else {
+            const n = Math.sin(v.x * 9.1 + seed) * Math.cos(v.y * 7.3 - seed) * Math.sin(v.z * 8.4 + seed);
+            v.multiplyScalar(1 + n * noiseAmp);
+          }
+          pos.setXYZ(i, v.x, v.y, v.z);
+        }
+        geo.computeVertexNormals();
+        return geo;
+      },
+      lathe(points2D, segments = 24) {
+        const pts = points2D.map(p => Array.isArray(p) ? new THREE.Vector2(p[0], p[1]) : p);
+        return new THREE.LatheGeometry(pts, segments);
+      },
+      tube(points3D, radius = 0.02, tubularSegments = 24, radialSegments = 10, closed = false) {
+        const curve = new THREE.CatmullRomCurve3(points3D.map(p => p.isVector3 ? p : new THREE.Vector3(p[0], p[1], p[2])));
+        return new THREE.TubeGeometry(curve, tubularSegments, radius, radialSegments, closed);
+      },
+      bevelBox(w = 0.2, h = 0.2, d = 0.2, r = 0.02, segs = 3) {
+        return new RoundedBoxGeometry(w, h, d, segs, r);
+      }
+    };
+
+    APP.getSpawnPosition = function getSpawnPosition(dist = 1.15, groundY = true) {
+      APP.updateHeadPose();
+      const fwdFlat = new THREE.Vector3(APP.headFwd.x, 0, APP.headFwd.z);
+      if (fwdFlat.lengthSq() < 0.001) fwdFlat.set(0, 0, -1);
+      fwdFlat.normalize();
+      const pos = APP.headPos.clone().addScaledVector(fwdFlat, dist);
+      pos.y = groundY ? 0 : Math.max(0.2, APP.headPos.y - 0.18);
+      return pos;
+    };
+
+    APP.createProcedural = function createProcedural(codeString, opts = {}) {
+      const group = new THREE.Group();
+      const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+      try {
+        const cleanCode = String(codeString || '').trim()
+          .replace(/^```(?:javascript|js)?/i, '')
+          .replace(/```$/i, '')
+          .trim();
+
+        const fn = new Function('APP', 'group', 'THREE', 'V3', cleanCode);
+        const ret = fn(APP, group, THREE, V3);
+        if (ret && ret.isObject3D && ret !== group) group.add(ret);
+
+        let meshCount = 0;
+        group.traverse((c) => {
+          if ((c.isMesh || c.isLine || c.isPoints || c.isSprite) && c.geometry) {
+            const posAttr = c.geometry.attributes?.position;
+            if (posAttr && posAttr.count > 0) meshCount++;
+          }
+        });
+
+        if (meshCount === 0) {
+          APP.disposeObject3D(group);
+          return { ok: false, error: 'Code executed but added 0 meshes with geometry to group.' };
+        }
+
+        group.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(group);
+        if (!box.isEmpty()) {
+          const size = new THREE.Vector3();
+          box.getSize(size);
+          const maxDim = Math.max(size.x, size.y, size.z);
+          if (!opts.preserveScale && maxDim > 2.8) group.scale.multiplyScalar(1.1 / maxDim);
+          else if (!opts.preserveScale && maxDim < 0.02 && maxDim > 0) group.scale.multiplyScalar(0.25 / maxDim);
+
+          group.updateMatrixWorld(true);
+          const box2 = new THREE.Box3().setFromObject(group);
+          if (!opts.skipGround) {
+            const shiftY = -box2.min.y;
+            group.children.forEach(ch => { ch.position.y += shiftY; });
+          }
+        }
+
+        if (opts.position) group.position.copy(opts.position);
+        else if (group.position.lengthSq() < 0.0001) group.position.copy(APP.getSpawnPosition(opts.distance || 1.1, !opts.floating));
+
+        const userOnUpdate = typeof group.userData.onUpdate === 'function' ? group.userData.onUpdate : null;
+        const wrappedUpdate = userOnUpdate
+          ? (dt, ent) => userOnUpdate(dt, performance.now() * 0.001, ent)
+          : null;
+
+        const entity = APP.registerEntity(group, {
+          name: opts.name || 'procedural_object',
+          category: opts.category || 'procedural',
+          grabbable: opts.grabbable !== false,
+          holdable: !!opts.holdable,
+          isPen: !!opts.isPen,
+          physics: { gravity: opts.gravity ?? false, enabled: opts.physics !== false },
+          onUpdate: wrappedUpdate
+        });
+
+        if (APP.visual?.applyDissolveShader) APP.visual.applyDissolveShader(group, 'materialize');
+        else if (typeof APP.materializeObject === 'function') APP.materializeObject(group);
+
+        APP.emit('entity:created', entity);
+        if (opts.showcase !== false && APP.bot?.onEntityCreated) APP.bot.onEntityCreated(entity);
+        return { ok: true, entity };
+      } catch (err) {
+        APP.disposeObject3D(group);
+        return { ok: false, error: `${err.name}: ${err.message}` };
+      }
+    };
+
+    // =========================================================================
+    // 6. UNIFIED HAND TRACKING, VISIBLE 3D VR POINTER & DESKTOP INPUT
+    // =========================================================================
+    function isObjVisible(obj) {
+      let cur = obj;
+      while (cur) {
+        if (cur.visible === false) return false;
+        cur = cur.parent;
+      }
+      return true;
+    }
+
+    function createHandSlot(id, isController = false, isHand = false) {
+      const beamGeo = new THREE.CylinderGeometry(0.0014, 0.0034, 1, 8, 1, true);
+      beamGeo.translate(0, 0.5, 0);
+      beamGeo.rotateX(-Math.PI / 2);
+      const beamMat = new THREE.MeshBasicMaterial({
+        color: 0x00f0b4,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const rayLine = new THREE.Mesh(beamGeo, beamMat);
+      rayLine.visible = false;
+      rayLine.frustumCulled = false;
+      rayLine.renderOrder = 998;
+      scene.add(rayLine);
+
+      const hitDot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.010, 12, 12),
+        new THREE.MeshBasicMaterial({ color: 0x7ef7d4, transparent: true, opacity: 0.96, depthTest: false })
+      );
+      hitDot.visible = false;
+      hitDot.frustumCulled = false;
+      hitDot.renderOrder = 999;
+      scene.add(hitDot);
+
+      const slot = {
+        id, active: false, isController, isHand,
+        pos: new THREE.Vector3(), quat: new THREE.Quaternion(), dir: new THREE.Vector3(0, 0, -1),
+        rayQuat: new THREE.Quaternion(),
+        wristPos: new THREE.Vector3(),
+        fingerTips: {
+          thumb: new THREE.Vector3(), index: new THREE.Vector3(), middle: new THREE.Vector3(),
+          ring: new THREE.Vector3(), pinky: new THREE.Vector3()
+        },
+        pinching: false, justPinched: false,
+        gripping: false, justGripped: false,
+        trigger: false, justTriggered: false,
+        heldEntity: null, heldOffsetPos: new THREE.Vector3(), heldOffsetQuat: new THREE.Quaternion(),
+        rayOrigin: new THREE.Vector3(), rayDir: new THREE.Vector3(0, 0, -1),
+        rayLine, hitDot, xrController: null, xrHand: null, gamepad: null,
+        get indexTip() { return slot.isHand ? slot.fingerTips.index : slot.pos; },
+        get wrist() { return slot.wristPos; },
+        get selecting() { return slot.trigger; },
+        get justSelected() { return slot.justTriggered; },
+        get squeezing() { return slot.gripping; }
+      };
+      return slot;
+    }
+
+    APP.hands.left = createHandSlot('left', true, false);
+    APP.hands.right = createHandSlot('right', true, false);
+    APP.hands.dhand = createHandSlot('dhand', false, false);
+
+    const controllerModelFactory = new XRControllerModelFactory();
+    const handModelFactory = new XRHandModelFactory();
+    const isSelectDown = [false, false];
+    const isSqueezeDown = [false, false];
+
+    const xrControllers = [0, 1].map((idx) => {
+      const ctrl = renderer.xr.getController(idx);
+      const grip = renderer.xr.getControllerGrip(idx);
+      grip.add(controllerModelFactory.createControllerModel(grip));
+      scene.add(ctrl);
+      scene.add(grip);
+
+      const hand = renderer.xr.getHand(idx);
+      hand.add(handModelFactory.createHandModel(hand, 'mesh'));
+      scene.add(hand);
+
+      let handedness = idx === 0 ? 'left' : 'right';
+      ctrl.addEventListener('connected', (e) => {
+        handedness = (e.data.handedness && e.data.handedness !== 'none') ? e.data.handedness : handedness;
+        const slot = APP.hands[handedness] || APP.hands.right;
+        slot.xrController = ctrl;
+        slot.xrHand = hand;
+        slot.isController = !e.data.hand;
+        slot.isHand = !!e.data.hand;
+        slot.gamepad = e.data.gamepad || null;
+        slot.active = true;
+      });
+      ctrl.addEventListener('disconnected', () => {
+        isSelectDown[idx] = false;
+        isSqueezeDown[idx] = false;
+        const slot = APP.hands[handedness];
+        if (slot) {
+          slot.active = false;
+          slot.trigger = false;
+          slot.pinching = false;
+          slot.gripping = false;
+          slot.rayLine.visible = false;
+          slot.hitDot.visible = false;
+        }
+      });
+      ctrl.addEventListener('selectstart', () => { isSelectDown[idx] = true; });
+      ctrl.addEventListener('selectend', () => { isSelectDown[idx] = false; });
+      ctrl.addEventListener('squeezestart', () => { isSqueezeDown[idx] = true; });
+      ctrl.addEventListener('squeezeend', () => { isSqueezeDown[idx] = false; });
+
+      return { idx, ctrl, grip, hand, getHandedness: () => handedness };
+    });
+
+    const raycaster = new THREE.Raycaster();
+    const pointerNDC = new THREE.Vector2();
+    let pointerDown = false;
+    let pointerMode = 'none';
+    let lastPointerX = 0, lastPointerY = 0;
+    let camYaw = 0, camPitch = -0.05;
+    let grabDistance = 1.1;
+
+    function updatePointerRay(clientX, clientY) {
+      pointerNDC.x = (clientX / window.innerWidth) * 2 - 1;
+      pointerNDC.y = -(clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointerNDC, camera);
+      const d = APP.hands.dhand;
+      d.active = APP.xrMode === 'none';
+      d.rayOrigin.copy(raycaster.ray.origin);
+      d.rayDir.copy(raycaster.ray.direction);
+      d.pos.copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, grabDistance);
+      d.dir.copy(raycaster.ray.direction);
+      d.quat.copy(camera.quaternion);
+    }
+
+    function tryPoke3D(origin, dir) {
+      if (APP.pokeTargets.size === 0) return false;
+      const targets = Array.from(APP.pokeTargets).filter(isObjVisible);
+      if (!targets.length) return false;
+      raycaster.set(origin, dir);
+      const hits = raycaster.intersectObjects(targets, true);
+      if (hits.length > 0 && hits[0].distance < 5) {
+        let cur = hits[0].object;
+        while (cur) {
+          if (typeof cur.userData?.onPoke === 'function') {
+            cur.userData.onPoke(hits[0]);
+            return true;
+          }
+          cur = cur.parent;
+        }
+      }
+      return false;
+    }
+
+    function grabWithSlot(slot, entity) {
+      if (!entity || !entity.grabbable) return;
+      if (entity.heldBy && entity.heldBy !== slot) releaseFromSlot(entity.heldBy);
+      slot.heldEntity = entity;
+      entity.isHeld = true;
+      entity.grabbedByHand = true;
+      entity.heldBy = slot;
+      entity.attachedHandKey = slot.id;
+
+      if (entity.holdable) {
+        slot.heldOffsetPos.copy(entity.holdOffsetPos);
+        slot.heldOffsetQuat.copy(entity.holdOffsetQuat);
+      } else {
+        const invQ = slot.quat.clone().invert();
+        slot.heldOffsetPos.copy(entity.group.position).sub(slot.pos).applyQuaternion(invQ);
+        slot.heldOffsetQuat.copy(invQ).multiply(entity.group.quaternion);
+      }
+      if (typeof entity.onGrab === 'function') entity.onGrab(slot);
+    }
+
+    function releaseFromSlot(slot) {
+      const ent = slot.heldEntity;
+      if (!ent) return;
+      slot.heldEntity = null;
+      ent.isHeld = false;
+      ent.grabbedByHand = false;
+      ent.heldBy = null;
+      ent.attachedHandKey = null;
+      if (typeof ent.onRelease === 'function') ent.onRelease(slot);
+    }
+
+    APP.grabEntity = grabWithSlot;
+    APP.releaseEntity = releaseFromSlot;
+    APP.attachToActiveHand = function attachToActiveHand(entity, opts = {}) {
+      if (!entity) return null;
+      if (opts.localPosition) entity.holdOffsetPos.copy(opts.localPosition);
+      if (opts.localEuler) entity.holdOffsetQuat.setFromEuler(opts.localEuler);
+      else if (opts.localQuat) entity.holdOffsetQuat.copy(opts.localQuat);
+
+      const slot = (APP.hands.right.active ? APP.hands.right : null) ||
+        (APP.hands.left.active ? APP.hands.left : null) || APP.hands.dhand;
+
+      slot.active = true;
+      if (slot.id === 'dhand') {
+        grabDistance = 0.58;
+        if (entity.isPen) APP.desktopDrawActive = true;
+      }
+      grabWithSlot(slot, entity);
+      return slot;
+    };
+
+    function tryGrabEntity(slot) {
+      let best = null, bestDist = 0.28;
+      for (const ent of APP.entities) {
+        if (!ent.grabbable) continue;
+        const p = new THREE.Vector3();
+        ent.group.getWorldPosition(p);
+        const d = p.distanceTo(slot.pos);
+        if (d < bestDist) { bestDist = d; best = ent; }
+      }
+      if (!best && APP.entities.length > 0) {
+        raycaster.set(slot.rayOrigin, slot.rayDir);
+        const meshes = APP.entities.filter(e => e.grabbable && isObjVisible(e.group)).map(e => e.group);
+        const hits = raycaster.intersectObjects(meshes, true);
+        if (hits.length > 0 && hits[0].distance < 6.0) {
+          let cur = hits[0].object;
+          while (cur && !cur.userData.entity) cur = cur.parent;
+          if (cur?.userData?.entity) {
+            best = cur.userData.entity;
+            if (slot.id === 'dhand') grabDistance = Math.max(0.45, Math.min(3.5, hits[0].distance));
+          }
+        }
+      }
+      if (best) { grabWithSlot(slot, best); return true; }
+      return false;
+    }
+
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (APP.xrMode !== 'none') return;
+      pointerDown = true;
+      lastPointerX = e.clientX;
+      lastPointerY = e.clientY;
+      updatePointerRay(e.clientX, e.clientY);
+      const d = APP.hands.dhand;
+
+      if (e.button === 2) {
+        pointerMode = 'look';
+        return;
+      }
+
+      d.trigger = true; d.justTriggered = true;
+      d.pinching = true; d.justPinched = true;
+
+      if (tryPoke3D(d.rayOrigin, d.rayDir)) { pointerMode = 'poke'; return; }
+      const isDrawActive = !!(d.heldEntity?.isPen || APP.desktopDrawActive || APP.drawingEnabled || APP.toolbar?.vrDraw?.enabled);
+      if (isDrawActive && !e.altKey) { pointerMode = 'draw'; return; }
+      if (!d.heldEntity && tryGrabEntity(d)) { pointerMode = 'grab'; return; }
+      pointerMode = 'look';
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (APP.xrMode !== 'none') return;
+      updatePointerRay(e.clientX, e.clientY);
+      if (!pointerDown) return;
+      const dx = e.clientX - lastPointerX;
+      const dy = e.clientY - lastPointerY;
+      lastPointerX = e.clientX;
+      lastPointerY = e.clientY;
+
+      if (pointerMode === 'look') {
+        camYaw -= dx * 0.0042;
+        camPitch = Math.max(-1.35, Math.min(1.35, camPitch - dy * 0.0042));
+        camera.rotation.order = 'YXZ';
+        camera.rotation.y = camYaw;
+        camera.rotation.x = camPitch;
+      }
+    });
+
+    window.addEventListener('pointerup', () => {
+      if (APP.xrMode !== 'none') return;
+      pointerDown = false;
+      const d = APP.hands.dhand;
+      d.trigger = false; d.pinching = false;
+      if (pointerMode === 'grab' && d.heldEntity && !d.heldEntity.holdable) releaseFromSlot(d);
+      pointerMode = 'none';
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      if (APP.xrMode !== 'none') return;
+      if (APP.hands.dhand.heldEntity) grabDistance = Math.max(0.35, Math.min(4.0, grabDistance - e.deltaY * 0.001));
+      else {
+        const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+        camera.position.addScaledVector(fwd, -e.deltaY * 0.002);
+      }
+    }, { passive: true });
+
+    // =========================================================================
+    // 7. WEBXR SESSION MANAGEMENT (Quest AR Passthrough + VR Fallback)
+    // =========================================================================
+    async function startXR(mode) {
+      if (!navigator.xr) {
+        APP.ui.toast('WebXR not available in this browser — using Desktop/Mobile 3D mode.');
+        return;
+      }
+      try {
+        const sessionMode = mode === 'ar' ? 'immersive-ar' : 'immersive-vr';
+        const supported = await navigator.xr.isSessionSupported(sessionMode);
+        if (!supported) { APP.ui.toast(`${sessionMode} is not supported on this device.`); return; }
+        const sessionInit = mode === 'ar'
+          ? { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking', 'plane-detection', 'light-estimation', 'hit-test', 'bounded-floor'] }
+          : { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking', 'bounded-floor'] };
+
+        const session = await navigator.xr.requestSession(sessionMode, sessionInit);
+        session.addEventListener('end', () => {
+          APP.xrMode = 'none'; APP.isAR = false; APP.isVR = false;
+          renderer.setClearAlpha(1);
+          if (APP.visual?.onXRModeChange) APP.visual.onXRModeChange('none');
+          APP.emit('xr:end');
+          APP.ui.setStatus('Browser 3D Mode', 'ok');
+        });
+        await renderer.xr.setSession(session);
+        APP.xrMode = mode; APP.isAR = mode === 'ar'; APP.isVR = mode === 'vr';
+        renderer.setClearAlpha(mode === 'ar' ? 0 : 1);
+        if (APP.visual?.onXRModeChange) APP.visual.onXRModeChange(mode);
+        APP.emit('xr:start', { mode, session });
+        APP.ui.setStatus(mode === 'ar' ? 'AR Passthrough Active' : 'VR Immersive Active', 'ok');
+      } catch (err) {
+        APP.ui.toast(`XR Launch Error: ${err.message}`);
+      }
+    }
+
+    document.getElementById('btn-enter-ar').onclick = () => startXR('ar');
+    document.getElementById('btn-enter-vr').onclick = () => startXR('vr');
+
+    // =========================================================================
+    // 8. .TXT MODULE PARSER, REPO SYNC & STRICT PRIORITY LOADER
+    // =========================================================================
+    APP.parseModuleText = function parseModuleText(filename, rawText) {
+      const lines = rawText.replace(/\r\n/g, '\n').split('\n');
+      const abilities = [];
+      let current = null;
+      let inCode = false;
+      let codeBuf = [];
+
+      const flush = () => {
+        if (current) {
+          current.code = codeBuf.join('\n').trim();
+          if (current.code) abilities.push(current);
+        }
+        current = null; codeBuf = []; inCode = false;
+      };
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        if (!inCode) {
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          if (trimmed.startsWith('@ability:')) {
+            flush();
+            current = {
+              id: trimmed.slice(9).trim(), file: filename, autorun: false, pin: false,
+              pinLabel: '', label: '', desc: '', matchRaw: '', match: [], samplePhrase: '', code: ''
+            };
+          } else if (current && trimmed === '@autorun') {
+            current.autorun = true;
+          } else if (current && trimmed.startsWith('@pin')) {
+            current.pin = true;
+            current.pinLabel = trimmed.includes(':') ? trimmed.split(':').slice(1).join(':').trim() : (current.label || current.id);
+          } else if (current && trimmed.startsWith('@label:')) {
+            current.label = trimmed.slice(7).trim();
+            if (current.pin && (!current.pinLabel || current.pinLabel === current.id)) current.pinLabel = current.label;
+          } else if (current && trimmed.startsWith('@desc:')) {
+            current.desc = trimmed.slice(6).trim();
+          } else if (current && trimmed.startsWith('@match:')) {
+            const rawMatch = trimmed.slice(7).trim();
+            current.matchRaw = rawMatch;
+            current.match = rawMatch.split('|').map(s => s.trim()).filter(Boolean);
+            current.samplePhrase = (current.match[0] || '').replace(/&/g, ' ').replace(/\s+/g, ' ').trim();
+          } else if (current && (trimmed === '@code:' || trimmed === '@do:' || trimmed.startsWith('@code:') || trimmed.startsWith('@do:'))) {
+            inCode = true;
+            const colonIdx = trimmed.indexOf(':');
+            const after = trimmed.slice(colonIdx + 1).trim();
+            if (after) codeBuf.push(after);
+          }
+        } else {
+          if (trimmed === '@end') {
+            flush();
+          } else if (/^@ability:\s*\S+/.test(trimmed) && line === trimmed) {
+            flush();
+            i--;
+          } else {
+            codeBuf.push(line);
+          }
+        }
+      }
+      flush();
+      return abilities;
+    };
+
+    APP.normalizeText = function normalizeText(str) {
+      return String(str || '').toLowerCase()
+        .replace(/[\u064B-\u065F\u0670]/g, '')
+        .replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+    };
+
+    APP.matchScore = function matchScore(patterns, input) {
+      if (!patterns || !patterns.length) return 0;
+      const normInput = APP.normalizeText(input);
+      let best = 0;
+      for (const clause of patterns) {
+        const terms = clause.split('&').map(t => APP.normalizeText(t)).filter(Boolean);
+        if (!terms.length) continue;
+        let ok = true;
+        for (const t of terms) { if (!normInput.includes(t)) { ok = false; break; } }
+        if (ok) {
+          const score = terms.length * 10 + terms.reduce((a, b) => a + b.length, 0) * 0.1;
+          if (score > best) best = score;
+        }
+      }
+      return best;
+    };
+
+    function clearStaleInstructionCaches(validFilesSet) {
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('APP_CACHE_instruction')) {
+            const fname = k.slice('APP_CACHE_'.length);
+            if (!validFilesSet.has(fname) && typeof APP.sandboxFiles[fname] !== 'string') {
+              localStorage.removeItem(k);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    APP.clearModuleCache = function clearModuleCache() {
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('APP_CACHE_')) localStorage.removeItem(k);
+        }
+        APP.sandboxFiles = {};
+      } catch (_) {}
+    };
+
+    async function fetchTextWithCache(filename) {
+      if (typeof APP.sandboxFiles[filename] === 'string') return APP.sandboxFiles[filename];
+
+      let gotExplicit404 = false;
+      let networkFailed = false;
+
+      if (APP.repo.pat && APP.repo.owner && APP.repo.name) {
+        try {
+          const apiUrl = `https://api.github.com/repos/${encodeURIComponent(APP.repo.owner)}/${encodeURIComponent(APP.repo.name)}/contents/${encodeURIComponent(filename)}?ref=${encodeURIComponent(APP.repo.branch || 'main')}&t=${Date.now()}`;
+          const res = await fetch(apiUrl, {
+            cache: 'no-store',
+            headers: {
+              Accept: 'application/vnd.github.raw+json',
+              Authorization: `Bearer ${APP.repo.pat}`
+            }
+          });
+          if (res.ok) {
+            const txt = await res.text();
+            localStorage.setItem(`APP_CACHE_${filename}`, txt);
+            return txt;
+          }
+          if (res.status === 404) {
+            localStorage.removeItem(`APP_CACHE_${filename}`);
+            return null;
+          }
+        } catch (_) { networkFailed = true; }
+      }
+
+      try {
+        const res = await fetch(`./${filename}?t=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) {
+          const txt = await res.text();
+          localStorage.setItem(`APP_CACHE_${filename}`, txt);
+          return txt;
+        }
+        if (res.status === 404) gotExplicit404 = true;
+      } catch (_) { networkFailed = true; }
+
+      if (APP.repo.owner && APP.repo.name) {
+        try {
+          const rawUrl = `https://raw.githubusercontent.com/${encodeURIComponent(APP.repo.owner)}/${encodeURIComponent(APP.repo.name)}/${encodeURIComponent(APP.repo.branch || 'main')}/${encodeURIComponent(filename)}?t=${Date.now()}`;
+          const res = await fetch(rawUrl, { cache: 'no-store' });
+          if (res.ok) {
+            const txt = await res.text();
+            localStorage.setItem(`APP_CACHE_${filename}`, txt);
+            return txt;
+          }
+          if (res.status === 404) gotExplicit404 = true;
+        } catch (_) { networkFailed = true; }
+      }
+
+      if (gotExplicit404 && !networkFailed) {
+        localStorage.removeItem(`APP_CACHE_${filename}`);
+        return null;
+      }
+
+      return networkFailed ? localStorage.getItem(`APP_CACHE_${filename}`) : null;
+    }
+    APP.fetchModuleText = fetchTextWithCache;
+
+    async function discoverInstructionFiles() {
+      const found = new Set();
+      let repoScanOk = false;
+
+      if (APP.repo.owner && APP.repo.name) {
+        try {
+          const headers = APP.repo.pat ? { Authorization: `Bearer ${APP.repo.pat}` } : {};
+          const res = await fetch(
+            `https://api.github.com/repos/${encodeURIComponent(APP.repo.owner)}/${encodeURIComponent(APP.repo.name)}/contents/?ref=${encodeURIComponent(APP.repo.branch || 'main')}&t=${Date.now()}`,
+            { cache: 'no-store', headers }
+          );
+          if (res.ok) {
+            const items = await res.json();
+            if (Array.isArray(items)) {
+              repoScanOk = true;
+              items.forEach(it => { if (/^instruction\d+\.txt$/i.test(it.name)) found.add(it.name); });
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (repoScanOk) {
+        for (const k of Object.keys(APP.sandboxFiles || {})) {
+          if (/^instruction\d+\.txt$/i.test(k)) found.add(k);
+        }
+        clearStaleInstructionCaches(found);
+      } else {
+        let misses = 0;
+        for (let i = 1; i <= 25; i++) {
+          const name = `instruction${i}.txt`;
+          if (typeof APP.sandboxFiles[name] === 'string') { found.add(name); misses = 0; continue; }
+          let networkFailed = false;
+          try {
+            const res = await fetch(`./${name}?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' });
+            if (res.ok) { found.add(name); misses = 0; continue; }
+            if (res.status === 404) localStorage.removeItem(`APP_CACHE_${name}`);
+          } catch (_) { networkFailed = true; }
+
+          if (networkFailed && localStorage.getItem(`APP_CACHE_${name}`)) {
+            found.add(name); misses = 0; continue;
+          }
+          misses++;
+          if (misses >= 2 && i > 2) break;
+        }
+      }
+
+      return Array.from(found).sort((a, b) => parseInt(a.match(/\d+/)?.[0] || '0', 10) - parseInt(b.match(/\d+/)?.[0] || '0', 10));
+    }
+
+    APP.runAbility = async function runAbility(abilityOrId, commandText = '') {
+      const ab = typeof abilityOrId === 'string' ? APP.abilities.get(abilityOrId) : abilityOrId;
+      if (!ab) return { ok: false, error: `Ability "${abilityOrId}" not found.` };
+      if (APP.abilityHandlers.has(ab.id)) {
+        try {
+          const out = await APP.abilityHandlers.get(ab.id)(commandText, ab);
+          return out && typeof out === 'object' ? out : { ok: true, result: out };
+        } catch (err) {
+          return { ok: false, error: err.message };
+        }
+      }
+      try {
+        const AsyncFn = Object.getPrototypeOf(async function () {}).constructor;
+        const fn = new AsyncFn('APP', 'THREE', 'command', 'ability', ab.code);
+        const result = await fn(APP, THREE, commandText, ab);
+        return { ok: true, result };
+      } catch (err) {
+        console.error(`[Ability Error: ${ab.id}]`, err);
+        APP.ui.toast(`Ability "${ab.id}" error: ${err.message}`, 5500);
+        return { ok: false, error: err.message };
+      }
+    };
+    APP.runAbilityById = APP.runAbility;
+
+    APP.getPinnedAbilities = function getPinnedAbilities() {
+      return Array.from(APP.abilities.values()).filter(a => a.pin);
+    };
+
+    APP.findInstructionMatch = function findInstructionMatch(commandText) {
+      let bestAb = null, bestScore = 0;
+      for (const ab of APP.abilities.values()) {
+        if (!ab.file.startsWith('instruction')) continue;
+        const s = APP.matchScore(ab.match, commandText);
+        if (s > bestScore) { bestScore = s; bestAb = ab; }
+      }
+      return bestAb;
+    };
+
+    APP.runInstructionMatch = async function runInstructionMatch(commandText) {
+      const bestAb = APP.findInstructionMatch(commandText);
+      if (!bestAb) return null;
+      return await APP.runAbility(bestAb, commandText);
+    };
+
+    APP.getInstructionSummaryForAI = function getInstructionSummaryForAI() {
+      const lines = [];
+      for (const ab of APP.abilities.values()) {
+        if (!ab.file.startsWith('instruction')) continue;
+        lines.push(`- Ability "${ab.id}" (${ab.file}): ${ab.desc || 'match: ' + ab.match.join(' | ')}`);
+      }
+      return lines.join('\n');
+    };
+
+    async function executeModuleFile(file, raw) {
+      for (const [id, ab] of Array.from(APP.abilities.entries())) {
+        if (ab.file === file) {
+          APP.abilities.delete(id);
+          APP.abilityHandlers.delete(id);
+        }
+      }
+      APP.modules[file] = raw;
+      const parsed = APP.parseModuleText(file, raw);
+      for (const ab of parsed) {
+        APP.abilities.set(ab.id, ab);
+        APP.emit('ability:registered', ab);
+        if (ab.autorun) {
+          const res = await APP.runAbility(ab, '');
+          if (!res.ok) APP.ui.toast(`${file} (${ab.id}) error: ${res.error}`, 6500);
+        }
+      }
+    }
+
+    APP.reloadModuleText = async function reloadModuleText(filename, newText) {
+      APP.sandboxFiles[filename] = newText;
+      try { localStorage.setItem(`APP_CACHE_${filename}`, newText); } catch (_) {}
+      await executeModuleFile(filename, newText);
+      if (APP.toolbar?.refresh) APP.toolbar.refresh();
+      APP.emit('modules:loaded', Object.keys(APP.modules));
+    };
+
+    APP.loadAllModules = async function loadAllModules() {
+      if (location.protocol === 'file:') {
+        APP.ui.toast('Warning: Opened via file:// — host on GitHub Pages HTTPS or local HTTP server.', 8000);
+      }
+      APP.ui.setStatus('Loading core .txt modules...', 'busy');
+      for (let i = 1; i <= 25; i++) {
+        try { APP[`_inst${i}Cleanup`]?.(); } catch (_) {}
+      }
+      try { APP._botCleanup?.(); } catch (_) {}
+      try { APP._toolbarCleanup?.(); } catch (_) {}
+      try { APP._visualCleanup?.(); } catch (_) {}
+
+      APP.autorunHandles.forEach(fn => { try { fn(); } catch (_) {} });
+      APP.autorunHandles = [];
+      APP.abilities.clear();
+      APP.abilityHandlers.clear();
+      APP.modules = {};
+
+      const coreOrder = ['ai_models.txt', 'visual.txt', 'toolbar.txt', 'bot.txt'];
+      for (const file of coreOrder) {
+        const raw = await fetchTextWithCache(file);
+        if (!raw) {
+          if (file === 'ai_models.txt') APP.ui.toast('Could not load ./ai_models.txt', 7000);
+          continue;
+        }
+        await executeModuleFile(file, raw);
+      }
+
+      const instrFiles = await discoverInstructionFiles();
+      for (const file of instrFiles) {
+        const raw = await fetchTextWithCache(file);
+        if (!raw) continue;
+        await executeModuleFile(file, raw);
+      }
+
+      if (APP.toolbar?.refresh) APP.toolbar.refresh();
+      APP.emit('modules:loaded', Object.keys(APP.modules));
+      const loadedList = Object.keys(APP.modules);
+      APP.ui.setStatus(`Ready (${loadedList.length}: ${loadedList.join(', ')})`, loadedList.length ? 'ok' : 'err');
+    };
+
+    // =========================================================================
+    // 9. REPO & LOCAL ASSET LOADER (.glb, .gltf, .png, .jpg, .mp4)
+    // =========================================================================
+    const ASSET_EXT_GLB = /\.(glb|gltf)$/i;
+    const ASSET_EXT_IMG = /\.(png|jpe?g|webp)$/i;
+    const ASSET_EXT_VID = /\.(mp4|webm)$/i;
+
+    function registerAssetRecord(name, url, ext) {
+      const cleanName = name.replace(/\.[^.]+$/, '').toLowerCase();
+      const rec = { name, cleanName, url, ext: ext.toLowerCase() };
+      if (ASSET_EXT_GLB.test(name)) APP.importedGLBs.set(cleanName, rec);
+      else if (ASSET_EXT_IMG.test(name)) APP.importedImages.set(cleanName, rec);
+      else if (ASSET_EXT_VID.test(name)) APP.importedVideos.set(cleanName, rec);
+    }
+
+    APP.scanRepoAssets = async function scanRepoAssets() {
+      if (APP.repo.owner && APP.repo.name) {
+        const headers = APP.repo.pat ? { Authorization: `Bearer ${APP.repo.pat}` } : {};
+        for (const folder of ['assets', '']) {
+          try {
+            const path = folder ? `contents/${folder}` : 'contents';
+            const res = await fetch(
+              `https://api.github.com/repos/${encodeURIComponent(APP.repo.owner)}/${encodeURIComponent(APP.repo.name)}/${path}?ref=${encodeURIComponent(APP.repo.branch || 'main')}&t=${Date.now()}`,
+              { cache: 'no-store', headers }
+            );
+            if (!res.ok) continue;
+            const items = await res.json();
+            if (!Array.isArray(items)) continue;
+            items.forEach(it => {
+              if (it.type === 'file' && (ASSET_EXT_GLB.test(it.name) || ASSET_EXT_IMG.test(it.name) || ASSET_EXT_VID.test(it.name))) {
+                const url = folder ? `./${folder}/${it.name}` : `./${it.name}`;
+                registerAssetRecord(it.name, url, it.name.split('.').pop());
+              }
+            });
+          } catch (_) {}
+        }
+      }
+      APP.renderAssetTray();
+    };
+
+    APP.renderAssetTray = function renderAssetTray() {
+      const container = document.getElementById('asset-tray-list');
+      if (!container) return;
+      const all = [
+        ...Array.from(APP.importedGLBs.values()).map(r => ({ ...r, kind: '3D GLB' })),
+        ...Array.from(APP.importedImages.values()).map(r => ({ ...r, kind: 'Image' })),
+        ...Array.from(APP.importedVideos.values()).map(r => ({ ...r, kind: 'Video' }))
+      ];
+      if (!all.length) {
+        container.innerHTML = `<div style="grid-column:1/-1;color:var(--muted);font-size:13px;">No assets cached yet. Import local files or place assets inside <code>/assets/</code> in your repo.</div>`;
+        return;
+      }
+      container.innerHTML = '';
+      for (const a of all) {
+        const btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.style.cssText = 'flex-direction:column;align-items:flex-start;padding:10px;overflow:hidden;';
+        btn.innerHTML = `<span style="font-size:10px;color:var(--accent);text-transform:uppercase;">${a.kind}</span><span style="overflow:hidden;text-overflow:ellipsis;max-width:100%;">${a.name}</span>`;
+        btn.onclick = () => { APP.spawnAsset(a.cleanName); APP.ui.closeModals(); };
+        container.appendChild(btn);
+      }
+    };
+
+    document.getElementById('btn-refresh-assets').onclick = () => APP.scanRepoAssets();
+    document.getElementById('local-asset-input').addEventListener('change', (e) => {
+      const files = Array.from(e.target.files || []);
+      for (const f of files) {
+        const url = URL.createObjectURL(f);
+        registerAssetRecord(f.name, url, f.name.split('.').pop());
+      }
+      APP.renderAssetTray();
+      APP.ui.toast(`Imported ${files.length} local asset(s).`);
+    });
+
+    APP.spawnAsset = async function spawnAsset(queryName, opts = {}) {
+      const key = String(queryName || '').replace(/\.[^.]+$/, '').toLowerCase().trim();
+      const findIn = (map) => map.get(key) || Array.from(map.values()).find(r => r.cleanName.includes(key));
+
+      let glbRec = findIn(APP.importedGLBs);
+      let imgRec = findIn(APP.importedImages);
+      let vidRec = findIn(APP.importedVideos);
+
+      if (!glbRec && !imgRec && !vidRec && key) {
+        const probeExts = [
+          { path: `./assets/${key}.glb`, type: 'glb' },
+          { path: `./assets/${key}.gltf`, type: 'glb' },
+          { path: `./${key}.glb`, type: 'glb' },
+          { path: `./assets/${key}.png`, type: 'img' },
+          { path: `./assets/${key}.jpg`, type: 'img' },
+          { path: `./assets/${key}.mp4`, type: 'vid' }
+        ];
+        for (const c of probeExts) {
+          try {
+            const head = await fetch(c.path, { method: 'HEAD' });
+            if (head.ok) {
+              const rec = { name: c.path.split('/').pop(), cleanName: key, url: c.path, ext: c.type };
+              if (c.type === 'glb') glbRec = rec;
+              else if (c.type === 'img') imgRec = rec;
+              else vidRec = rec;
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+
+      const spawnPos = opts.position || APP.getSpawnPosition(1.15, true);
+
+      if (glbRec) {
+        return new Promise((resolve) => {
+          APP.ui.setStatus(`Loading ${glbRec.name}...`, 'busy');
+          gltfLoader.load(glbRec.url, (gltf) => {
+            const group = new THREE.Group();
+            const model = gltf.scene;
+            group.add(model);
+
+            group.updateMatrixWorld(true);
+            const box = new THREE.Box3().setFromObject(model);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z) || 1;
+            const scale = (opts.targetSize || 0.52) / maxDim;
+            model.scale.multiplyScalar(scale);
+
+            group.updateMatrixWorld(true);
+            const box2 = new THREE.Box3().setFromObject(model);
+            model.position.y -= box2.min.y;
+            const center = new THREE.Vector3();
+            box2.getCenter(center);
+            model.position.x -= center.x;
+            model.position.z -= center.z;
+
+            group.position.copy(spawnPos);
+            const ent = APP.registerEntity(group, {
+              name: glbRec.cleanName, category: 'asset_glb', physics: { gravity: !!opts.gravity }
+            });
+            if (APP.visual?.applyDissolveShader) APP.visual.applyDissolveShader(group, 'materialize');
+            else if (typeof APP.materializeObject === 'function') APP.materializeObject(group);
+            APP.emit('entity:created', ent);
+            if (APP.bot?.onEntityCreated) APP.bot.onEntityCreated(ent);
+            APP.ui.setStatus('Ready', 'ok');
+            resolve({ ok: true, entity: ent });
+          }, undefined, (err) => {
+            APP.ui.setStatus('Asset load error', 'err');
+            resolve({ ok: false, error: `Failed to load ${glbRec.name}: ${err.message}` });
+          });
+        });
+      }
+
+      if (imgRec) {
+        const tex = await new THREE.TextureLoader().loadAsync(imgRec.url);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const aspect = (tex.image?.width || 1) / (tex.image?.height || 1);
+        const h = 0.55, w = h * aspect;
+        const group = new THREE.Group();
+        const mesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(w, h),
+          new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
+        );
+        mesh.position.y = h * 0.5 + 0.15;
+        group.add(mesh);
+        group.position.copy(spawnPos);
+        const ent = APP.registerEntity(group, { name: imgRec.cleanName, category: 'asset_image' });
+        if (APP.visual?.applyDissolveShader) APP.visual.applyDissolveShader(group, 'materialize');
+        APP.emit('entity:created', ent);
+        return { ok: true, entity: ent };
+      }
+
+      if (vidRec) {
+        const video = document.createElement('video');
+        video.src = vidRec.url; video.crossOrigin = 'anonymous'; video.loop = true; video.muted = false; video.playsInline = true;
+        await video.play().catch(() => { video.muted = true; return video.play().catch(() => {}); });
+        const tex = new THREE.VideoTexture(video);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const group = new THREE.Group();
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.45), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+        mesh.position.y = 0.45;
+        group.add(mesh);
+        group.position.copy(spawnPos);
+        const ent = APP.registerEntity(group, { name: vidRec.cleanName, category: 'asset_video' });
+        if (APP.visual?.applyDissolveShader) APP.visual.applyDissolveShader(group, 'materialize');
+        APP.emit('entity:created', ent);
+        return { ok: true, entity: ent };
+      }
+
+      return { ok: false, error: `Asset "${queryName}" not found in repo /assets/ or local imports.` };
+    };
+    APP.spawnAssetByName = APP.spawnAsset;
+
+    // =========================================================================
+    // 10. VOICE COMMAND PIPELINE (Web Speech API + Groq Whisper + Noise Gate)
+    // =========================================================================
+    const HALLUCINATIONS = [
+      'gracias', 'subtitulos', 'subtítulos', 'thank you for watching',
+      'thanks for watching', 'subscribe', 'amara.org', 'mbc', 'you', '.'
+    ];
+    function isPhantomTranscript(text) {
+      const t = APP.normalizeText(text);
+      if (!t || t.length < 2) return true;
+      return HALLUCINATIONS.some(h => t === APP.normalizeText(h));
+    }
+
+    let recognition = null, whisperRecorder = null, whisperStream = null;
+
+    APP.speakTTS = function speakTTS(text) {
+      if (!text || !('speechSynthesis' in window)) return;
+      try {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = /[\u0600-\u06FF]/.test(text) ? 'ar-SA' : (APP.lang || 'en-US');
+        u.rate = 1.03;
+        APP.isSpeakingTTS = true; APP.ttsSpeaking = true;
+        u.onend = () => { setTimeout(() => { APP.isSpeakingTTS = false; APP.ttsSpeaking = false; }, 350); };
+        u.onerror = () => { APP.isSpeakingTTS = false; APP.ttsSpeaking = false; };
+        window.speechSynthesis.speak(u);
+      } catch (_) { APP.isSpeakingTTS = false; APP.ttsSpeaking = false; }
+    };
+
+    APP.toggleMic = async function toggleMic(forceState) {
+      const target = typeof forceState === 'boolean' ? forceState : !APP.micActive;
+      APP.micActive = target;
+      syncCoreHUD();
+      APP.emit('mic:changed', APP.micActive);
+      if (APP.toolbar?.syncState) APP.toolbar.syncState();
+
+      if (APP.ai?.isLiveModelSelected?.() && APP.bot?.setLiveMic) {
+        await APP.bot.setLiveMic(APP.micActive);
+        return APP.micActive;
+      }
+
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (APP.micActive) {
+        if (SpeechRec) {
+          recognition = new SpeechRec();
+          recognition.lang = APP.lang || 'en-US';
+          recognition.continuous = true;
+          recognition.interimResults = false;
+          recognition.onresult = (ev) => {
+            if (APP.isSpeakingTTS || APP.botSpeaking) return;
+            const res = ev.results[ev.results.length - 1];
+            if (!res.isFinal) return;
+            const transcript = res[0].transcript.trim();
+            if (!isPhantomTranscript(transcript)) APP.executeCommand(transcript, 'voice');
+          };
+          recognition.onerror = (e) => {
+            if (e.error === 'not-allowed') {
+              APP.ui.toast('Microphone permission denied.');
+              APP.micActive = false; syncCoreHUD(); APP.emit('mic:changed', false);
+            }
+          };
+          recognition.onend = () => { if (APP.micActive) { try { recognition.start(); } catch (_) {} } };
+          try { recognition.start(); APP.ui.toast(`Mic ON (${APP.lang})`); }
+          catch (e) { APP.ui.toast(`Mic error: ${e.message}`); }
+        } else if (APP.ai?.keys?.groq) {
+          await startGroqWhisperLoop();
+        } else {
+          APP.micActive = false; syncCoreHUD(); APP.emit('mic:changed', false);
+          APP.ui.toast('SpeechRecognition unavailable; enter a Groq key for Whisper fallback.');
+        }
+      } else {
+        if (recognition) { try { recognition.stop(); } catch (_) {} recognition = null; }
+        if (whisperRecorder && whisperRecorder.state !== 'inactive') whisperRecorder.stop();
+        if (whisperStream) { whisperStream.getTracks().forEach(t => t.stop()); whisperStream = null; }
+        APP.ui.toast('Mic OFF');
+      }
+      if (APP.toolbar?.syncState) APP.toolbar.syncState();
+      return APP.micActive;
+    };
+
+    async function startGroqWhisperLoop() {
+      try {
+        whisperStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const src = ctx.createMediaStreamSource(whisperStream);
+        const analyser = ctx.createAnalyser(); analyser.fftSize = 512; src.connect(analyser);
+        const buf = new Float32Array(analyser.fftSize);
+
+        const recordChunk = () => {
+          if (!APP.micActive || !whisperStream) { ctx.close(); return; }
+          let peakRMS = 0; const chunks = [];
+          whisperRecorder = new MediaRecorder(whisperStream);
+          whisperRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+          const meter = setInterval(() => {
+            analyser.getFloatTimeDomainData(buf);
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+            const rms = Math.sqrt(sum / buf.length);
+            APP.micLevel = Math.min(1, rms * 5);
+            peakRMS = Math.max(peakRMS, rms);
+          }, 80);
+
+          whisperRecorder.onstop = async () => {
+            clearInterval(meter);
+            if (peakRMS > 0.018 && !APP.isSpeakingTTS && !APP.botSpeaking && chunks.length) {
+              const blob = new Blob(chunks, { type: 'audio/webm' });
+              const fd = new FormData();
+              fd.append('file', blob, 'speech.webm');
+              fd.append('model', 'whisper-large-v3-turbo');
+              fd.append('language', APP.lang.startsWith('ar') ? 'ar' : 'en');
+              try {
+                const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+                  method: 'POST', headers: { Authorization: `Bearer ${APP.ai.keys.groq}` }, body: fd
+                });
+                const data = await res.json();
+                if (data.text && !isPhantomTranscript(data.text)) APP.executeCommand(data.text.trim(), 'whisper');
+              } catch (_) {}
+            }
+            if (APP.micActive) recordChunk();
+          };
+          whisperRecorder.start();
+          setTimeout(() => { if (whisperRecorder && whisperRecorder.state === 'recording') whisperRecorder.stop(); }, 3400);
+        };
+        recordChunk();
+        APP.ui.toast(`Groq Whisper Mic ON (${APP.lang})`);
+      } catch (err) {
+        APP.micActive = false; syncCoreHUD(); APP.ui.toast(`Whisper Mic Error: ${err.message}`);
+      }
+    }
+
+    // =========================================================================
+    // 11. CONTINUOUS SLIDER COMMAND ROUTER (0% AI <-> 100% Instructions)
+    // =========================================================================
+    APP.executeCommand = async function executeCommand(rawText, source = 'text') {
+      const text = String(rawText || '').trim();
+      if (!text) return;
+      APP.ui.toast(`> "${text}"`);
+
+      const norm = APP.normalizeText(text);
+      if (norm === 'clear all' || norm === 'امسح الكل') {
+        APP.clearAllEntities();
+        return;
+      }
+
+      const w = APP.instWeight;
+
+      if (w >= 100) {
+        const bestAb = APP.findInstructionMatch(text);
+        if (bestAb) {
+          APP.ui.setStatus(`Running ${bestAb.id}...`, 'busy');
+          await APP.runAbility(bestAb, text);
+          APP.ui.setStatus('Ready (100% Instructions)', 'ok');
+        } else {
+          APP.ui.toast('100% Instructions mode: no matching @ability found. Slide toward AI for infinite creation.');
+        }
+        return;
+      }
+
+      if (w >= 70) {
+        const bestAb = APP.findInstructionMatch(text);
+        if (bestAb) {
+          APP.ui.setStatus(`Running ${bestAb.id} (${w}% Inst)...`, 'busy');
+          await APP.runAbility(bestAb, text);
+          APP.ui.setStatus('Ready', 'ok');
+          return;
+        }
+      }
+
+      if (w > 0) {
+        const isDirectUtility = /^(make.*pen|give.*pen|drawing gravity|toggle drawing gravity|جاذبية الرسم|spawn |احضر |جيبلي |open portal|show.*portal|افتح بوابة|اظهر بوابة)/i.test(norm);
+        if (isDirectUtility) {
+          const matched = await APP.runInstructionMatch(text);
+          if (matched) return;
+        }
+      }
+
+      if (!APP.ai || typeof APP.ai.runTurn !== 'function') {
+        APP.ui.toast('AI module (ai_models.txt) not loaded yet.');
+        return;
+      }
+
+      await APP.ai.runTurn(text, {
+        ignoreInstructions: w <= 0,
+        instWeight: w,
+        source
+      });
+    };
+
+    // =========================================================================
+    // 12. POSE, PHYSICS, XR PLANE COLLISIONS & RENDER LOOP
+    // =========================================================================
+    APP.updateHeadPose = function updateHeadPose() {
+      const activeCam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+      activeCam.getWorldPosition(APP.headPos);
+      activeCam.getWorldQuaternion(APP.headQuat);
+      APP.headFwd.set(0, 0, -1).applyQuaternion(APP.headQuat).normalize();
+    };
+
+    const xrRaycaster = new THREE.Raycaster();
+
+    function updateXRInputs(frame, refSpace) {
+      if (!renderer.xr.isPresenting || !frame || !refSpace) {
+        APP.hands.left.active = false;
+        APP.hands.right.active = false;
+        APP.hands.left.rayLine.visible = false;
+        APP.hands.right.rayLine.visible = false;
+        APP.hands.left.hitDot.visible = false;
+        APP.hands.right.hitDot.visible = false;
+        APP.hands.dhand.active = true;
+        return;
+      }
+      APP.hands.dhand.active = false;
+
+      for (const entry of xrControllers) {
+        const slot = APP.hands[entry.getHandedness()] || APP.hands.right;
+        const prevPinch = slot.pinching, prevGrip = slot.gripping, prevTrig = slot.trigger;
+
+        const jIndex = entry.hand?.joints?.['index-finger-tip'];
+        const handTrackedNow = !!(jIndex && jIndex.visible);
+
+        if (handTrackedNow) {
+          const jWrist = entry.hand.joints['wrist'];
+          const jThumb = entry.hand.joints['thumb-tip'];
+          const jMid = entry.hand.joints['middle-finger-tip'];
+          const jRing = entry.hand.joints['ring-finger-tip'];
+          const jPinky = entry.hand.joints['pinky-finger-tip'];
+
+          slot.active = true;
+          slot.isHand = true;
+          slot.isController = false;
+          jIndex.getWorldPosition(slot.fingerTips.index);
+          if (jThumb) jThumb.getWorldPosition(slot.fingerTips.thumb);
+          if (jMid) jMid.getWorldPosition(slot.fingerTips.middle);
+          if (jRing) jRing.getWorldPosition(slot.fingerTips.ring);
+          if (jPinky) jPinky.getWorldPosition(slot.fingerTips.pinky);
+          if (jWrist) { jWrist.getWorldPosition(slot.wristPos); jWrist.getWorldQuaternion(slot.quat); }
+
+          slot.pos.lerpVectors(slot.fingerTips.index, slot.fingerTips.thumb, 0.5);
+          if (entry.ctrl && entry.ctrl.visible) {
+            entry.ctrl.updateMatrixWorld(true);
+            entry.ctrl.getWorldPosition(slot.rayOrigin);
+            entry.ctrl.getWorldQuaternion(slot.rayQuat);
+            slot.dir.set(0, 0, -1).applyQuaternion(slot.rayQuat).normalize();
+            slot.rayDir.copy(slot.dir);
+          } else {
+            slot.rayOrigin.copy(slot.pos);
+            slot.rayQuat.copy(slot.quat);
+            slot.dir.set(0, 0, -1).applyQuaternion(slot.quat).normalize();
+            slot.rayDir.copy(slot.dir);
+          }
+
+          const pinchDist = slot.fingerTips.index.distanceTo(slot.fingerTips.thumb);
+          slot.pinching = pinchDist < 0.028 || isSelectDown[entry.idx];
+          slot.trigger = slot.pinching;
+          slot.gripping = (slot.fingerTips.middle.distanceTo(slot.wristPos) < 0.085) || isSqueezeDown[entry.idx];
+        } else if (entry.ctrl && (entry.ctrl.visible || slot.active)) {
+          slot.isHand = false;
+          slot.isController = true;
+          slot.active = true;
+          entry.ctrl.updateMatrixWorld(true);
+          entry.ctrl.getWorldPosition(slot.pos);
+          entry.ctrl.getWorldQuaternion(slot.quat);
+          slot.rayQuat.copy(slot.quat);
+          slot.dir.set(0, 0, -1).applyQuaternion(slot.quat).normalize();
+          slot.rayOrigin.copy(slot.pos);
+          slot.rayDir.copy(slot.dir);
+
+          const src = slot.gamepad;
+          const btnTrig = !!(src?.buttons?.[0] && (src.buttons[0].pressed || src.buttons[0].value > 0.35));
+          const btnGrip = !!(src?.buttons?.[1] && (src.buttons[1].pressed || src.buttons[1].value > 0.35));
+          slot.trigger = btnTrig || isSelectDown[entry.idx];
+          slot.pinching = slot.trigger;
+          slot.gripping = btnGrip || isSqueezeDown[entry.idx];
+        }
+
+        slot.justPinched = slot.pinching && !prevPinch;
+        slot.justTriggered = slot.trigger && !prevTrig;
+        slot.justGripped = slot.gripping && !prevGrip;
+
+        if (slot.active && (entry.ctrl?.visible || !slot.isHand)) {
+          let beamLen = 3.0;
+          let hitPoint = null;
+
+          xrRaycaster.set(slot.rayOrigin, slot.rayDir);
+          const targets = [
+            ...Array.from(APP.pokeTargets).filter(isObjVisible),
+            ...APP.entities.filter(e => e && e.group?.parent && e.grabbable && isObjVisible(e.group)).map(e => e.group)
+          ];
+          if (targets.length) {
+            const hits = xrRaycaster.intersectObjects(targets, true).filter(h => h.object !== slot.rayLine && h.object !== slot.hitDot);
+            if (hits.length && hits[0].distance < 5.0) {
+              beamLen = Math.max(0.05, hits[0].distance);
+              hitPoint = hits[0].point;
+            }
+          }
+
+          slot.rayLine.visible = true;
+          slot.rayLine.position.copy(slot.rayOrigin);
+          slot.rayLine.quaternion.copy(slot.rayQuat);
+          slot.rayLine.scale.set(1, 1, beamLen);
+
+          if (hitPoint) {
+            slot.hitDot.visible = true;
+            slot.hitDot.position.copy(hitPoint);
+          } else {
+            slot.hitDot.visible = false;
+          }
+        } else {
+          slot.rayLine.visible = false;
+          slot.hitDot.visible = false;
+        }
+
+        if (slot.active) {
+          if (slot.justTriggered || slot.justPinched) tryPoke3D(slot.rayOrigin, slot.rayDir);
+          const isDrawMode = !!(APP.drawingEnabled || APP.toolbar?.vrDraw?.enabled);
+          if ((slot.justGripped || (slot.justPinched && !isDrawMode)) && !slot.heldEntity) tryGrabEntity(slot);
+          if (slot.heldEntity && !slot.gripping && !slot.pinching && !slot.heldEntity.holdable) releaseFromSlot(slot);
+        }
+      }
+    }
+
+    function updateXRPlanes(frame, refSpace) {
+      if (!frame || !frame.detectedPlanes || !refSpace) return;
+      APP.planes = [];
+      for (const xrPlane of frame.detectedPlanes) {
+        const pose = frame.getPose(xrPlane.planeSpace, refSpace);
+        if (!pose) continue;
+        const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+        const pos = new THREE.Vector3().setFromMatrixPosition(m);
+        const quat = new THREE.Quaternion().setFromRotationMatrix(m);
+        const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(quat).normalize();
+        const pts = xrPlane.polygon.map(p => new THREE.Vector3(p.x, 0, p.z).applyMatrix4(m));
+        const box = new THREE.Box3().setFromPoints(pts);
+        box.min.y -= 0.03; box.max.y += 0.03;
+        APP.planes.push({ semantic: xrPlane.semanticLabel || xrPlane.orientation || 'surface', orientation: xrPlane.orientation, pos, normal, box });
+      }
+      APP.xrPlanes = APP.planes;
+    }
+
+    function stepPhysics(dt) {
+      for (const key of ['left', 'right', 'dhand']) {
+        const slot = APP.hands[key];
+        if (slot.active && slot.heldEntity) {
+          const ent = slot.heldEntity;
+          if (!ent.heldByBot) {
+            ent.group.position.copy(slot.heldOffsetPos).applyQuaternion(slot.quat).add(slot.pos);
+            ent.group.quaternion.copy(slot.quat).multiply(slot.heldOffsetQuat);
+            ent.physics.vel.set(0, 0, 0);
+          }
+        }
+      }
+
+      for (const ent of APP.entities) {
+        if (typeof ent.onUpdate === 'function') {
+          try { ent.onUpdate(dt, ent); } catch (_) {}
+        }
+        if (ent.isHeld || ent.heldByBot || !ent.physics.enabled || !ent.physics.gravity) continue;
+
+        ent.physics.vel.y -= 9.81 * dt;
+        ent.group.position.addScaledVector(ent.physics.vel, dt);
+        ent.physics.grounded = false;
+
+        if (ent.group.position.y <= 0) {
+          ent.group.position.y = 0;
+          ent.physics.vel.y = Math.abs(ent.physics.vel.y) > 0.25 ? -ent.physics.vel.y * ent.physics.bounce : 0;
+          ent.physics.vel.x *= ent.physics.friction;
+          ent.physics.vel.z *= ent.physics.friction;
+          ent.physics.grounded = true;
+        }
+
+        for (const pl of APP.planes) {
+          const p = ent.group.position;
+          if (pl.orientation === 'horizontal' &&
+              p.x >= pl.box.min.x && p.x <= pl.box.max.x &&
+              p.z >= pl.box.min.z && p.z <= pl.box.max.z &&
+              p.y <= pl.pos.y + 0.02 && p.y >= pl.pos.y - 0.14 &&
+              ent.physics.vel.y <= 0) {
+            p.y = pl.pos.y;
+            ent.physics.vel.y = Math.abs(ent.physics.vel.y) > 0.25 ? -ent.physics.vel.y * ent.physics.bounce : 0;
+            ent.physics.vel.x *= ent.physics.friction;
+            ent.physics.vel.z *= ent.physics.friction;
+            ent.physics.grounded = true;
+          }
+        }
+      }
+    }
+
+    let lastVisionTs = 0;
+    APP.captureVisionFrame = function captureVisionFrame() {
+      try {
+        const w = 480, h = Math.round(480 * (canvas.height / Math.max(1, canvas.width)));
+        const off = document.createElement('canvas');
+        off.width = w; off.height = h;
+        const ctx = off.getContext('2d');
+        ctx.drawImage(canvas, 0, 0, w, h);
+        const dataUrl = off.toDataURL('image/jpeg', 0.65);
+        APP.latestVisionB64 = dataUrl.split(',')[1];
+        return APP.latestVisionB64;
+      } catch (_) { return null; }
+    };
+
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop((time, frame) => {
+      const dt = Math.min(clock.getDelta(), 0.05);
+      APP.updateHeadPose();
+
+      const refSpace = renderer.xr.isPresenting ? renderer.xr.getReferenceSpace() : null;
+      updateXRInputs(frame, refSpace);
+      updateXRPlanes(frame, refSpace);
+      stepPhysics(dt);
+
+      for (const hook of APP.frameHooks) {
+        try { hook(dt, time * 0.001); } catch (_) {}
+      }
+
+      if (time - lastVisionTs > 3000) {
+        lastVisionTs = time;
+        APP.captureVisionFrame();
+      }
+
+      renderer.render(scene, camera);
+
+      APP.hands.dhand.justPinched = false;
+      APP.hands.dhand.justTriggered = false;
+      APP.hands.dhand.justGripped = false;
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    await APP.loadAllModules();
+    APP.scanRepoAssets();
+  </script>
+</body>
+</html>
