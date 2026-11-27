@@ -1,0 +1,1207 @@
+--- START OF FILE dynamic_sculpt.txt ---
+
+# ======================================================================
+# dynamic_sculpt.txt — Mode C Dynamic Interactive Shapes for instruction4
+#   - Vertical Circle        -> Dimensional Portal (paired teleportation)
+#   - Open Line / Curve      -> Dynamic Verlet Rope (grabbable + anchor)
+#   - Stick Figure / Person  -> 17-Joint Articulated 3D Ragdoll
+#   - Interlinked Loops      -> Metallic Chain (Static Upper Loop)
+#   - Horizontal Circle      -> Bounce Trampoline Pad
+# ======================================================================
+
+@ability: dynamic_sculpt_core
+@autorun
+@desc: Mode C dynamic physics & interactive shape manifests (Portal, Rope, Ragdoll, Chain, Trampoline) for instruction4.txt.
+@match: dynamic sculpt | mode c shapes | portal rope ragdoll chain
+@code:
+(async function () {
+  if (typeof APP._dynSculptCleanup === 'function') {
+    try { APP._dynSculptCleanup(); } catch (_) {}
+  }
+
+  const V3 = THREE.Vector3;
+  const Q4 = THREE.Quaternion;
+  const UP = new V3(0, 1, 0);
+  const FWD = new V3(0, 0, 1);
+
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const tmpA = new V3(), tmpB = new V3(), tmpC = new V3(), tmpD = new V3();
+  const tmpBox = new THREE.Box3();
+
+  const activeInstances = [];
+  const activePortals = [];
+  const portalCooldown = new WeakMap();
+
+  function disposeDeep(o) {
+    if (!o) return;
+    o.traverse && o.traverse((n) => {
+      if (n.geometry) n.geometry.dispose();
+      if (n.material) {
+        (Array.isArray(n.material) ? n.material : [n.material]).forEach((m) => {
+          if (!m) return;
+          for (const k in m) {
+            const v = m[k];
+            if (v && v.isTexture) v.dispose();
+          }
+          m.dispose && m.dispose();
+        });
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------ Shared Environment & Collision Helpers
+  function getSupportSurfaceY(px, pz, prevY) {
+    let supportY = 0;
+    const wf = APP.scene.getObjectByName('NXR_Sculpt_WorkFloor');
+    if (wf && wf.visible) {
+      const wfTop = wf.position.y + 0.012;
+      if (Math.hypot(px - wf.position.x, pz - wf.position.z) <= 0.94 && prevY >= wfTop - 0.14) {
+        supportY = Math.max(supportY, wfTop);
+      }
+    }
+    for (const pl of APP.planes || []) {
+      if (pl.orientation === 'horizontal' && px >= pl.box.min.x && px <= pl.box.max.x && pz >= pl.box.min.z && pz <= pl.box.max.z) {
+        if (prevY >= pl.pos.y - 0.12) supportY = Math.max(supportY, pl.pos.y);
+      }
+    }
+    return supportY;
+  }
+
+  function collidePointWithScene(pos, prevPos, radius, friction = 0.82, bounce = 0.18) {
+    const supY = getSupportSurfaceY(pos.x, pos.z, prevPos.y - radius);
+    if (pos.y - radius < supY) {
+      const vy = pos.y - prevPos.y;
+      pos.y = supY + radius;
+      prevPos.y = pos.y + Math.min(0, vy) * bounce;
+      // Ground friction
+      prevPos.x = pos.x - (pos.x - prevPos.x) * friction;
+      prevPos.z = pos.z - (pos.z - prevPos.z) * friction;
+    }
+
+    // Collide lightly against static/other entities
+    for (const ent of APP.entities || []) {
+      if (!ent || !ent.group?.parent) continue;
+      if (ent.isPen || ent.category === 'world_fx' || ent.category === 'portal' || ent.category === 'board' || ent.category === 'dynamic_sculpt') continue;
+      if (ent.group.name === 'sculpt_raw_strokes') continue;
+      tmpBox.setFromObject(ent.group);
+      if (tmpBox.isEmpty()) continue;
+      tmpBox.clampPoint(pos, tmpA);
+      tmpB.subVectors(pos, tmpA);
+      const dSq = tmpB.lengthSq();
+      if (dSq > 1e-8 && dSq < radius * radius) {
+        const d = Math.sqrt(dSq);
+        pos.addScaledVector(tmpB, (radius - d) / d);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ Unified XR Hand & Controller Node Grabber (Zero Joint Mutation)
+  const nodeGrabs = {
+    L: { inst: null, idx: -1, prevPos: new V3(), vel: new V3(), cooldownUntil: 0 },
+    R: { inst: null, idx: -1, prevPos: new V3(), vel: new V3(), cooldownUntil: 0 }
+  };
+
+  function readGrabSlot(slot) {
+    if (!slot || !slot.active) return null;
+    if (slot.isHand && slot.xrHand) {
+      const joints = slot.xrHand.joints;
+      const thumb = joints?.['thumb-tip'];
+      const idx = joints?.['index-finger-tip'];
+      const mid = joints?.['middle-finger-tip'];
+      const wrist = joints?.['wrist'];
+      const midMeta = joints?.['middle-finger-metacarpal'];
+      if (!thumb || !idx || !thumb.visible || !idx.visible) return null;
+      const tPos = thumb.getWorldPosition(new V3());
+      const iPos = idx.getWorldPosition(new V3());
+      const pinching = tPos.distanceTo(iPos) < 0.042;
+      let fist = false;
+      if (wrist?.visible && midMeta?.visible && mid?.visible) {
+        const wPos = wrist.getWorldPosition(new V3());
+        const mMeta = midMeta.getWorldPosition(new V3());
+        const mTip = mid.getWorldPosition(new V3());
+        const handScale = Math.max(0.05, wPos.distanceTo(mMeta));
+        const palm = new V3().lerpVectors(wPos, mMeta, 0.55);
+        fist = mTip.distanceTo(palm) < handScale * 1.25;
+      }
+      return {
+        grabbing: pinching || fist,
+        pos: new V3().lerpVectors(tPos, iPos, 0.5),
+        radius: 0.14,
+        slot
+      };
+    }
+    const b = slot.gamepad?.buttons;
+    const grip = !!(b && b[1] && (b[1].pressed || b[1].value > 0.35)) || !!slot.gripping;
+    const trig = !!(b && b[0] && (b[0].pressed || b[0].value > 0.35)) || !!slot.trigger;
+    const pos = slot.pos ? slot.pos.clone() : null;
+    if (!pos) return null;
+    return { grabbing: grip || trig, pos, radius: 0.19, slot };
+  }
+
+  function releaseNodeGrab(side) {
+    const g = nodeGrabs[side];
+    if (!g || !g.inst) return;
+    const inst = g.inst;
+    if (inst.nodes && inst.nodes[g.idx]) {
+      const n = inst.nodes[g.idx];
+      n.grabbed = false;
+      n.prev.copy(n.pos).addScaledVector(g.vel, -0.016);
+    }
+    g.inst = null;
+    g.idx = -1;
+    g.cooldownUntil = performance.now() + 260;
+  }
+
+  function stepNodeGrabs(dt) {
+    const isDrawingNow = !!(APP._inst4?.state?.sculptOn && APP._inst4?.state?.state === 1);
+    const now = performance.now();
+    const hands = [['L', APP.hands?.left], ['R', APP.hands?.right]];
+
+    for (const [side, slot] of hands) {
+      const g = nodeGrabs[side];
+      const input = readGrabSlot(slot);
+
+      if (!input || isDrawingNow || !input.grabbing) {
+        if (g.inst) releaseNodeGrab(side);
+        continue;
+      }
+
+      if (g.inst) {
+        if (!g.inst.alive || !g.inst.group?.parent || !g.inst.nodes?.[g.idx]) {
+          releaseNodeGrab(side);
+          continue;
+        }
+        const n = g.inst.nodes[g.idx];
+        const safeDt = Math.max(0.004, Math.min(0.04, dt));
+        tmpA.subVectors(input.pos, g.prevPos).divideScalar(safeDt);
+        g.vel.lerp(tmpA, 0.45).clampLength(0, 8.0);
+        g.prevPos.copy(input.pos);
+
+        n.pos.lerp(input.pos, 0.85);
+        n.prev.copy(n.pos);
+        continue;
+      }
+
+      if (now < g.cooldownUntil) continue;
+
+      let bestInst = null, bestIdx = -1, bestDist = Infinity;
+      for (const inst of activeInstances) {
+        if (!inst.alive || !inst.nodes?.length) continue;
+        for (let i = 0; i < inst.nodes.length; i++) {
+          const n = inst.nodes[i];
+          if (n.lockPermanent) continue;
+          const d = n.pos.distanceTo(input.pos);
+          if (d < input.radius + (n.r || 0.03) && d < bestDist) {
+            bestDist = d; bestInst = inst; bestIdx = i;
+          }
+        }
+      }
+
+      if (bestInst && bestIdx >= 0) {
+        g.inst = bestInst;
+        g.idx = bestIdx;
+        g.prevPos.copy(input.pos);
+        g.vel.set(0, 0, 0);
+        bestInst.nodes[bestIdx].grabbed = true;
+        try { slot?.gamepad?.hapticActuators?.[0]?.pulse(0.3, 25); } catch (_) {}
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ Stroke Analysis & Geometry Classifier
+  function analyzeStroke(s) {
+    const pts = s.pts || [];
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) len += pts[i].distanceTo(pts[i - 1]);
+    const chord = pts.length >= 2 ? pts[0].distanceTo(pts[pts.length - 1]) : 0;
+    const box = new THREE.Box3().setFromPoints(pts);
+    const size = box.getSize(new V3());
+    const center = box.getCenter(new V3());
+    const diag = size.length();
+
+    // Newell plane normal & enclosed area
+    const normal = new V3();
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      normal.x += (a.y - b.y) * (a.z + b.z);
+      normal.y += (a.z - b.z) * (a.x + b.x);
+      normal.z += (a.x - b.x) * (a.y + b.y);
+    }
+    const nLen = normal.length();
+    const area = nLen * 0.5;
+    if (nLen > 1e-6) normal.divideScalar(nLen);
+    else normal.set(0, 0, 1);
+
+    const closed = len > 0.14 && chord < Math.max(0.09, diag * 0.36, len * 0.24);
+    const closedLen = len + chord;
+    const isoperimetric = closedLen > 1e-4 ? (4 * Math.PI * area) / (closedLen * closedLen) : 0;
+
+    let rSum = 0;
+    const radii = pts.map((p) => { const r = p.distanceTo(center); rSum += r; return r; });
+    const avgR = pts.length ? rSum / pts.length : 0;
+    let rVar = 0, planeErrSum = 0;
+    for (let i = 0; i < pts.length; i++) {
+      rVar += Math.pow(radii[i] - avgR, 2);
+      planeErrSum += Math.abs(tmpA.subVectors(pts[i], center).dot(normal));
+    }
+    const rStd = Math.sqrt(rVar / Math.max(1, pts.length));
+    const radialUniformity = avgR > 1e-4 ? 1 - rStd / avgR : 0;
+    const planeErr = avgR > 1e-4 ? (planeErrSum / Math.max(1, pts.length)) / avgR : 1;
+
+    return { stroke: s, pts, len, chord, box, size, center, diag, normal, area, closed, isoperimetric, avgR, radialUniformity, planeErr };
+  }
+
+  function looksLikeStickFigureOrPerson(analyses, base) {
+    const totalBox = new THREE.Box3();
+    analyses.forEach((a) => totalBox.union(a.box));
+    const sz = totalBox.getSize(new V3());
+    const H = sz.y, W = Math.max(sz.x, sz.z, 1e-4);
+    if (H < 0.18) return false;
+
+    if (analyses.length >= 2 && analyses.length <= 8) {
+      let hasTopHead = false, hasTallTorso = false, hasBranch = false;
+      const topThresh = totalBox.min.y + H * 0.60;
+      for (const a of analyses) {
+        if (a.center.y >= topThresh && a.size.y < H * 0.45 && (a.closed || a.isoperimetric > 0.35 || a.len < H * 1.4)) {
+          hasTopHead = true;
+        }
+        if (a.size.y >= H * 0.36 && a.size.y >= Math.max(a.size.x, a.size.z) * 0.85) {
+          hasTallTorso = true;
+        }
+        if (Math.hypot(a.size.x, a.size.z) >= Math.max(sz.x, sz.z) * 0.42 && a.center.y < totalBox.max.y - H * 0.18) {
+          hasBranch = true;
+        }
+      }
+      if ((hasTopHead && (hasTallTorso || hasBranch)) || (hasTallTorso && hasBranch && H >= W * 0.72)) {
+        return true;
+      }
+    }
+
+    if (analyses.length === 1) {
+      const a = analyses[0];
+      if (H >= W * 1.1 && a.len > H * 2.55 && !a.closed) {
+        // Check vertical distribution: head top + wider mid/lower limbs
+        let topPts = 0, midWide = 0, lowLeft = false, lowRight = false;
+        const cx = totalBox.getCenter(new V3()).x;
+        const cz = totalBox.getCenter(new V3()).z;
+        for (const p of a.pts) {
+          const ny = (p.y - totalBox.min.y) / H;
+          const dxz = Math.hypot(p.x - cx, p.z - cz);
+          if (ny > 0.75) topPts++;
+          if (ny > 0.38 && ny < 0.76 && dxz > W * 0.26) midWide++;
+          if (ny < 0.30) {
+            if (p.x - cx < -sz.x * 0.15 || p.z - cz < -sz.z * 0.15) lowLeft = true;
+            if (p.x - cx > sz.x * 0.15 || p.z - cz > sz.z * 0.15) lowRight = true;
+          }
+        }
+        if (topPts >= 2 && (midWide >= 2 || (lowLeft && lowRight))) return true;
+      }
+    }
+    return false;
+  }
+
+  function areLoopsLinkedChain(analyses) {
+    if (analyses.length < 2) return false;
+    const loops = analyses.filter((a) => (a.closed || (a.isoperimetric > 0.35 && a.chord < a.diag * 0.55)) && a.avgR > 0.025);
+    if (loops.length < 2 || loops.length < Math.ceil(analyses.length * 0.65)) return false;
+
+    // Sort top-to-bottom and check pairwise proximity / interlocking overlap
+    const sorted = loops.slice().sort((a, b) => b.center.y - a.center.y);
+    let linkedCount = 0;
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i], b = sorted[i + 1];
+      const dist = a.center.distanceTo(b.center);
+      const maxLinkSpan = (a.avgR + b.avgR) * 1.65 + 0.08;
+      if (dist <= maxLinkSpan) linkedCount++;
+    }
+    return linkedCount >= Math.max(1, sorted.length - 1);
+  }
+
+  function classifyDynamicShape(strokes, base, hint) {
+    const lbl = String(hint?.label || hint?.rawVoice || '').toLowerCase();
+    if (lbl) {
+      if (/portal|gateway|vortex|rift|stargate|بوابة|نفق/.test(lbl)) return 'portal';
+      if (/chain|links|سلسلة|سنسلة/.test(lbl)) return 'chain';
+      if (/ragdoll|puppet|stick\s*figure|person|human|man|woman|dummy|شخص|دمية|انسان|إنسان|رجل|راجل/.test(lbl)) return 'ragdoll';
+      if (/rope|cord|string|whip|vine|cable|wire|line|حبل|خيط/.test(lbl)) return 'rope';
+      if (/trampoline|bounce|نطاطة/.test(lbl)) return 'trampoline';
+    }
+
+    const analyses = strokes.map(analyzeStroke);
+
+    if (areLoopsLinkedChain(analyses)) return { type: 'chain', analyses };
+    if (looksLikeStickFigureOrPerson(analyses, base)) return { type: 'ragdoll', analyses };
+
+    if (analyses.length === 1) {
+      const a = analyses[0];
+      const isCircle = (a.closed || a.chord < Math.max(0.12, a.avgR * 0.65)) && a.isoperimetric > 0.42 && a.radialUniformity > 0.48 && a.planeErr < 0.42;
+      if (isCircle && a.avgR >= 0.07) {
+        if (Math.abs(a.normal.y) < 0.72) return { type: 'portal', analyses };
+        return { type: 'trampoline', analyses };
+      }
+      if (a.len >= 0.12) return { type: 'rope', analyses };
+    }
+
+    // Multiple open strokes forming a chain/line? If 1 main long curve + small stroke -> rope
+    const totalLen = analyses.reduce((s, a) => s + a.len, 0);
+    if (analyses.length === 2 && analyses[0].len > totalLen * 0.75 && !analyses[0].closed) {
+      return { type: 'rope', analyses: [analyses[0]] };
+    }
+
+    return null;
+  }
+
+  // ------------------------------------------------------------------ 1. DIMENSIONAL PORTAL (Vertical Circle)
+  function spawnPortal(analysis, colorHex, rec) {
+    const center = analysis.center.clone();
+    const radius = clamp(analysis.avgR, 0.22, 1.35);
+    const n = analysis.normal.clone().normalize();
+    // Face toward user's head
+    const headP = (APP.headPos && APP.headPos.isVector3) ? APP.headPos : APP.camera.position;
+    if (n.dot(tmpA.subVectors(headP, center)) < 0) n.negate();
+
+    const q = new Q4().setFromUnitVectors(FWD, n);
+    const group = new THREE.Group();
+    group.name = 'dynamic_portal';
+    group.position.copy(center);
+    group.quaternion.copy(q);
+
+    // Pair color palette: Cyan/Teal for odd, Amber/Magenta for even
+    const pairIdx = activePortals.length;
+    const isPartner = pairIdx % 2 === 1;
+    const colA = isPartner ? new THREE.Color(0xf97316) : new THREE.Color(colorHex || 0x22d3ee);
+    const colB = isPartner ? new THREE.Color(0xfacc15) : new THREE.Color(0x818cf8);
+
+    // Swirling vortex shader disc
+    const vortexMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: {
+        uTime: { value: 0 },
+        uColA: { value: colA },
+        uColB: { value: colB },
+        uPulse: { value: 0 }
+      },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv * 2.0 - 1.0; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: [
+        'uniform float uTime, uPulse; uniform vec3 uColA, uColB; varying vec2 vUv;',
+        'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }',
+        'float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f); return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }',
+        'float fbm(vec2 p){ return 0.55*noise(p) + 0.30*noise(p*2.1) + 0.15*noise(p*4.3); }',
+        'void main(){',
+        '  float r = length(vUv); if (r > 1.0) discard;',
+        '  float ang = atan(vUv.y, vUv.x);',
+        '  float swirl = ang + (1.0 - r) * 5.2 - uTime * 2.6;',
+        '  float f = fbm(vec2(cos(swirl), sin(swirl)) * (2.6 + r * 2.0) + vec2(uTime * 0.5, -uTime * 0.4));',
+        '  float ring = smoothstep(0.55, 0.98, r) * (1.0 - smoothstep(0.96, 1.0, r));',
+        '  float core = exp(-r * 2.2) * (0.45 + 0.55 * f);',
+        '  vec3 col = mix(uColB, uColA, clamp(f * 1.15 + ring * 0.6, 0.0, 1.0));',
+        '  col += vec3(1.0) * (ring * 0.65 + core * 0.55 + uPulse * 0.7);',
+        '  float alpha = clamp((0.35 + f * 0.52 + ring * 0.85) * (1.0 - smoothstep(0.95, 1.0, r)), 0.0, 0.94);',
+        '  gl_FragColor = vec4(col, alpha);',
+        '}'
+      ].join('\n')
+    });
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.97, 48), vortexMat);
+    group.add(disc);
+
+    // Metallic glowing frame torus
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(radius, Math.max(0.012, radius * 0.055), 14, 52),
+      new THREE.MeshStandardMaterial({
+        color: 0x1e293b, metalness: 0.82, roughness: 0.22,
+        emissive: colA, emissiveIntensity: 0.85
+      })
+    );
+    group.add(rim);
+
+    // Inner spinning energy ring + 6 orbiting runes
+    const runeGroup = new THREE.Group();
+    const runeGeo = new THREE.OctahedronGeometry(Math.max(0.015, radius * 0.065), 0);
+    const runeMat = new THREE.MeshBasicMaterial({ color: colB });
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const m = new THREE.Mesh(runeGeo, runeMat);
+      m.position.set(Math.cos(a) * radius, Math.sin(a) * radius, 0);
+      runeGroup.add(m);
+    }
+    group.add(runeGroup);
+
+    // Subtle sparkle ring particles
+    const PCOUNT = 36;
+    const pPos = new Float32Array(PCOUNT * 3);
+    const pAng = new Float32Array(PCOUNT);
+    for (let i = 0; i < PCOUNT; i++) {
+      pAng[i] = (i / PCOUNT) * Math.PI * 2;
+      pPos[i * 3] = Math.cos(pAng[i]) * radius * (0.85 + Math.random() * 0.2);
+      pPos[i * 3 + 1] = Math.sin(pAng[i]) * radius * (0.85 + Math.random() * 0.2);
+      pPos[i * 3 + 2] = (Math.random() - 0.5) * 0.06;
+    }
+    const pGeo = new THREE.BufferGeometry();
+    pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+    const pPts = new THREE.Points(pGeo, new THREE.PointsMaterial({ color: colA, size: 0.022, transparent: true, opacity: 0.85, depthWrite: false }));
+    group.add(pPts);
+
+    APP.scene.add(group);
+
+    const ent = APP.registerEntity(group, {
+      name: `Portal ${pairIdx + 1}`,
+      category: 'portal',
+      grabbable: true,
+      holdable: false,
+      physics: { enabled: false, gravity: false }
+    });
+
+    const pObj = {
+      type: 'portal', alive: true, rec, group, entity: ent, radius, partner: null,
+      vortexMat, runeGroup, pGeo, pAng, pulse: 0,
+      step(dt, tNow) {
+        if (!group.parent || rec?.cancelled) { this.dispose(); return false; }
+        vortexMat.uniforms.uTime.value = tNow;
+        this.pulse = Math.max(0, this.pulse - dt * 2.2);
+        vortexMat.uniforms.uPulse.value = this.pulse;
+        runeGroup.rotation.z = tNow * 1.1;
+
+        const arr = pGeo.attributes.position.array;
+        for (let i = 0; i < PCOUNT; i++) {
+          pAng[i] += dt * (1.2 + (i % 3) * 0.35);
+          const rr = radius * (0.82 + 0.18 * Math.sin(tNow * 2.5 + i));
+          arr[i * 3] = Math.cos(pAng[i]) * rr;
+          arr[i * 3 + 1] = Math.sin(pAng[i]) * rr;
+        }
+        pGeo.attributes.position.needsUpdate = true;
+
+        // Check teleportation for entities & dynamic bodies!
+        const nA = FWD.clone().applyQuaternion(group.quaternion).normalize();
+        const partner = this.partner && this.partner.alive && this.partner.group?.parent ? this.partner : null;
+        const nowMs = performance.now();
+
+        if (partner) {
+          const nB = FWD.clone().applyQuaternion(partner.group.quaternion).normalize();
+          const qFlipY = new Q4().setFromAxisAngle(UP, Math.PI);
+          const qAtoB = partner.group.quaternion.clone().multiply(qFlipY).multiply(group.quaternion.clone().invert());
+
+          for (const target of APP.entities || []) {
+            if (!target || !target.group?.parent || target === ent || target === partner.entity) continue;
+            if (target.isPen || target.category === 'portal' || target.category === 'world_fx' || target.category === 'board') continue;
+            if (target.isHeld || target.rb?.handGrabbed) continue;
+            const lastT = portalCooldown.get(target) || 0;
+            if (nowMs - lastT < 850) continue;
+
+            const dVec = tmpA.subVectors(target.group.position, group.position);
+            const planeDist = dVec.dot(nA);
+            const radialDist = tmpB.copy(dVec).addScaledVector(nA, -planeDist).length();
+            if (Math.abs(planeDist) < 0.14 && radialDist < radius * 0.85) {
+              // Teleport target to partner portal!
+              const localOff = dVec.clone().applyQuaternion(group.quaternion.clone().invert());
+              localOff.applyQuaternion(qFlipY);
+              const newPos = localOff.applyQuaternion(partner.group.quaternion).add(partner.group.position);
+              const exitSign = planeDist >= 0 ? -1 : 1;
+              newPos.addScaledVector(nB, exitSign * 0.18);
+
+              // If dynamic ragdoll/rope/chain, shift all its Verlet nodes too!
+              const dynMatch = activeInstances.find((d) => d.entity === target);
+              if (dynMatch && dynMatch.nodes) {
+                const shift = newPos.clone().sub(target.group.position);
+                for (const nd of dynMatch.nodes) {
+                  nd.pos.sub(target.group.position).applyQuaternion(qAtoB).add(newPos);
+                  nd.prev.sub(target.group.position).applyQuaternion(qAtoB).add(newPos);
+                }
+                target.group.position.copy(newPos);
+              } else {
+                target.group.position.copy(newPos);
+                target.group.quaternion.premultiply(qAtoB);
+                if (target.rb) {
+                  target.rb.vel.applyQuaternion(qAtoB);
+                  if (target.rb.vel.lengthSq() < 0.4) target.rb.vel.addScaledVector(nB, exitSign * 1.4);
+                  target.rb.angVel.applyQuaternion(qAtoB);
+                  target.rb.sleeping = false;
+                } else if (target.physics?.vel) {
+                  target.physics.vel.applyQuaternion(qAtoB);
+                }
+              }
+
+              portalCooldown.set(target, nowMs);
+              this.pulse = 1.0;
+              partner.pulse = 1.0;
+              APP.ui?.toast?.('⚡ Teleported through Portal!', 1400);
+            }
+          }
+        }
+        return true;
+      },
+      dispose() {
+        this.alive = false;
+        const idx = activePortals.indexOf(this);
+        if (idx !== -1) activePortals.splice(idx, 1);
+        if (this.partner && this.partner.partner === this) this.partner.partner = null;
+      }
+    };
+
+    // Auto-pair with an unpaired portal
+    const waiting = activePortals.find((p) => p.alive && !p.partner);
+    if (waiting) {
+      waiting.partner = pObj;
+      pObj.partner = waiting;
+      APP.ui?.toast?.('🌀 Portals Linked! Throw objects between them!', 2800);
+    } else {
+      APP.ui?.toast?.('🌀 Portal 1 opened — draw another vertical circle to link!', 2800);
+    }
+
+    activePortals.push(pObj);
+    activeInstances.push(pObj);
+    return { ok: true, group, entity: ent, label: `Portal ${pairIdx + 1}` };
+  }
+
+  // ------------------------------------------------------------------ 2. DYNAMIC VERLET ROPE (Open Line / Curve)
+  function resampleCurve(pts, count) {
+    if (pts.length < 2) return pts.slice();
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
+    const tot = cum[cum.length - 1] || 1e-4;
+    const out = [];
+    for (let k = 0; k < count; k++) {
+      const target = (k / (count - 1)) * tot;
+      let seg = 0;
+      while (seg < cum.length - 2 && cum[seg + 1] < target) seg++;
+      const d = cum[seg + 1] - cum[seg];
+      const f = d > 1e-6 ? (target - cum[seg]) / d : 0;
+      out.push(new V3().lerpVectors(pts[seg], pts[seg + 1], f));
+    }
+    return out;
+  }
+
+  function spawnRope(analysis, colorHex, rec) {
+    const len = analysis.len;
+    const N = clamp(Math.round(len / 0.045), 10, 40);
+    let sampled = resampleCurve(analysis.pts, N);
+    // Make node 0 the higher endpoint so hanging ropes anchor cleanly at the top
+    if (sampled[sampled.length - 1].y > sampled[0].y + 0.06) sampled.reverse();
+
+    const segLen = Math.max(0.025, len / (N - 1));
+    const tubeR = clamp(analysis.stroke?.radii?.[0] || 0.015, 0.010, 0.032);
+    const pinTop = sampled[0].y > 0.35; // Elevated drawing anchors top; floor-level drawing drops free!
+
+    const nodes = sampled.map((p, i) => ({
+      pos: p.clone(),
+      prev: p.clone(),
+      pinned: pinTop && i === 0,
+      grabbed: false,
+      r: tubeR
+    }));
+
+    const origin = nodes[0].pos.clone();
+    const group = new THREE.Group();
+    group.name = 'dynamic_rope';
+    group.position.copy(origin);
+
+    // Dynamic tube geometry updated in-place
+    const RAD = 8;
+    const vertCount = N * RAD;
+    const positions = new Float32Array(vertCount * 3);
+    const normals = new Float32Array(vertCount * 3);
+    const uvs = new Float32Array(vertCount * 2);
+    const indices = [];
+    for (let i = 0; i < N; i++) {
+      for (let k = 0; k < RAD; k++) {
+        uvs[(i * RAD + k) * 2] = k / RAD;
+        uvs[(i * RAD + k) * 2 + 1] = (i / (N - 1)) * (len * 6);
+      }
+    }
+    for (let i = 0; i < N - 1; i++) {
+      for (let k = 0; k < RAD; k++) {
+        const a = i * RAD + k, b = i * RAD + (k + 1) % RAD;
+        const c = (i + 1) * RAD + k, d = (i + 1) * RAD + (k + 1) % RAD;
+        indices.push(a, b, c, b, d, c);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    const posAttr = new THREE.BufferAttribute(positions, 3);
+    const normAttr = new THREE.BufferAttribute(normals, 3);
+    geo.setAttribute('position', posAttr);
+    geo.setAttribute('normal', normAttr);
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+
+    const ropeMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(colorHex || '#d97706'),
+      roughness: 0.78, metalness: 0.08
+    });
+    const ropeMesh = new THREE.Mesh(geo, ropeMat);
+    ropeMesh.frustumCulled = false;
+    ropeMesh.castShadow = true;
+    group.add(ropeMesh);
+
+    const anchorMesh = new THREE.Mesh(
+      new THREE.TorusGeometry(tubeR * 1.7, tubeR * 0.45, 10, 20),
+      new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.85, roughness: 0.25, emissive: pinTop ? 0x0ea5e9 : 0x000000, emissiveIntensity: 0.35 })
+    );
+    anchorMesh.frustumCulled = false;
+    group.add(anchorMesh);
+
+    const tipKnot = new THREE.Mesh(
+      new THREE.SphereGeometry(tubeR * 1.45, 12, 10),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#d97706').multiplyScalar(0.8), roughness: 0.65 })
+    );
+    tipKnot.frustumCulled = false;
+    group.add(tipKnot);
+
+    APP.scene.add(group);
+
+    const ent = APP.registerEntity(group, {
+      name: 'Dynamic Rope',
+      category: 'dynamic_sculpt',
+      grabbable: false,
+      holdable: false,
+      physics: { enabled: false, gravity: false }
+    });
+
+    const tVec = new V3(), nVec = new V3(), bVec = new V3(), refUp = new V3();
+
+    const inst = {
+      type: 'rope', alive: true, rec, group, entity: ent, nodes,
+      step(dt) {
+        if (!group.parent || rec?.cancelled) { this.alive = false; return false; }
+        const safeDt = Math.min(dt, 0.025);
+        const gStep = -9.81 * safeDt * safeDt;
+
+        // 1. Verlet Integration
+        for (let i = 0; i < N; i++) {
+          const n = nodes[i];
+          if (n.grabbed) continue;
+          if (n.pinned) { n.prev.copy(n.pos); continue; }
+          tmpA.subVectors(n.pos, n.prev).multiplyScalar(0.992);
+          n.prev.copy(n.pos);
+          n.pos.add(tmpA);
+          n.pos.y += gStep;
+        }
+
+        // 2. Distance & Collision Constraints
+        for (let iter = 0; iter < 12; iter++) {
+          for (let i = 0; i < N - 1; i++) {
+            const a = nodes[i], b = nodes[i + 1];
+            tmpA.subVectors(b.pos, a.pos);
+            const d = tmpA.length() || 1e-5;
+            const diff = (d - segLen) / d;
+            const aFixed = a.pinned || a.grabbed, bFixed = b.pinned || b.grabbed;
+            if (aFixed && bFixed) continue;
+            if (aFixed) b.pos.addScaledVector(tmpA, -diff);
+            else if (bFixed) a.pos.addScaledVector(tmpA, diff);
+            else {
+              a.pos.addScaledVector(tmpA, diff * 0.5);
+              b.pos.addScaledVector(tmpA, -diff * 0.5);
+            }
+          }
+          if (iter === 11) {
+            for (let i = 0; i < N; i++) {
+              const n = nodes[i];
+              if (!n.pinned && !n.grabbed) collidePointWithScene(n.pos, n.prev, tubeR);
+            }
+          }
+        }
+
+        // Keep group origin synced near node 0 (or center)
+        group.position.copy(nodes[0].pos);
+
+        // 3. Rebuild Tube Vertices In-Place using Parallel Transport
+        for (let i = 0; i < N; i++) {
+          if (i === 0) tVec.subVectors(nodes[1].pos, nodes[0].pos);
+          else if (i === N - 1) tVec.subVectors(nodes[N - 1].pos, nodes[N - 2].pos);
+          else tVec.subVectors(nodes[i + 1].pos, nodes[i - 1].pos);
+          if (tVec.lengthSq() < 1e-8) tVec.set(0, -1, 0);
+          tVec.normalize();
+
+          if (i === 0) {
+            refUp.set(Math.abs(tVec.y) < 0.9 ? 0 : 1, Math.abs(tVec.y) < 0.9 ? 1 : 0, 0);
+            bVec.crossVectors(tVec, refUp).normalize();
+            nVec.crossVectors(bVec, tVec).normalize();
+          } else {
+            // Re-orthogonalize previous nVec onto plane perpendicular to tVec
+            nVec.addScaledVector(tVec, -nVec.dot(tVec));
+            if (nVec.lengthSq() < 1e-6) {
+              refUp.set(Math.abs(tVec.y) < 0.9 ? 0 : 1, Math.abs(tVec.y) < 0.9 ? 1 : 0, 0);
+              nVec.crossVectors(tVec, refUp);
+            }
+            nVec.normalize();
+            bVec.crossVectors(tVec, nVec).normalize();
+          }
+
+          const cx = nodes[i].pos.x - group.position.x;
+          const cy = nodes[i].pos.y - group.position.y;
+          const cz = nodes[i].pos.z - group.position.z;
+
+          for (let k = 0; k < RAD; k++) {
+            const ang = (k / RAD) * Math.PI * 2;
+            const c = Math.cos(ang), s = Math.sin(ang);
+            const nx = nVec.x * c + bVec.x * s;
+            const ny = nVec.y * c + bVec.y * s;
+            const nz = nVec.z * c + bVec.z * s;
+            const vi = (i * RAD + k) * 3;
+            positions[vi] = cx + nx * tubeR;
+            positions[vi + 1] = cy + ny * tubeR;
+            positions[vi + 2] = cz + nz * tubeR;
+            normals[vi] = nx;
+            normals[vi + 1] = ny;
+            normals[vi + 2] = nz;
+          }
+        }
+        posAttr.needsUpdate = true;
+        normAttr.needsUpdate = true;
+
+        anchorMesh.position.set(0, 0, 0);
+        tipKnot.position.subVectors(nodes[N - 1].pos, group.position);
+        return true;
+      }
+    };
+
+    activeInstances.push(inst);
+    return { ok: true, group, entity: ent, label: 'Dynamic Rope' };
+  }
+
+  // ------------------------------------------------------------------ 3. 17-JOINT ARTICULATED RAGDOLL (Stick Figure / Person)
+  function spawnRagdoll(analyses, base, yawQ, colorHex, rec) {
+    const totalBox = new THREE.Box3();
+    analyses.forEach((a) => totalBox.union(a.box));
+    const center = totalBox.getCenter(new V3());
+    const H = clamp(totalBox.getSize(new V3()).y, 0.50, 1.85);
+
+    // 17 Anatomical Nodes (in local space scaled by H, then rotated by yawQ + center)
+    const spec = [
+      [0,     0.00,  0],     // 0: pelvis
+      [0,     0.14,  0],     // 1: spine
+      [0,     0.28,  0],     // 2: chest
+      [0,     0.35,  0],     // 3: neck
+      [0,     0.45,  0],     // 4: head
+      [-0.11, 0.28,  0],     // 5: lShoulder
+      [-0.22, 0.21,  0.02],  // 6: lElbow
+      [-0.31, 0.12,  0.04],  // 7: lHand
+      [0.11,  0.28,  0],     // 8: rShoulder
+      [0.22,  0.21,  0.02],  // 9: rElbow
+      [0.31,  0.12,  0.04],  // 10: rHand
+      [-0.065, -0.03, 0],    // 11: lHip
+      [-0.075, -0.24, 0.02], // 12: lKnee
+      [-0.08,  -0.45, 0],    // 13: lFoot
+      [0.065,  -0.03, 0],    // 14: rHip
+      [0.075,  -0.24, 0.02], // 15: rKnee
+      [0.08,   -0.45, 0]     // 16: rFoot
+    ];
+
+    const nodes = spec.map(([x, y, z], idx) => {
+      const p = new V3(x * H, y * H, z * H).applyQuaternion(yawQ).add(center);
+      const r = idx === 4 ? H * 0.065 : (idx === 0 || idx === 2 ? H * 0.055 : H * 0.032);
+      return { pos: p, prev: p.clone(), r, grabbed: false };
+    });
+
+    // Give a playful initial sway so ragdoll springs to life immediately
+    nodes[4].prev.x -= 0.008;
+    nodes[7].prev.z += 0.012;
+    nodes[10].prev.z -= 0.012;
+
+    // Structural bones + anti-collapse cross-braces
+    const links = [];
+    const addLink = (a, b, stiff = 1.0) => {
+      links.push({ a, b, rest: nodes[a].pos.distanceTo(nodes[b].pos), stiff });
+    };
+    // Visible skeleton bones (first 16)
+    const bonePairs = [
+      [0, 1], [1, 2], [2, 3], [3, 4],
+      [2, 5], [5, 6], [6, 7],
+      [2, 8], [8, 9], [9, 10],
+      [0, 11], [11, 12], [12, 13],
+      [0, 14], [14, 15], [15, 16]
+    ];
+    bonePairs.forEach(([a, b]) => addLink(a, b, 1.0));
+
+    // Structural posture braces (prevent torso/shoulder/hip collapse)
+    addLink(0, 2, 0.92);
+    addLink(5, 8, 0.95);
+    addLink(11, 14, 0.95);
+    addLink(5, 0, 0.85);
+    addLink(8, 0, 0.85);
+    addLink(11, 2, 0.80);
+    addLink(14, 2, 0.80);
+    addLink(2, 4, 0.82);
+
+    const group = new THREE.Group();
+    group.name = 'dynamic_ragdoll';
+    group.position.copy(nodes[0].pos);
+
+    const bodyCol = new THREE.Color(colorHex || '#38bdf8');
+    const bodyMat = new THREE.MeshStandardMaterial({ color: bodyCol, roughness: 0.42, metalness: 0.18 });
+    const jointMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.30, metalness: 0.65 });
+    const visorMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.15, metalness: 0.85, emissive: bodyCol, emissiveIntensity: 0.45 });
+
+    // Head with visor
+    const headMesh = new THREE.Group();
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(H * 0.068, 18, 14), bodyMat);
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(H * 0.088, H * 0.032, H * 0.045), visorMat);
+    visor.position.set(0, H * 0.008, H * 0.052);
+    headMesh.add(skull, visor);
+    headMesh.traverse((m) => { m.frustumCulled = false; if (m.isMesh) m.castShadow = true; });
+    group.add(headMesh);
+
+    // Joint spheres
+    const jointMeshes = nodes.map((n, idx) => {
+      if (idx === 4) return null;
+      const m = new THREE.Mesh(new THREE.SphereGeometry(idx === 2 ? H * 0.058 : (idx === 0 ? H * 0.050 : H * 0.028), 12, 10), idx === 2 || idx === 0 ? bodyMat : jointMat);
+      m.frustumCulled = false; m.castShadow = true;
+      group.add(m);
+      return m;
+    });
+
+    // Limb capsules/cylinders
+    const limbMeshes = bonePairs.map(([a, b], idx) => {
+      const rest = nodes[a].pos.distanceTo(nodes[b].pos);
+      const isTorso = idx <= 1;
+      const rTop = isTorso ? H * 0.052 : H * 0.024;
+      const rBot = isTorso ? H * 0.046 : H * 0.020;
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, Math.max(0.02, rest), 10), bodyMat);
+      m.frustumCulled = false; m.castShadow = true;
+      group.add(m);
+      return { mesh: m, a, b };
+    });
+
+    APP.scene.add(group);
+
+    const ent = APP.registerEntity(group, {
+      name: 'Ragdoll',
+      category: 'dynamic_sculpt',
+      grabbable: false,
+      holdable: false,
+      physics: { enabled: false, gravity: false }
+    });
+
+    const inst = {
+      type: 'ragdoll', alive: true, rec, group, entity: ent, nodes,
+      step(dt) {
+        if (!group.parent || rec?.cancelled) { this.alive = false; return false; }
+        const safeDt = Math.min(dt, 0.025);
+        const gStep = -9.81 * safeDt * safeDt;
+
+        // 1. Integrate
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          if (n.grabbed) continue;
+          tmpA.subVectors(n.pos, n.prev).multiplyScalar(0.988);
+          n.prev.copy(n.pos);
+          n.pos.add(tmpA);
+          n.pos.y += gStep;
+        }
+
+        // 2. Solve Constraints
+        for (let iter = 0; iter < 12; iter++) {
+          for (let i = 0; i < links.length; i++) {
+            const lk = links[i];
+            const a = nodes[lk.a], b = nodes[lk.b];
+            tmpA.subVectors(b.pos, a.pos);
+            const d = tmpA.length() || 1e-5;
+            const diff = ((d - lk.rest) / d) * lk.stiff;
+            if (a.grabbed && b.grabbed) continue;
+            if (a.grabbed) b.pos.addScaledVector(tmpA, -diff);
+            else if (b.grabbed) a.pos.addScaledVector(tmpA, diff);
+            else {
+              a.pos.addScaledVector(tmpA, diff * 0.5);
+              b.pos.addScaledVector(tmpA, -diff * 0.5);
+            }
+          }
+          if (iter === 11) {
+            for (let i = 0; i < nodes.length; i++) {
+              if (!nodes[i].grabbed) collidePointWithScene(nodes[i].pos, nodes[i].prev, nodes[i].r, 0.78, 0.16);
+            }
+          }
+        }
+
+        // 3. Sync Group & Limb Visuals
+        group.position.copy(nodes[0].pos);
+
+        for (let i = 0; i < nodes.length; i++) {
+          if (jointMeshes[i]) jointMeshes[i].position.subVectors(nodes[i].pos, group.position);
+        }
+
+        // Align head smoothly along neck -> head and chest forward
+        headMesh.position.subVectors(nodes[4].pos, group.position);
+        tmpA.subVectors(nodes[4].pos, nodes[3].pos).normalize();
+        tmpB.subVectors(nodes[8].pos, nodes[5].pos).normalize(); // right vector across shoulders
+        tmpC.crossVectors(tmpB, tmpA).normalize(); // forward facing
+        if (tmpC.lengthSq() > 0.1) {
+          tmpB.crossVectors(tmpA, tmpC).normalize();
+          const m4 = new THREE.Matrix4().makeBasis(tmpB, tmpA, tmpC);
+          headMesh.quaternion.setFromRotationMatrix(m4);
+        }
+
+        for (const lm of limbMeshes) {
+          const pA = nodes[lm.a].pos, pB = nodes[lm.b].pos;
+          tmpA.addVectors(pA, pB).multiplyScalar(0.5).sub(group.position);
+          lm.mesh.position.copy(tmpA);
+          tmpB.subVectors(pB, pA);
+          const d = tmpB.length();
+          if (d > 1e-5) {
+            tmpB.divideScalar(d);
+            lm.mesh.quaternion.setFromUnitVectors(UP, tmpB);
+          }
+        }
+        return true;
+      }
+    };
+
+    activeInstances.push(inst);
+    return { ok: true, group, entity: ent, label: 'Ragdoll' };
+  }
+
+  // ------------------------------------------------------------------ 4. INTERLOCKING METALLIC CHAIN (Static Upper Loop)
+  function makeChainLinkGeo(rx, ry, tubeR) {
+    const pts = [];
+    const steps = 20;
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      // Superellipse stadium shape for classic chain link
+      const cx = Math.cos(a), sy = Math.sin(a);
+      const sx = Math.sign(cx) * Math.pow(Math.abs(cx), 0.72) * rx;
+      const sy2 = Math.sign(sy) * Math.pow(Math.abs(sy), 0.72) * ry;
+      pts.push(new V3(sx, sy2, 0));
+    }
+    const curve = new THREE.CatmullRomCurve3(pts, true);
+    return new THREE.TubeGeometry(curve, 28, tubeR, 10, true);
+  }
+
+  function spawnChain(analyses, colorHex, rec) {
+    const sorted = analyses.slice().sort((a, b) => b.center.y - a.center.y);
+    const linkCount = clamp(sorted.length, 2, 18);
+
+    // Derive link dimensions from average drawn loop size
+    const avgR = clamp(sorted.reduce((s, a) => s + a.avgR, 0) / sorted.length, 0.045, 0.24);
+    const linkRy = avgR * 1.15;
+    const linkRx = avgR * 0.72;
+    const tubeR = clamp(avgR * 0.20, 0.008, 0.032);
+    const pitch = linkRy * 1.48; // interlocking pitch
+
+    // Create N+1 nodes; link i spans node[i] -> node[i+1], with node 0 & node 1 fixed if upper loop is static!
+    const nodes = [];
+    const topCenter = sorted[0].center.clone();
+    for (let i = 0; i <= linkCount; i++) {
+      const p = i < sorted.length
+        ? sorted[i].center.clone()
+        : topCenter.clone().add(new V3(0, -i * pitch, 0));
+      // Ensure non-zero initial chain spacing
+      if (i > 0 && p.distanceTo(nodes[i - 1].pos) < pitch * 0.35) {
+        p.copy(nodes[i - 1].pos).add(new V3((Math.random() - 0.5) * 0.015, -pitch, (Math.random() - 0.5) * 0.015));
+      }
+      nodes.push({
+        pos: p,
+        prev: p.clone(),
+        pinned: i === 0,
+        lockPermanent: i === 0, // Static upper loop!
+        grabbed: false,
+        r: linkRx
+      });
+    }
+    // Pin top link orientation vertically downward at node 0 -> node 1 anchor
+    nodes[1].pos.set(nodes[0].pos.x, nodes[0].pos.y - pitch, nodes[0].pos.z);
+    nodes[1].prev.copy(nodes[1].pos);
+    nodes[1].pinned = true;
+    nodes[1].lockPermanent = true;
+
+    const group = new THREE.Group();
+    group.name = 'dynamic_chain';
+    group.position.copy(nodes[0].pos);
+
+    const linkGeo = makeChainLinkGeo(linkRx, linkRy, tubeR);
+    const staticMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8, metalness: 0.88, roughness: 0.20, emissive: 0x0284c7, emissiveIntensity: 0.35
+    });
+    const metalMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(colorHex && colorHex !== '#38bdf8' ? colorHex : '#cbd5e1'),
+      metalness: 0.90, roughness: 0.26
+    });
+
+    const linkMeshes = [];
+    for (let i = 0; i < linkCount; i++) {
+      const m = new THREE.Mesh(linkGeo, i === 0 ? staticMat : metalMat);
+      m.frustumCulled = false;
+      m.castShadow = true;
+      group.add(m);
+      linkMeshes.push(m);
+    }
+
+    APP.scene.add(group);
+
+    const ent = APP.registerEntity(group, {
+      name: 'Dynamic Chain',
+      category: 'dynamic_sculpt',
+      grabbable: false,
+      holdable: false,
+      physics: { enabled: false, gravity: false }
+    });
+
+    const twistQ = new Q4().setFromAxisAngle(UP, Math.PI * 0.5);
+
+    const inst = {
+      type: 'chain', alive: true, rec, group, entity: ent, nodes,
+      step(dt) {
+        if (!group.parent || rec?.cancelled) { this.alive = false; return false; }
+        const safeDt = Math.min(dt, 0.025);
+        const gStep = -9.81 * safeDt * safeDt;
+
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          if (n.pinned || n.grabbed) { n.prev.copy(n.pos); continue; }
+          tmpA.subVectors(n.pos, n.prev).multiplyScalar(0.990);
+          n.prev.copy(n.pos);
+          n.pos.add(tmpA);
+          n.pos.y += gStep;
+        }
+
+        for (let iter = 0; iter < 14; iter++) {
+          for (let i = 0; i < linkCount; i++) {
+            const a = nodes[i], b = nodes[i + 1];
+            tmpA.subVectors(b.pos, a.pos);
+            const d = tmpA.length() || 1e-5;
+            const diff = (d - pitch) / d;
+            const aFix = a.pinned || a.grabbed, bFix = b.pinned || b.grabbed;
+            if (aFix && bFix) continue;
+            if (aFix) b.pos.addScaledVector(tmpA, -diff);
+            else if (bFix) a.pos.addScaledVector(tmpA, diff);
+            else {
+              a.pos.addScaledVector(tmpA, diff * 0.5);
+              b.pos.addScaledVector(tmpA, -diff * 0.5);
+            }
+          }
+          if (iter === 13) {
+            for (let i = 1; i < nodes.length; i++) {
+              if (!nodes[i].pinned && !nodes[i].grabbed) collidePointWithScene(nodes[i].pos, nodes[i].prev, linkRx * 0.8, 0.80, 0.22);
+            }
+          }
+        }
+
+        group.position.copy(nodes[0].pos);
+        for (let i = 0; i < linkCount; i++) {
+          const a = nodes[i].pos, b = nodes[i + 1].pos;
+          linkMeshes[i].position.addVectors(a, b).multiplyScalar(0.5).sub(group.position);
+          tmpA.subVectors(a, b); // UP direction along link
+          if (tmpA.lengthSq() > 1e-6) {
+            tmpA.normalize();
+            linkMeshes[i].quaternion.setFromUnitVectors(UP, tmpA);
+            if (i % 2 === 1) linkMeshes[i].quaternion.multiply(twistQ);
+          }
+        }
+        return true;
+      }
+    };
+
+    activeInstances.push(inst);
+    return { ok: true, group, entity: ent, label: 'Dynamic Chain' };
+  }
+
+  // ------------------------------------------------------------------ 5. BONUS: BOUNCE TRAMPOLINE (Horizontal Circle)
+  function spawnTrampoline(analysis, colorHex, rec) {
+    const center = analysis.center.clone();
+    const radius = clamp(analysis.avgR, 0.22, 1.3);
+    const group = new THREE.Group();
+    group.name = 'dynamic_trampoline';
+    group.position.copy(center);
+
+    const frame = new THREE.Mesh(
+      new THREE.TorusGeometry(radius, 0.025, 12, 48),
+      new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.78, roughness: 0.28 })
+    );
+    frame.rotation.x = Math.PI / 2;
+
+    const matMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius * 0.96, radius * 0.96, 0.02, 36),
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(colorHex || '#22c55e'), roughness: 0.55,
+        emissive: new THREE.Color(colorHex || '#22c55e'), emissiveIntensity: 0.25
+      })
+    );
+    group.add(frame, matMesh);
+    APP.scene.add(group);
+
+    const ent = APP.registerEntity(group, {
+      name: 'Bounce Pad',
+      category: 'dynamic_sculpt',
+      grabbable: true,
+      holdable: false,
+      physics: { enabled: false, gravity: false }
+    });
+
+    let bounceSquash = 0;
+    const bounceCooldown = new WeakMap();
+    const inst = {
+      type: 'trampoline', alive: true, rec, group, entity: ent,
+      step(dt) {
+        if (!group.parent || rec?.cancelled) { this.alive = false; return false; }
+        bounceSquash = Math.max(0, bounceSquash - dt * 4.5);
+        matMesh.scale.y = 1 - Math.sin(bounceSquash * Math.PI) * 0.45;
+        matMesh.position.y = -Math.sin(bounceSquash * Math.PI) * 0.035;
+
+        const nowMs = performance.now();
+        for (const target of APP.entities || []) {
+          if (!target || !target.rb || !target.group?.parent || target === ent) continue;
+          if (nowMs - (bounceCooldown.get(target) || 0) < 280) continue;
+          const dxz = Math.hypot(target.group.position.x - group.position.x, target.group.position.z - group.position.z);
+          const dy = target.group.position.y - group.position.y;
+          if (dxz < radius * 0.94 && Math.abs(dy) < 0.24 && target.rb.vel.y < 0.2) {
+            target.rb.vel.y = Math.max(3.6, Math.abs(target.rb.vel.y) * 1.25);
+            target.rb.sleeping = false;
+            bounceSquash = 1.0;
+            bounceCooldown.set(target, nowMs);
+          }
+        }
+        return true;
+      }
+    };
+    activeInstances.push(inst);
+    return { ok: true, group, entity: ent, label: 'Bounce Pad' };
+  }
+
+  // ------------------------------------------------------------------ Global Simulation Loop
+  const unsub = APP.onUpdate((dt) => {
+    const safeDt = Math.min(dt || 0.016, 0.04);
+    const tNow = performance.now() / 1000;
+
+    stepNodeGrabs(safeDt);
+
+    for (let i = activeInstances.length - 1; i >= 0; i--) {
+      const inst = activeInstances[i];
+      let keep = false;
+      try { keep = inst.step(safeDt, tNow); } catch (e) { console.warn('[dynamic_sculpt]', e); }
+      if (!keep) {
+        if (inst.dispose) inst.dispose();
+        activeInstances.splice(i, 1);
+      }
+    }
+  });
+
+  // ------------------------------------------------------------------ Public Mode C Entry Point
+  async function manifest({ strokes, base, hint, yawQ, color, rec }) {
+    const res = classifyDynamicShape(strokes, base, hint);
+    if (!res) return { ok: false };
+
+    const type = typeof res === 'string' ? res : res.type;
+    const analyses = (typeof res === 'object' && res.analyses) ? res.analyses : strokes.map(analyzeStroke);
+
+    if (type === 'portal') return spawnPortal(analyses[0], color, rec);
+    if (type === 'rope') return spawnRope(analyses[0], color, rec);
+    if (type === 'ragdoll') return spawnRagdoll(analyses, base, yawQ, color, rec);
+    if (type === 'chain') return spawnChain(analyses, color, rec);
+    if (type === 'trampoline') return spawnTrampoline(analyses[0], color, rec);
+
+    return { ok: false };
+  }
+
+  APP.dynamicSculpt = { manifest, activeInstances, activePortals, classify: classifyDynamicShape };
+  APP._dynSculptCleanup = () => {
+    try { unsub && unsub(); } catch (_) {}
+    releaseNodeGrab('L');
+    releaseNodeGrab('R');
+    while (activeInstances.length) {
+      const inst = activeInstances.pop();
+      inst.alive = false;
+      if (inst.dispose) inst.dispose();
+      if (inst.group?.parent) inst.group.parent.remove(inst.group);
+      disposeDeep(inst.group);
+    }
+    activePortals.length = 0;
+    if (APP.dynamicSculpt?.manifest === manifest) APP.dynamicSculpt = null;
+  };
+})();
+@end
