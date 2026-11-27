@@ -1,0 +1,1700 @@
+
+# ======================================================================
+# dynamic_sculpt.txt — Mode C Dynamic Interactive Shapes for instruction4
+#   - Exact-Shape Portal     -> Stencil-Masked 3D World Inside Drawing
+#   - Interlinked Loops      -> Metallic Chain (Static Top + Hand Touch)
+#   - Stick Figure / Person  -> Rigged Xbot.glb Verlet Ragdoll
+#   - Square / Rectangle     -> Real Refractive Blurred Glass (Objects/Toolbars/Passthrough)
+#   - Open Line / Curve      -> Dynamic Verlet Rope (Hand Touch + Grab)
+# ======================================================================
+
+@ability: dynamic_sculpt_core
+@autorun
+@desc: Mode C dynamic shapes: exact-shape 3D world portals, hand-colliding chains & ropes, rigged Xbot.glb ragdolls, and refractive blurred glass panes.
+@match: dynamic sculpt | mode c shapes | portal rope ragdoll chain glass
+@code:
+(async function () {
+  if (typeof APP._dynSculptCleanup === 'function') {
+    try { APP._dynSculptCleanup(); } catch (_) {}
+  }
+
+  const V3 = THREE.Vector3;
+  const V2 = THREE.Vector2;
+  const Q4 = THREE.Quaternion;
+  const UP = new V3(0, 1, 0);
+  const FWD = new V3(0, 0, 1);
+
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const tmpA = new V3(), tmpB = new V3(), tmpC = new V3(), tmpD = new V3();
+  const tmpBox = new THREE.Box3();
+
+  const activeInstances = [];
+  const activePortals = [];
+  const activeGlasses = [];
+  const portalCooldown = new WeakMap();
+
+  if (APP.renderer) APP.renderer.localClippingEnabled = true;
+
+  function disposeDeep(o) {
+    if (!o) return;
+    o.traverse && o.traverse((n) => {
+      if (n.geometry) n.geometry.dispose();
+      if (n.material) {
+        (Array.isArray(n.material) ? n.material : [n.material]).forEach((m) => {
+          if (!m) return;
+          for (const k in m) {
+            const v = m[k];
+            if (v && v.isTexture && !(v.userData && v.userData.shared)) v.dispose();
+          }
+          m.dispose && m.dispose();
+        });
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------ Environment & Closest-Segment Helpers
+  function getSupportSurfaceY(px, pz, prevY) {
+    let supportY = 0;
+    const wf = APP.scene.getObjectByName('NXR_Sculpt_WorkFloor');
+    if (wf && wf.visible) {
+      const wfTop = wf.position.y + 0.012;
+      if (Math.hypot(px - wf.position.x, pz - wf.position.z) <= 0.94 && prevY >= wfTop - 0.14) {
+        supportY = Math.max(supportY, wfTop);
+      }
+    }
+    for (const pl of APP.planes || []) {
+      if (pl.orientation === 'horizontal' && px >= pl.box.min.x && px <= pl.box.max.x && pz >= pl.box.min.z && pz <= pl.box.max.z) {
+        if (prevY >= pl.pos.y - 0.12) supportY = Math.max(supportY, pl.pos.y);
+      }
+    }
+    return supportY;
+  }
+
+  function collidePointWithScene(pos, prevPos, radius, friction = 0.82, bounce = 0.18) {
+    const supY = getSupportSurfaceY(pos.x, pos.z, prevPos.y - radius);
+    if (pos.y - radius < supY) {
+      const vy = pos.y - prevPos.y;
+      pos.y = supY + radius;
+      prevPos.y = pos.y + Math.min(0, vy) * bounce;
+      prevPos.x = pos.x - (pos.x - prevPos.x) * friction;
+      prevPos.z = pos.z - (pos.z - prevPos.z) * friction;
+    }
+
+    for (const ent of APP.entities || []) {
+      if (!ent || !ent.group?.parent) continue;
+      if (ent.isPen || ent.category === 'world_fx' || ent.category === 'portal' || ent.category === 'board' || ent.category === 'dynamic_sculpt') continue;
+      if (ent.group.name === 'sculpt_raw_strokes') continue;
+      tmpBox.setFromObject(ent.group);
+      if (tmpBox.isEmpty()) continue;
+      tmpBox.clampPoint(pos, tmpA);
+      tmpB.subVectors(pos, tmpA);
+      const dSq = tmpB.lengthSq();
+      if (dSq > 1e-8 && dSq < radius * radius) {
+        const d = Math.sqrt(dSq);
+        pos.addScaledVector(tmpB, (radius - d) / d);
+      }
+    }
+  }
+
+  function closestPointOnSegment(p, a, b, out) {
+    tmpC.subVectors(b, a);
+    const l2 = tmpC.lengthSq();
+    const t = l2 > 1e-9 ? clamp(tmpD.subVectors(p, a).dot(tmpC) / l2, 0, 1) : 0;
+    out.copy(a).addScaledVector(tmpC, t);
+    return t;
+  }
+
+  // ------------------------------------------------------------------ Multi-Joint Hand Touch Collision + Node Grabbing
+  const HAND_TOUCH_JOINTS = [
+    ['thumb-tip', 0.015], ['thumb-phalanx-distal', 0.015],
+    ['index-finger-tip', 0.014], ['index-finger-phalanx-intermediate', 0.014],
+    ['middle-finger-tip', 0.014], ['middle-finger-phalanx-intermediate', 0.014],
+    ['ring-finger-tip', 0.014], ['ring-finger-phalanx-intermediate', 0.014],
+    ['pinky-finger-tip', 0.013], ['middle-finger-metacarpal', 0.030], ['wrist', 0.030]
+  ];
+
+  const handTouchPrev = { L: new Map(), R: new Map() };
+  const nodeGrabs = {
+    L: { inst: null, idx: -1, prevPos: new V3(), vel: new V3(), cooldownUntil: 0 },
+    R: { inst: null, idx: -1, prevPos: new V3(), vel: new V3(), cooldownUntil: 0 }
+  };
+
+  function getHandTouchPoints(slot, side, dt) {
+    const out = [];
+    if (!slot || !slot.active) { handTouchPrev[side].clear(); return out; }
+    const prevMap = handTouchPrev[side];
+
+    if (slot.isHand && slot.xrHand) {
+      for (const [jName, rad] of HAND_TOUCH_JOINTS) {
+        const j = slot.xrHand.joints?.[jName];
+        if (!j || j.visible === false) continue;
+        const p = j.getWorldPosition(new V3());
+        const prev = prevMap.get(jName);
+        const vel = prev ? p.clone().sub(prev).divideScalar(dt).clampLength(0, 6.0) : new V3();
+        prevMap.set(jName, p.clone());
+        out.push({ pos: p, r: rad, vel });
+      }
+    } else if (slot.pos) {
+      const p = slot.pos.clone();
+      const prev = prevMap.get('ctrl');
+      const vel = prev ? p.clone().sub(prev).divideScalar(dt).clampLength(0, 6.0) : new V3();
+      prevMap.set('ctrl', p.clone());
+      out.push({ pos: p, r: 0.055, vel });
+    }
+    return out;
+  }
+
+  function stepHandTouchCollisions(dt) {
+    const isDrawingNow = !!(APP._inst4?.state?.sculptOn && APP._inst4?.state?.state === 1);
+    if (isDrawingNow) return;
+    const safeDt = Math.max(0.004, Math.min(0.04, dt));
+    const touchers = [
+      ...getHandTouchPoints(APP.hands?.left, 'L', safeDt),
+      ...getHandTouchPoints(APP.hands?.right, 'R', safeDt)
+    ];
+    if (!touchers.length) return;
+
+    const closestSeg = new V3();
+    for (const inst of activeInstances) {
+      if (!inst.alive || !inst.nodes?.length) continue;
+      if (inst.type !== 'chain' && inst.type !== 'rope' && inst.type !== 'ragdoll') continue;
+
+      const segCount = inst.type === 'ragdoll' ? 0 : inst.nodes.length - 1;
+      for (const tp of touchers) {
+        // Segment collision (for Chain links & Rope segments so open hands push links anywhere along the link!)
+        for (let i = 0; i < segCount; i++) {
+          const a = inst.nodes[i], b = inst.nodes[i + 1];
+          const t = closestPointOnSegment(tp.pos, a.pos, b.pos, closestSeg);
+          const minDist = tp.r + Math.max(a.r || 0.02, 0.022);
+          tmpA.subVectors(closestSeg, tp.pos);
+          const dSq = tmpA.lengthSq();
+          if (dSq > 1e-8 && dSq < minDist * minDist) {
+            const d = Math.sqrt(dSq);
+            const pen = minDist - d;
+            tmpA.divideScalar(d);
+            const wA = (a.pinned || a.grabbed) ? 0 : (1 - t);
+            const wB = (b.pinned || b.grabbed) ? 0 : t;
+            const wSum = wA + wB;
+            if (wSum > 1e-4) {
+              const push = Math.min(pen * 0.92, 0.055);
+              if (wA > 0) {
+                a.pos.addScaledVector(tmpA, push * (wA / wSum));
+                a.prev.addScaledVector(tp.vel, -safeDt * 0.45 * (wA / wSum));
+              }
+              if (wB > 0) {
+                b.pos.addScaledVector(tmpA, push * (wB / wSum));
+                b.prev.addScaledVector(tp.vel, -safeDt * 0.45 * (wB / wSum));
+              }
+            }
+          }
+        }
+
+        // Node collision (catches Ragdoll joints & endpoints too)
+        for (let i = 0; i < inst.nodes.length; i++) {
+          const n = inst.nodes[i];
+          if (n.pinned || n.grabbed || n.lockPermanent) continue;
+          const minDist = tp.r + (n.r || 0.03);
+          tmpA.subVectors(n.pos, tp.pos);
+          const dSq = tmpA.lengthSq();
+          if (dSq > 1e-8 && dSq < minDist * minDist) {
+            const d = Math.sqrt(dSq);
+            tmpA.divideScalar(d);
+            n.pos.addScaledVector(tmpA, Math.min((minDist - d) * 0.90, 0.05));
+            n.prev.addScaledVector(tp.vel, -safeDt * 0.42);
+          }
+        }
+      }
+    }
+  }
+
+  function readGrabSlot(slot) {
+    if (!slot || !slot.active) return null;
+    if (slot.isHand && slot.xrHand) {
+      const joints = slot.xrHand.joints;
+      const thumb = joints?.['thumb-tip'];
+      const idx = joints?.['index-finger-tip'];
+      const mid = joints?.['middle-finger-tip'];
+      const wrist = joints?.['wrist'];
+      const midMeta = joints?.['middle-finger-metacarpal'];
+      if (!thumb || !idx || thumb.visible === false || idx.visible === false) return null;
+      const tPos = thumb.getWorldPosition(new V3());
+      const iPos = idx.getWorldPosition(new V3());
+      const pinching = tPos.distanceTo(iPos) < 0.036;
+      let fist = false;
+      if (wrist?.visible !== false && midMeta?.visible !== false && mid?.visible !== false && wrist && midMeta && mid) {
+        const wPos = wrist.getWorldPosition(new V3());
+        const mMeta = midMeta.getWorldPosition(new V3());
+        const mTip = mid.getWorldPosition(new V3());
+        const handScale = Math.max(0.05, wPos.distanceTo(mMeta));
+        const palm = new V3().lerpVectors(wPos, mMeta, 0.55);
+        fist = mTip.distanceTo(palm) < handScale * 1.24;
+      }
+      return { grabbing: pinching || fist, pos: new V3().lerpVectors(tPos, iPos, 0.5), radius: 0.13, slot };
+    }
+    const b = slot.gamepad?.buttons;
+    const grip = !!(b && b[1] && (b[1].pressed || b[1].value > 0.45)) || !!slot.gripping;
+    const trig = !!(b && b[0] && (b[0].pressed || b[0].value > 0.45)) || !!slot.trigger;
+    const pos = slot.pos ? slot.pos.clone() : null;
+    if (!pos) return null;
+    return { grabbing: grip || trig, pos, radius: 0.18, slot };
+  }
+
+  function releaseNodeGrab(side) {
+    const g = nodeGrabs[side];
+    if (!g || !g.inst) return;
+    const inst = g.inst;
+    if (inst.nodes && inst.nodes[g.idx]) {
+      const n = inst.nodes[g.idx];
+      n.grabbed = false;
+      n.prev.copy(n.pos).addScaledVector(g.vel, -0.016);
+    }
+    g.inst = null; g.idx = -1;
+    g.cooldownUntil = performance.now() + 260;
+  }
+
+  function stepNodeGrabs(dt) {
+    const isDrawingNow = !!(APP._inst4?.state?.sculptOn && APP._inst4?.state?.state === 1);
+    const now = performance.now();
+    const hands = [['L', APP.hands?.left], ['R', APP.hands?.right]];
+
+    for (const [side, slot] of hands) {
+      const g = nodeGrabs[side];
+      const input = readGrabSlot(slot);
+
+      if (!input || isDrawingNow || !input.grabbing) {
+        if (g.inst) releaseNodeGrab(side);
+        continue;
+      }
+
+      if (g.inst) {
+        if (!g.inst.alive || !g.inst.group?.parent || !g.inst.nodes?.[g.idx]) {
+          releaseNodeGrab(side);
+          continue;
+        }
+        const n = g.inst.nodes[g.idx];
+        const safeDt = Math.max(0.004, Math.min(0.04, dt));
+        tmpA.subVectors(input.pos, g.prevPos).divideScalar(safeDt);
+        g.vel.lerp(tmpA, 0.45).clampLength(0, 8.0);
+        g.prevPos.copy(input.pos);
+
+        n.pos.lerp(input.pos, 0.85);
+        n.prev.copy(n.pos);
+        continue;
+      }
+
+      if (now < g.cooldownUntil) continue;
+
+      let bestInst = null, bestIdx = -1, bestDist = Infinity;
+      for (const inst of activeInstances) {
+        if (!inst.alive || !inst.nodes?.length) continue;
+        for (let i = 0; i < inst.nodes.length; i++) {
+          const n = inst.nodes[i];
+          if (n.lockPermanent) continue;
+          const d = n.pos.distanceTo(input.pos);
+          if (d < input.radius + (n.r || 0.03) && d < bestDist) {
+            bestDist = d; bestInst = inst; bestIdx = i;
+          }
+        }
+      }
+
+      if (bestInst && bestIdx >= 0) {
+        g.inst = bestInst; g.idx = bestIdx;
+        g.prevPos.copy(input.pos); g.vel.set(0, 0, 0);
+        bestInst.nodes[bestIdx].grabbed = true;
+        try { slot?.gamepad?.hapticActuators?.[0]?.pulse(0.3, 25); } catch (_) {}
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ Geometry Analysis & Classifier (Portal / Chain / Ragdoll / Glass / Rope)
+  function analyzeStroke(s) {
+    const pts = s.pts || [];
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) len += pts[i].distanceTo(pts[i - 1]);
+    const chord = pts.length >= 2 ? pts[0].distanceTo(pts[pts.length - 1]) : 0;
+    const box = new THREE.Box3().setFromPoints(pts);
+    const size = box.getSize(new V3());
+    const center = box.getCenter(new V3());
+    const diag = size.length();
+
+    const normal = new V3();
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      normal.x += (a.y - b.y) * (a.z + b.z);
+      normal.y += (a.z - b.z) * (a.x + b.x);
+      normal.z += (a.x - b.x) * (a.y + b.y);
+    }
+    const nLen = normal.length();
+    const area = nLen * 0.5;
+    if (nLen > 1e-6) normal.divideScalar(nLen);
+    else normal.set(0, 0, 1);
+
+    const closed = len > 0.14 && chord < Math.max(0.10, diag * 0.36, len * 0.24);
+    const closedLen = len + chord;
+    const isoperimetric = closedLen > 1e-4 ? (4 * Math.PI * area) / (closedLen * closedLen) : 0;
+
+    let rSum = 0;
+    const radii = pts.map((p) => { const r = p.distanceTo(center); rSum += r; return r; });
+    const avgR = pts.length ? rSum / pts.length : 0;
+    let rVar = 0, planeErrSum = 0;
+    for (let i = 0; i < pts.length; i++) {
+      rVar += Math.pow(radii[i] - avgR, 2);
+      planeErrSum += Math.abs(tmpA.subVectors(pts[i], center).dot(normal));
+    }
+    const rStd = Math.sqrt(rVar / Math.max(1, pts.length));
+    const radialUniformity = avgR > 1e-4 ? 1 - rStd / avgR : 0;
+    const planeErr = avgR > 1e-4 ? (planeErrSum / Math.max(1, pts.length)) / avgR : 1;
+
+    // Project onto local 2D plane to test Circle vs Rectangle (L2 vs L-inf norm)
+    const ref = Math.abs(normal.y) < 0.9 ? UP : new V3(1, 0, 0);
+    const right2 = new V3().crossVectors(ref, normal).normalize();
+    const up2 = new V3().crossVectors(normal, right2).normalize();
+
+    const pts2 = pts.map((p) => {
+      const rel = tmpA.subVectors(p, center);
+      return new V2(rel.dot(right2), rel.dot(up2));
+    });
+
+    // 2D PCA in loop plane to handle tilted rectangles cleanly
+    let c00 = 0, c01 = 0, c11 = 0;
+    for (const p of pts2) { c00 += p.x * p.x; c01 += p.x * p.y; c11 += p.y * p.y; }
+    const ang2 = 0.5 * Math.atan2(2 * c01, c00 - c11);
+    const ca = Math.cos(ang2), sa = Math.sin(ang2);
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    const rot2 = pts2.map((p) => {
+      const u = p.x * ca + p.y * sa, v = -p.x * sa + p.y * ca;
+      if (u < minU) minU = u; if (u > maxU) maxU = u;
+      if (v < minV) minV = v; if (v > maxV) maxV = v;
+      return new V2(u, v);
+    });
+    const spanU = Math.max(maxU - minU, 1e-4), spanV = Math.max(maxV - minV, 1e-4);
+    const cU = (minU + maxU) * 0.5, cV = (minV + maxV) * 0.5;
+    const hU = spanU * 0.5, hV = spanV * 0.5;
+
+    let circleErr = 0, rectErr = 0;
+    for (const p of rot2) {
+      const nu = (p.x - cU) / hU, nv = (p.y - cV) / hV;
+      circleErr += Math.abs(Math.hypot(nu, nv) - 1);
+      rectErr += Math.abs(Math.max(Math.abs(nu), Math.abs(nv)) - 1);
+    }
+    circleErr /= Math.max(1, rot2.length);
+    rectErr /= Math.max(1, rot2.length);
+
+    return {
+      stroke: s, pts, pts2, right2, up2, rotAngle: ang2, spanU, spanV,
+      len, chord, box, size, center, diag, normal, area, closed,
+      isoperimetric, avgR, radialUniformity, planeErr, circleErr, rectErr
+    };
+  }
+
+  function looksLikeStickFigureOrPerson(analyses) {
+    const totalBox = new THREE.Box3();
+    analyses.forEach((a) => totalBox.union(a.box));
+    const sz = totalBox.getSize(new V3());
+    const H = sz.y, W = Math.max(sz.x, sz.z, 1e-4);
+    if (H < 0.18) return false;
+
+    if (analyses.length >= 2 && analyses.length <= 8) {
+      let hasTopHead = false, hasTallTorso = false, hasBranch = false;
+      const topThresh = totalBox.min.y + H * 0.58;
+      for (const a of analyses) {
+        if (a.center.y >= topThresh && a.size.y < H * 0.48 && (a.closed || a.isoperimetric > 0.35 || a.len < H * 1.45)) hasTopHead = true;
+        if (a.size.y >= H * 0.36 && a.size.y >= Math.max(a.size.x, a.size.z) * 0.85) hasTallTorso = true;
+        if (Math.hypot(a.size.x, a.size.z) >= Math.max(sz.x, sz.z) * 0.40 && a.center.y < totalBox.max.y - H * 0.16) hasBranch = true;
+      }
+      if ((hasTopHead && (hasTallTorso || hasBranch)) || (hasTallTorso && hasBranch && H >= W * 0.72)) return true;
+    }
+
+    if (analyses.length === 1) {
+      const a = analyses[0];
+      if (H >= W * 1.1 && a.len > H * 2.55 && !a.closed) {
+        let topPts = 0, midWide = 0, lowLeft = false, lowRight = false;
+        const ctr = totalBox.getCenter(new V3());
+        for (const p of a.pts) {
+          const ny = (p.y - totalBox.min.y) / H;
+          const dxz = Math.hypot(p.x - ctr.x, p.z - ctr.z);
+          if (ny > 0.75) topPts++;
+          if (ny > 0.38 && ny < 0.76 && dxz > W * 0.26) midWide++;
+          if (ny < 0.30) {
+            if (p.x - ctr.x < -sz.x * 0.15 || p.z - ctr.z < -sz.z * 0.15) lowLeft = true;
+            if (p.x - ctr.x > sz.x * 0.15 || p.z - ctr.z > sz.z * 0.15) lowRight = true;
+          }
+        }
+        if (topPts >= 2 && (midWide >= 2 || (lowLeft && lowRight))) return true;
+      }
+    }
+    return false;
+  }
+
+  function areLoopsLinkedChain(analyses) {
+    if (analyses.length < 2) return false;
+    const loops = analyses.filter((a) => (a.closed || (a.isoperimetric > 0.35 && a.chord < a.diag * 0.55)) && a.avgR > 0.025);
+    if (loops.length < 2 || loops.length < Math.ceil(analyses.length * 0.65)) return false;
+    const sorted = loops.slice().sort((a, b) => b.center.y - a.center.y);
+    let linked = 0;
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i], b = sorted[i + 1];
+      if (a.center.distanceTo(b.center) <= (a.avgR + b.avgR) * 1.65 + 0.08) linked++;
+    }
+    return linked >= Math.max(1, sorted.length - 1);
+  }
+
+  function looksLikeMultiStrokeRect(analyses) {
+    if (analyses.length !== 4) return false;
+    const straight = analyses.every((a) => !a.closed && a.chord > a.len * 0.72);
+    if (!straight) return false;
+    const totalBox = new THREE.Box3();
+    analyses.forEach((a) => totalBox.union(a.box));
+    const sz = totalBox.getSize(new V3());
+    return sz.x > 0.10 && sz.y > 0.10;
+  }
+
+  function classifyDynamicShape(strokes, base, hint) {
+    const lbl = String(hint?.label || hint?.rawVoice || '').toLowerCase();
+    const analyses = strokes.map(analyzeStroke);
+
+    if (lbl) {
+      if (/portal|gateway|vortex|rift|stargate|بوابة|نفق/.test(lbl)) return { type: 'portal', analyses };
+      if (/glass|window|pane|mirror|lens|panel|زجاج|مرايا|نافذة/.test(lbl)) return { type: 'glass', analyses };
+      if (/chain|links|سلسلة|سنسلة/.test(lbl)) return { type: 'chain', analyses };
+      if (/ragdoll|puppet|stick\s*figure|person|human|man|woman|dummy|شخص|دمية|انسان|إنسان|رجل|راجل/.test(lbl)) return { type: 'ragdoll', analyses };
+      if (/rope|cord|string|whip|vine|cable|wire|line|حبل|خيط/.test(lbl)) return { type: 'rope', analyses };
+    }
+
+    if (areLoopsLinkedChain(analyses)) return { type: 'chain', analyses };
+    if (looksLikeMultiStrokeRect(analyses)) return { type: 'glass', analyses };
+    if (looksLikeStickFigureOrPerson(analyses)) return { type: 'ragdoll', analyses };
+
+    if (analyses.length === 1) {
+      const a = analyses[0];
+      const isLoop = (a.closed || a.chord < Math.max(0.12, a.avgR * 0.65)) && a.planeErr < 0.48 && a.avgR >= 0.07;
+      if (isLoop) {
+        // Rectangle / Square check (L-inf box norm beats L2 circle norm OR 4-sided aspect!)
+        const isRect = (a.rectErr + 0.015 < a.circleErr && a.rectErr < 0.15) ||
+                       (a.isoperimetric > 0.45 && a.isoperimetric < 0.83 && a.rectErr < 0.13 && a.circleErr > 0.11);
+        if (isRect) return { type: 'glass', analyses };
+        // Portal: exact closed drawn shape (circles, ovals, arches, vertical loops)
+        if (a.isoperimetric > 0.36) return { type: 'portal', analyses };
+      }
+      if (a.len >= 0.12) return { type: 'rope', analyses };
+    }
+
+    const totalLen = analyses.reduce((s, a) => s + a.len, 0);
+    if (analyses.length === 2 && analyses[0].len > totalLen * 0.75 && !analyses[0].closed) {
+      return { type: 'rope', analyses: [analyses[0]] };
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------------ 1. EXACT-SHAPE PORTAL WITH 3D WORLD STRICTLY INSIDE IT
+  function smoothClosedLoop2D(pts2, targetCount = 44) {
+    if (pts2.length < 4) return pts2;
+    const pts3 = pts2.map((p) => new V3(p.x, p.y, 0));
+    const curve = new THREE.CatmullRomCurve3(pts3, true, 'centripetal');
+    const out = [];
+    for (let i = 0; i < targetCount; i++) {
+      const p = curve.getPointAt(i / targetCount);
+      out.push(new V2(p.x, p.y));
+    }
+    return out;
+  }
+
+  function buildPortalWorldContent(radius, pairIdx, stencilRef, clipPlane) {
+    const world = new THREE.Group();
+    const isAmber = pairIdx % 2 === 1;
+    const skyTop = isAmber ? 0x2e1036 : 0x051833;
+    const skyMid = isAmber ? 0x9a3412 : 0x0e7490;
+    const skyBot = isAmber ? 0xfdba74 : 0x67e8f9;
+    const accent = isAmber ? 0xfb923c : 0x22d3ee;
+
+    const stencilCfg = stencilRef ? {
+      stencilWrite: true,
+      stencilRef,
+      stencilFunc: THREE.EqualStencilFunc,
+      stencilFail: THREE.KeepStencilOp,
+      stencilZFail: THREE.KeepStencilOp,
+      stencilZPass: THREE.KeepStencilOp,
+      clippingPlanes: clipPlane ? [clipPlane] : []
+    } : {};
+
+    // Sky dome inside portal (depth behind portal = z < 0)
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide, depthWrite: false,
+      uniforms: { uTop: { value: new THREE.Color(skyTop) }, uMid: { value: new THREE.Color(skyMid) }, uBot: { value: new THREE.Color(skyBot) } },
+      vertexShader: 'varying vec3 vL; void main(){ vL = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform vec3 uTop,uMid,uBot; varying vec3 vL; void main(){ float h = clamp(vL.y * 0.5 + 0.5, 0.0, 1.0); vec3 c = mix(uBot, uMid, smoothstep(0.35, 0.58, h)); c = mix(c, uTop, smoothstep(0.58, 0.95, h)); gl_FragColor = vec4(c, 1.0); }',
+      ...stencilCfg
+    });
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(radius * 18, 28, 18), skyMat);
+    sky.position.set(0, 0, -radius * 3.5);
+    sky.renderOrder = 52;
+    world.add(sky);
+
+    // Sun / Twin Moon orb in portal sky
+    const sunMat = new THREE.MeshBasicMaterial({ color: isAmber ? 0xfef08a : 0xa5f3fc, ...stencilCfg });
+    const sun = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.15, 20, 14), sunMat);
+    sun.position.set(radius * 2.2, radius * 2.6, -radius * 12);
+    sun.renderOrder = 53;
+    world.add(sun);
+
+    // Ground terrain inside portal world
+    const floorY = -radius * 1.05;
+    const terGeo = new THREE.PlaneGeometry(radius * 22, radius * 22, 32, 32);
+    terGeo.rotateX(-Math.PI / 2);
+    const tPos = terGeo.attributes.position;
+    for (let i = 0; i < tPos.count; i++) {
+      const x = tPos.getX(i), z = tPos.getZ(i);
+      const dist = Math.hypot(x, z);
+      const hill = (Math.sin(x * 1.6 / radius) * Math.cos(z * 1.3 / radius) * 0.35 + Math.pow(clamp(dist / (radius * 7), 0, 1.4), 2) * 1.1) * radius;
+      tPos.setY(i, hill);
+    }
+    terGeo.computeVertexNormals();
+    const terMat = new THREE.MeshStandardMaterial({
+      color: isAmber ? 0x7c2d12 : 0x0f3b4c, roughness: 0.85, metalness: 0.12, flatShading: true, ...stencilCfg
+    });
+    const terrain = new THREE.Mesh(terGeo, terMat);
+    terrain.position.set(0, floorY, -radius * 6.0);
+    terrain.renderOrder = 53;
+    world.add(terrain);
+
+    // Glowing water / energy lake in front valley
+    const lakeMat = new THREE.MeshStandardMaterial({
+      color: accent, emissive: accent, emissiveIntensity: 0.45, roughness: 0.15, metalness: 0.75, ...stencilCfg
+    });
+    const lake = new THREE.Mesh(new THREE.CircleGeometry(radius * 4.2, 32), lakeMat);
+    lake.rotation.x = -Math.PI / 2;
+    lake.position.set(0, floorY + radius * 0.08, -radius * 3.8);
+    lake.renderOrder = 53;
+    world.add(lake);
+
+    // Floating crystalline monoliths & islands inside the portal
+    const floaters = [];
+    const crystalMat = new THREE.MeshStandardMaterial({
+      color: accent, emissive: accent, emissiveIntensity: 0.55, roughness: 0.2, metalness: 0.4, flatShading: true, ...stencilCfg
+    });
+    const rockMat = new THREE.MeshStandardMaterial({
+      color: isAmber ? 0x451a03 : 0x1e293b, roughness: 0.78, metalness: 0.2, flatShading: true, ...stencilCfg
+    });
+    for (let i = 0; i < 9; i++) {
+      const ang = (i / 9) * Math.PI * 2;
+      const dist = radius * (1.8 + (i % 3) * 1.4);
+      const px = Math.cos(ang) * dist * 0.9;
+      const pz = -radius * (1.8 + (i % 4) * 1.6);
+      const py = floorY + radius * (0.6 + (i % 3) * 0.7);
+      const isCrystal = i % 2 === 0;
+      const m = new THREE.Mesh(
+        isCrystal ? new THREE.OctahedronGeometry(radius * (0.22 + (i % 3) * 0.1), 0) : new THREE.DodecahedronGeometry(radius * 0.38, 0),
+        isCrystal ? crystalMat : rockMat
+      );
+      m.position.set(px, py, pz);
+      m.scale.y = isCrystal ? 2.1 : 0.65;
+      m.renderOrder = 53;
+      world.add(m);
+      floaters.push({ mesh: m, baseY: py, phase: i * 1.3 });
+    }
+
+    // Distant mountain peaks
+    const peakMat = new THREE.MeshStandardMaterial({
+      color: isAmber ? 0x431407 : 0x082f49, roughness: 0.9, flatShading: true, ...stencilCfg
+    });
+    for (let i = 0; i < 7; i++) {
+      const pk = new THREE.Mesh(new THREE.ConeGeometry(radius * (1.4 + (i % 2) * 0.7), radius * (3.2 + (i % 3) * 1.2), 6), peakMat);
+      pk.position.set((i - 3) * radius * 2.1, floorY + radius * 1.2, -radius * (9.5 + (i % 2) * 2.2));
+      pk.renderOrder = 53;
+      world.add(pk);
+    }
+
+    // Internal ambient + directional light for portal world
+    const pLight = new THREE.PointLight(accent, 2.2, radius * 25);
+    pLight.position.set(0, radius * 2.0, -radius * 3.0);
+    world.add(pLight);
+
+    // Floating energy motes inside portal world
+    const MCNT = 45;
+    const mPos = new Float32Array(MCNT * 3);
+    for (let i = 0; i < MCNT; i++) {
+      mPos[i * 3] = (Math.random() - 0.5) * radius * 6;
+      mPos[i * 3 + 1] = (Math.random() - 0.4) * radius * 4;
+      mPos[i * 3 + 2] = -radius * (0.5 + Math.random() * 7.5);
+    }
+    const mGeo = new THREE.BufferGeometry();
+    mGeo.setAttribute('position', new THREE.BufferAttribute(mPos, 3));
+    const mPts = new THREE.Points(mGeo, new THREE.PointsMaterial({ color: 0xffffff, size: Math.max(0.015, radius * 0.05), transparent: true, opacity: 0.85, ...stencilCfg }));
+    mPts.renderOrder = 54;
+    world.add(mPts);
+
+    return { world, floaters, mPts, mPos };
+  }
+
+  function spawnPortal(analysis, colorHex, rec) {
+    const center = analysis.center.clone();
+    const radius = clamp(analysis.avgR, 0.20, 1.45);
+    const n = analysis.normal.clone().normalize();
+    const headP = (APP.headPos && APP.headPos.isVector3) ? APP.headPos : APP.camera.position;
+    if (n.dot(tmpA.subVectors(headP, center)) < 0) n.negate();
+
+    // Build basis matching exact right2/up2 oriented with n
+    const ref = Math.abs(n.y) < 0.9 ? UP : new V3(1, 0, 0);
+    const right2 = new V3().crossVectors(ref, n).normalize();
+    const up2 = new V3().crossVectors(n, right2).normalize();
+    const rotMat = new THREE.Matrix4().makeBasis(right2, up2, n);
+    const q = new Q4().setFromRotationMatrix(rotMat);
+
+    // Project exact drawn points onto (right2, up2) so portal shape & size matches user's drawing!
+    const raw2D = analysis.pts.map((p) => {
+      const rel = tmpA.subVectors(p, center);
+      return new V2(rel.dot(right2), rel.dot(up2));
+    });
+    const loop2D = smoothClosedLoop2D(raw2D, 48);
+    const shape = new THREE.Shape(loop2D);
+    const maskGeo = new THREE.ShapeGeometry(shape, 24);
+
+    const group = new THREE.Group();
+    group.name = 'dynamic_portal';
+    group.position.copy(center);
+    group.quaternion.copy(q);
+
+    const pairIdx = activePortals.length;
+    const isPartner = pairIdx % 2 === 1;
+    const colA = isPartner ? new THREE.Color(0xf97316) : new THREE.Color(colorHex || 0x22d3ee);
+
+    // Exact-shape glowing metallic portal frame
+    const rimPts3D = loop2D.map((p) => new V3(p.x, p.y, 0));
+    const rimCurve = new THREE.CatmullRomCurve3(rimPts3D, true);
+    const rimTubeR = clamp(radius * 0.048, 0.011, 0.032);
+    const rimMesh = new THREE.Mesh(
+      new THREE.TubeGeometry(rimCurve, 56, rimTubeR, 10, true),
+      new THREE.MeshStandardMaterial({
+        color: 0x1e293b, metalness: 0.85, roughness: 0.22,
+        emissive: colA, emissiveIntensity: 0.90
+      })
+    );
+    rimMesh.renderOrder = 55;
+    group.add(rimMesh);
+
+    // Subtle energy shimmer along the portal surface edge
+    const edgeGlowMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+      uniforms: { uTime: { value: 0 }, uCol: { value: colA }, uPulse: { value: 0 }, uR: { value: radius } },
+      vertexShader: 'varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform float uTime,uPulse,uR; uniform vec3 uCol; varying vec2 vP; void main(){ float d = length(vP) / max(0.05, uR); float rim = smoothstep(0.62, 1.0, d); float wave = 0.5 + 0.5 * sin(d * 18.0 - uTime * 4.0); gl_FragColor = vec4(uCol, (rim * 0.36 + uPulse * 0.45) * (0.7 + 0.3 * wave)); }'
+    });
+    const edgeGlowMesh = new THREE.Mesh(maskGeo, edgeGlowMat);
+    edgeGlowMesh.position.z = 0.004;
+    edgeGlowMesh.renderOrder = 55;
+    group.add(edgeGlowMesh);
+
+    const hasStencil = !!(APP.renderer?.getContext?.()?.getContextAttributes?.()?.stencil);
+    const stencilRef = ((pairIdx % 14) + 1);
+    const portalClipPlane = new THREE.Plane(n.clone().negate(), n.dot(center));
+
+    let portalWorld = null;
+    let portalRT = null, portalCam = null, portalScene = null, fallbackPlaneMat = null;
+
+    if (hasStencil) {
+      // 1) Write Stencil Ref strictly inside exact drawn ShapeGeometry
+      const maskMat = new THREE.MeshBasicMaterial({
+        colorWrite: false, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
+        stencilWrite: true, stencilRef,
+        stencilFunc: THREE.AlwaysStencilFunc,
+        stencilFail: THREE.KeepStencilOp,
+        stencilZFail: THREE.KeepStencilOp,
+        stencilZPass: THREE.ReplaceStencilOp
+      });
+      const maskMesh = new THREE.Mesh(maskGeo, maskMat);
+      maskMesh.renderOrder = 50;
+      group.add(maskMesh);
+
+      // 2) Clear depth to far-plane strictly inside Stencil Ref so 3D portal world renders cleanly behind it
+      const depthClearMat = new THREE.ShaderMaterial({
+        colorWrite: false, depthWrite: true, depthTest: true, depthFunc: THREE.AlwaysDepth,
+        side: THREE.DoubleSide, stencilWrite: true, stencilRef,
+        stencilFunc: THREE.EqualStencilFunc,
+        stencilFail: THREE.KeepStencilOp,
+        stencilZFail: THREE.KeepStencilOp,
+        stencilZPass: THREE.KeepStencilOp,
+        vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_Position.z = gl_Position.w - 0.0001; }',
+        fragmentShader: 'void main(){ gl_FragColor = vec4(0.0); }'
+      });
+      const depthClearMesh = new THREE.Mesh(maskGeo, depthClearMat);
+      depthClearMesh.renderOrder = 51;
+      group.add(depthClearMesh);
+
+      // 3) Build 3D World clipped & stenciled strictly inside the portal!
+      portalWorld = buildPortalWorldContent(radius, pairIdx, stencilRef, portalClipPlane);
+      group.add(portalWorld.world);
+    } else {
+      // RenderTarget screen-projected fallback if WebGL context has no stencil buffer
+      portalRT = new THREE.WebGLRenderTarget(512, 512, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+      portalScene = new THREE.Scene();
+      portalScene.add(new THREE.AmbientLight(0xffffff, 0.8));
+      portalWorld = buildPortalWorldContent(radius, pairIdx, 0, null);
+      portalScene.add(portalWorld.world);
+      portalCam = new THREE.PerspectiveCamera(65, 1, 0.02, 100);
+      fallbackPlaneMat = new THREE.ShaderMaterial({
+        side: THREE.DoubleSide,
+        uniforms: { uTex: { value: portalRT.texture } },
+        vertexShader: 'varying vec4 vClip; void main(){ vClip = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_Position = vClip; }',
+        fragmentShader: 'uniform sampler2D uTex; varying vec4 vClip; void main(){ vec2 uv = (vClip.xy / vClip.w) * 0.5 + 0.5; gl_FragColor = texture2D(uTex, uv); }'
+      });
+      const fbMesh = new THREE.Mesh(maskGeo, fallbackPlaneMat);
+      fbMesh.renderOrder = 52;
+      group.add(fbMesh);
+    }
+
+    APP.scene.add(group);
+
+    const ent = APP.registerEntity(group, {
+      name: `Portal ${pairIdx + 1}`,
+      category: 'portal',
+      grabbable: true,
+      holdable: false,
+      physics: { enabled: false, gravity: false }
+    });
+
+    const pObj = {
+      type: 'portal', alive: true, rec, group, entity: ent, radius, partner: null, pulse: 0,
+      step(dt, tNow) {
+        if (!group.parent || rec?.cancelled) { this.dispose(); return false; }
+        this.pulse = Math.max(0, this.pulse - dt * 2.2);
+        edgeGlowMat.uniforms.uTime.value = tNow;
+        edgeGlowMat.uniforms.uPulse.value = this.pulse;
+
+        // Animate 3D world inside portal
+        if (portalWorld) {
+          for (const fl of portalWorld.floaters) {
+            fl.mesh.position.y = fl.baseY + Math.sin(tNow * 1.4 + fl.phase) * radius * 0.14;
+            fl.mesh.rotation.y = tNow * 0.5 + fl.phase;
+          }
+          const arr = portalWorld.mPts.geometry.attributes.position.array;
+          for (let i = 0; i < arr.length; i += 3) {
+            arr[i + 1] += dt * radius * 0.25;
+            if (arr[i + 1] > radius * 2.0) arr[i + 1] = -radius * 1.6;
+          }
+          portalWorld.mPts.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // Update world-space clipping plane so interior 3D world NEVER sticks out front of the portal
+        const worldN = FWD.clone().applyQuaternion(group.quaternion).normalize();
+        portalClipPlane.normal.copy(worldN).negate();
+        portalClipPlane.constant = worldN.dot(group.position);
+
+        // Render fallback RT if stencil wasn't available
+        if (portalRT && portalScene && APP.renderer && APP.camera) {
+          const prevRt = APP.renderer.getRenderTarget();
+          const prevXr = APP.renderer.xr.enabled;
+          try {
+            APP.renderer.xr.enabled = false;
+            portalCam.copy(APP.camera);
+            portalCam.updateMatrixWorld();
+            portalWorld.world.position.copy(group.position);
+            portalWorld.world.quaternion.copy(group.quaternion);
+            APP.renderer.setRenderTarget(portalRT);
+            APP.renderer.render(portalScene, portalCam);
+          } catch (_) {}
+          finally {
+            APP.renderer.xr.enabled = prevXr;
+            APP.renderer.setRenderTarget(prevRt);
+          }
+        }
+
+        // Paired portal teleportation
+        const partner = this.partner && this.partner.alive && this.partner.group?.parent ? this.partner : null;
+        const nowMs = performance.now();
+        if (partner) {
+          const nB = FWD.clone().applyQuaternion(partner.group.quaternion).normalize();
+          const qFlipY = new Q4().setFromAxisAngle(UP, Math.PI);
+          const qAtoB = partner.group.quaternion.clone().multiply(qFlipY).multiply(group.quaternion.clone().invert());
+
+          for (const target of APP.entities || []) {
+            if (!target || !target.group?.parent || target === ent || target === partner.entity) continue;
+            if (target.isPen || target.category === 'portal' || target.category === 'world_fx' || target.category === 'board') continue;
+            if (target.isHeld || target.rb?.handGrabbed) continue;
+            const lastT = portalCooldown.get(target) || 0;
+            if (nowMs - lastT < 850) continue;
+
+            const dVec = tmpA.subVectors(target.group.position, group.position);
+            const planeDist = dVec.dot(worldN);
+            const radialDist = tmpB.copy(dVec).addScaledVector(worldN, -planeDist).length();
+            if (Math.abs(planeDist) < 0.14 && radialDist < radius * 0.88) {
+              const localOff = dVec.clone().applyQuaternion(group.quaternion.clone().invert()).applyQuaternion(qFlipY);
+              const newPos = localOff.applyQuaternion(partner.group.quaternion).add(partner.group.position);
+              const exitSign = planeDist >= 0 ? -1 : 1;
+              newPos.addScaledVector(nB, exitSign * 0.18);
+
+              const dynMatch = activeInstances.find((d) => d.entity === target);
+              if (dynMatch && dynMatch.nodes) {
+                for (const nd of dynMatch.nodes) {
+                  nd.pos.sub(target.group.position).applyQuaternion(qAtoB).add(newPos);
+                  nd.prev.sub(target.group.position).applyQuaternion(qAtoB).add(newPos);
+                }
+                target.group.position.copy(newPos);
+              } else {
+                target.group.position.copy(newPos);
+                target.group.quaternion.premultiply(qAtoB);
+                if (target.rb) {
+                  target.rb.vel.applyQuaternion(qAtoB);
+                  if (target.rb.vel.lengthSq() < 0.4) target.rb.vel.addScaledVector(nB, exitSign * 1.4);
+                  target.rb.angVel.applyQuaternion(qAtoB);
+                  target.rb.sleeping = false;
+                } else if (target.physics?.vel) {
+                  target.physics.vel.applyQuaternion(qAtoB);
+                }
+              }
+              portalCooldown.set(target, nowMs);
+              this.pulse = 1.0; partner.pulse = 1.0;
+              APP.ui?.toast?.('⚡ Teleported through Portal!', 1400);
+            }
+          }
+        }
+        return true;
+      },
+      dispose() {
+        this.alive = false;
+        const idx = activePortals.indexOf(this);
+        if (idx !== -1) activePortals.splice(idx, 1);
+        if (this.partner && this.partner.partner === this) this.partner.partner = null;
+        if (portalRT) { portalRT.dispose(); portalRT = null; }
+      }
+    };
+
+    const waiting = activePortals.find((p) => p.alive && !p.partner);
+    if (waiting) {
+      waiting.partner = pObj; pObj.partner = waiting;
+      APP.ui?.toast?.('🌀 Portals Linked! Throw objects between them!', 2800);
+    } else {
+      APP.ui?.toast?.('🌀 Portal opened — look inside for the 3D world!', 2600);
+    }
+
+    activePortals.push(pObj);
+    activeInstances.push(pObj);
+    return { ok: true, group, entity: ent, label: `Portal ${pairIdx + 1}` };
+  }
+
+  // ------------------------------------------------------------------ 2. DYNAMIC VERLET ROPE (Open Line / Curve)
+  function resampleCurve(pts, count) {
+    if (pts.length < 2) return pts.slice();
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
+    const tot = cum[cum.length - 1] || 1e-4;
+    const out = [];
+    for (let k = 0; k < count; k++) {
+      const target = (k / (count - 1)) * tot;
+      let seg = 0;
+      while (seg < cum.length - 2 && cum[seg + 1] < target) seg++;
+      const d = cum[seg + 1] - cum[seg];
+      const f = d > 1e-6 ? (target - cum[seg]) / d : 0;
+      out.push(new V3().lerpVectors(pts[seg], pts[seg + 1], f));
+    }
+    return out;
+  }
+
+  function spawnRope(analysis, colorHex, rec) {
+    const len = analysis.len;
+    const N = clamp(Math.round(len / 0.045), 10, 40);
+    const sampled = resampleCurve(analysis.pts, N);
+    if (sampled[sampled.length - 1].y > sampled[0].y + 0.06) sampled.reverse();
+
+    const segLen = Math.max(0.025, len / (N - 1));
+    const tubeR = clamp(analysis.stroke?.radii?.[0] || 0.015, 0.010, 0.032);
+    const pinTop = sampled[0].y > 0.35;
+
+    const nodes = sampled.map((p, i) => ({
+      pos: p.clone(), prev: p.clone(), pinned: pinTop && i === 0, grabbed: false, r: tubeR
+    }));
+
+    const group = new THREE.Group();
+    group.name = 'dynamic_rope';
+    group.position.copy(nodes[0].pos);
+
+    const RAD = 8;
+    const positions = new Float32Array(N * RAD * 3);
+    const normals = new Float32Array(N * RAD * 3);
+    const uvs = new Float32Array(N * RAD * 2);
+    const indices = [];
+    for (let i = 0; i < N; i++) for (let k = 0; k < RAD; k++) {
+      uvs[(i * RAD + k) * 2] = k / RAD; uvs[(i * RAD + k) * 2 + 1] = (i / (N - 1)) * (len * 6);
+    }
+    for (let i = 0; i < N - 1; i++) for (let k = 0; k < RAD; k++) {
+      const a = i * RAD + k, b = i * RAD + (k + 1) % RAD, c = (i + 1) * RAD + k, d = (i + 1) * RAD + (k + 1) % RAD;
+      indices.push(a, b, c, b, d, c);
+    }
+    const geo = new THREE.BufferGeometry();
+    const posAttr = new THREE.BufferAttribute(positions, 3);
+    const normAttr = new THREE.BufferAttribute(normals, 3);
+    geo.setAttribute('position', posAttr); geo.setAttribute('normal', normAttr);
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2)); geo.setIndex(indices);
+
+    const ropeMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#d97706'), roughness: 0.78, metalness: 0.08 }));
+    ropeMesh.frustumCulled = false; ropeMesh.castShadow = true;
+    group.add(ropeMesh);
+
+    const anchorMesh = new THREE.Mesh(
+      new THREE.TorusGeometry(tubeR * 1.7, tubeR * 0.45, 10, 20),
+      new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.85, roughness: 0.25, emissive: pinTop ? 0x0ea5e9 : 0x000000, emissiveIntensity: 0.35 })
+    );
+    anchorMesh.frustumCulled = false; group.add(anchorMesh);
+
+    const tipKnot = new THREE.Mesh(
+      new THREE.SphereGeometry(tubeR * 1.45, 12, 10),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#d97706').multiplyScalar(0.8), roughness: 0.65 })
+    );
+    tipKnot.frustumCulled = false; group.add(tipKnot);
+
+    APP.scene.add(group);
+    const ent = APP.registerEntity(group, { name: 'Dynamic Rope', category: 'dynamic_sculpt', grabbable: false, holdable: false, physics: { enabled: false, gravity: false } });
+
+    const tVec = new V3(), nVec = new V3(), bVec = new V3(), refUp = new V3();
+    const inst = {
+      type: 'rope', alive: true, rec, group, entity: ent, nodes,
+      step(dt) {
+        if (!group.parent || rec?.cancelled) { this.alive = false; return false; }
+        const safeDt = Math.min(dt, 0.025), gStep = -9.81 * safeDt * safeDt;
+        for (let i = 0; i < N; i++) {
+          const n = nodes[i];
+          if (n.grabbed) continue;
+          if (n.pinned) { n.prev.copy(n.pos); continue; }
+          tmpA.subVectors(n.pos, n.prev).multiplyScalar(0.992);
+          n.prev.copy(n.pos); n.pos.add(tmpA); n.pos.y += gStep;
+        }
+        for (let iter = 0; iter < 12; iter++) {
+          for (let i = 0; i < N - 1; i++) {
+            const a = nodes[i], b = nodes[i + 1];
+            tmpA.subVectors(b.pos, a.pos);
+            const d = tmpA.length() || 1e-5, diff = (d - segLen) / d;
+            const aFix = a.pinned || a.grabbed, bFixed = b.pinned || b.grabbed;
+            if (aFix && bFixed) continue;
+            if (aFix) b.pos.addScaledVector(tmpA, -diff);
+            else if (bFixed) a.pos.addScaledVector(tmpA, diff);
+            else { a.pos.addScaledVector(tmpA, diff * 0.5); b.pos.addScaledVector(tmpA, -diff * 0.5); }
+          }
+          if (iter === 11) for (let i = 0; i < N; i++) if (!nodes[i].pinned && !nodes[i].grabbed) collidePointWithScene(nodes[i].pos, nodes[i].prev, tubeR);
+        }
+        group.position.copy(nodes[0].pos);
+        for (let i = 0; i < N; i++) {
+          if (i === 0) tVec.subVectors(nodes[1].pos, nodes[0].pos);
+          else if (i === N - 1) tVec.subVectors(nodes[N - 1].pos, nodes[N - 2].pos);
+          else tVec.subVectors(nodes[i + 1].pos, nodes[i - 1].pos);
+          if (tVec.lengthSq() < 1e-8) tVec.set(0, -1, 0);
+          tVec.normalize();
+          if (i === 0) {
+            refUp.set(Math.abs(tVec.y) < 0.9 ? 0 : 1, Math.abs(tVec.y) < 0.9 ? 1 : 0, 0);
+            bVec.crossVectors(tVec, refUp).normalize(); nVec.crossVectors(bVec, tVec).normalize();
+          } else {
+            nVec.addScaledVector(tVec, -nVec.dot(tVec));
+            if (nVec.lengthSq() < 1e-6) { refUp.set(Math.abs(tVec.y) < 0.9 ? 0 : 1, Math.abs(tVec.y) < 0.9 ? 1 : 0, 0); nVec.crossVectors(tVec, refUp); }
+            nVec.normalize(); bVec.crossVectors(tVec, nVec).normalize();
+          }
+          const cx = nodes[i].pos.x - group.position.x, cy = nodes[i].pos.y - group.position.y, cz = nodes[i].pos.z - group.position.z;
+          for (let k = 0; k < RAD; k++) {
+            const ang = (k / RAD) * Math.PI * 2, c = Math.cos(ang), s = Math.sin(ang);
+            const nx = nVec.x * c + bVec.x * s, ny = nVec.y * c + bVec.y * s, nz = nVec.z * c + bVec.z * s, vi = (i * RAD + k) * 3;
+            positions[vi] = cx + nx * tubeR; positions[vi + 1] = cy + ny * tubeR; positions[vi + 2] = cz + nz * tubeR;
+            normals[vi] = nx; normals[vi + 1] = ny; normals[vi + 2] = nz;
+          }
+        }
+        posAttr.needsUpdate = true; normAttr.needsUpdate = true;
+        anchorMesh.position.set(0, 0, 0);
+        tipKnot.position.subVectors(nodes[N - 1].pos, group.position);
+        return true;
+      }
+    };
+    activeInstances.push(inst);
+    return { ok: true, group, entity: ent, label: 'Dynamic Rope' };
+  }
+
+  // ------------------------------------------------------------------ 3. RIGGED XBOT.GLB VERLET RAGDOLL (Stick Figure / Person)
+  let xbotBufferPromise = null;
+  async function findXbotURL() {
+    if (APP.importedGLBs) {
+      for (const [, v] of APP.importedGLBs) {
+        if (/xbot/i.test(v.name || v.cleanName || '') && v.url) return v.url;
+      }
+    }
+    const r = APP.repo;
+    if (r && r.owner && r.name) {
+      for (const path of ['assets', '']) {
+        try {
+          const headers = r.pat ? { Authorization: 'Bearer ' + r.pat } : {};
+          const res = await fetch(`https://api.github.com/repos/${r.owner}/${r.name}/contents/${path}?ref=${encodeURIComponent(r.branch || 'main')}`, { headers });
+          if (res.ok) {
+            const j = await res.json();
+            const hit = Array.isArray(j) && j.find((it) => /xbot.*\.glb$/i.test(it.name));
+            if (hit) return hit.download_url || hit.url;
+          }
+        } catch (_) {}
+      }
+    }
+    for (const url of ['./assets/Xbot.glb', './assets/xbot.glb', './Xbot.glb', './xbot.glb']) {
+      try { const res = await fetch(url, { method: 'HEAD' }); if (res.ok) return url; } catch (_) {}
+    }
+    return 'https://threejs.org/examples/models/gltf/Xbot.glb';
+  }
+
+  async function loadFreshXbot() {
+    if (!xbotBufferPromise) {
+      xbotBufferPromise = (async () => {
+        const url = await findXbotURL();
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Xbot fetch failed: ' + url);
+        return await res.arrayBuffer();
+      })().catch((e) => { xbotBufferPromise = null; throw e; });
+    }
+    const buf = await xbotBufferPromise;
+    return await new Promise((res, rej) => {
+      APP.gltfLoader.parse(buf.slice(0), '', (g) => res(g.scene || g.scenes[0]), rej);
+    });
+  }
+
+  function findBoneFuzzy(boneMap, candidates) {
+    for (const cand of candidates) {
+      for (const [norm, bone] of boneMap) if (norm === cand) return bone;
+    }
+    for (const cand of candidates) {
+      for (const [norm, bone] of boneMap) if (norm.endsWith(cand)) return bone;
+    }
+    return null;
+  }
+
+  async function spawnRagdoll(analyses, base, yawQ, colorHex, rec) {
+    const totalBox = new THREE.Box3();
+    analyses.forEach((a) => totalBox.union(a.box));
+    const center = totalBox.getCenter(new V3());
+    const H = clamp(totalBox.getSize(new V3()).y, 0.55, 1.90);
+
+    let xbot = null;
+    try { xbot = await loadFreshXbot(); } catch (e) { console.warn('[dynamic_sculpt] Xbot fallback:', e); }
+
+    if (xbot) {
+      xbot.updateMatrixWorld(true);
+      const rawBox = new THREE.Box3().setFromObject(xbot);
+      const rawH = Math.max(0.2, rawBox.getSize(new V3()).y);
+      const scale = H / rawH;
+      xbot.scale.setScalar(scale);
+      xbot.position.set(0, -rawBox.min.y * scale - H * 0.5, 0);
+      xbot.traverse((m) => {
+        if (m.isMesh || m.isSkinnedMesh) {
+          m.frustumCulled = false;
+          m.castShadow = true;
+          m.receiveShadow = true;
+        }
+      });
+      xbot.updateMatrixWorld(true);
+
+      const boneMap = new Map();
+      xbot.traverse((b) => {
+        if (b.isBone) boneMap.set(b.name.toLowerCase().replace(/mixamorig:?/g, '').replace(/[^a-z0-9]/g, ''), b);
+      });
+
+      const B = {
+        hips: findBoneFuzzy(boneMap, ['hips', 'pelvis']),
+        spine: findBoneFuzzy(boneMap, ['spine', 'spine1']),
+        chest: findBoneFuzzy(boneMap, ['spine2', 'chest', 'spine1']),
+        neck: findBoneFuzzy(boneMap, ['neck']),
+        head: findBoneFuzzy(boneMap, ['head']),
+        lArm: findBoneFuzzy(boneMap, ['leftarm', 'upperarml', 'lupperarm']),
+        lForeArm: findBoneFuzzy(boneMap, ['leftforearm', 'forearml', 'llowerarm']),
+        lHand: findBoneFuzzy(boneMap, ['lefthand', 'handl', 'lhand']),
+        rArm: findBoneFuzzy(boneMap, ['rightarm', 'upperarmr', 'rupperarm']),
+        rForeArm: findBoneFuzzy(boneMap, ['rightforearm', 'forearmr', 'rlowerarm']),
+        rHand: findBoneFuzzy(boneMap, ['righthand', 'handr', 'rhand']),
+        lUpLeg: findBoneFuzzy(boneMap, ['leftupleg', 'thighl', 'lthigh']),
+        lLeg: findBoneFuzzy(boneMap, ['leftleg', 'calfl', 'lshin']),
+        lFoot: findBoneFuzzy(boneMap, ['leftfoot', 'footl', 'lfoot']),
+        rUpLeg: findBoneFuzzy(boneMap, ['rightupleg', 'thighr', 'rthigh']),
+        rLeg: findBoneFuzzy(boneMap, ['rightleg', 'calfr', 'rshin']),
+        rFoot: findBoneFuzzy(boneMap, ['rightfoot', 'footr', 'rfoot'])
+      };
+
+      const order = ['hips', 'spine', 'chest', 'neck', 'head', 'lArm', 'lForeArm', 'lHand', 'rArm', 'rForeArm', 'rHand', 'lUpLeg', 'lLeg', 'lFoot', 'rUpLeg', 'rLeg', 'rFoot'];
+      if (B.hips && B.chest && B.head && B.lArm && B.rArm && B.lUpLeg && B.rUpLeg) {
+        const restBoneWorldQ = {};
+        const nodes = order.map((key, idx) => {
+          const bone = B[key];
+          const localP = bone ? bone.getWorldPosition(new V3()) : new V3(0, 0, 0);
+          if (bone) restBoneWorldQ[key] = bone.getWorldQuaternion(new Q4());
+          const worldP = localP.clone().applyQuaternion(yawQ).add(center);
+          const r = key === 'head' ? H * 0.068 : (key === 'hips' || key === 'chest' ? H * 0.060 : H * 0.036);
+          return { key, pos: worldP, prev: worldP.clone(), r, grabbed: false };
+        });
+
+        // Subtle initial sway so Xbot ragdoll drops naturally
+        nodes[4].prev.x -= 0.006;
+        nodes[7].prev.z += 0.010;
+        nodes[10].prev.z -= 0.010;
+
+        const idxOf = Object.fromEntries(order.map((k, i) => [k, i]));
+        const links = [];
+        const addL = (a, b, stiff = 1.0) => {
+          const ia = idxOf[a], ib = idxOf[b];
+          if (ia !== undefined && ib !== undefined) links.push({ a: ia, b: ib, rest: nodes[ia].pos.distanceTo(nodes[ib].pos), stiff });
+        };
+
+        // Structural bones
+        [
+          ['hips', 'spine'], ['spine', 'chest'], ['chest', 'neck'], ['neck', 'head'],
+          ['chest', 'lArm'], ['lArm', 'lForeArm'], ['lForeArm', 'lHand'],
+          ['chest', 'rArm'], ['rArm', 'rForeArm'], ['rForeArm', 'rHand'],
+          ['hips', 'lUpLeg'], ['lUpLeg', 'lLeg'], ['lLeg', 'lFoot'],
+          ['hips', 'rUpLeg'], ['rUpLeg', 'rLeg'], ['rLeg', 'rFoot']
+        ].forEach(([a, b]) => addL(a, b, 1.0));
+
+        // Anti-collapse torso & shoulder/hip braces
+        addL('hips', 'chest', 0.94);
+        addL('lArm', 'rArm', 0.96);
+        addL('lUpLeg', 'rUpLeg', 0.96);
+        addL('lArm', 'hips', 0.86);
+        addL('rArm', 'hips', 0.86);
+        addL('lUpLeg', 'chest', 0.82);
+        addL('rUpLeg', 'chest', 0.82);
+        addL('chest', 'head', 0.85);
+
+        // Compute bind-pose world torso basis for hips orientation
+        const restRight = new V3().subVectors(nodes[idxOf.rUpLeg].pos, nodes[idxOf.lUpLeg].pos).normalize();
+        const restUp = new V3().subVectors(nodes[idxOf.chest].pos, nodes[idxOf.hips].pos).normalize();
+        const restFwd = new V3().crossVectors(restRight, restUp).normalize();
+        const restTorsoMat = new THREE.Matrix4().makeBasis(restRight, restUp, restFwd);
+        const restTorsoMatInv = restTorsoMat.clone().transpose();
+        const restHipsWorldQ = restBoneWorldQ.hips.clone();
+
+        const group = new THREE.Group();
+        group.name = 'dynamic_xbot_ragdoll';
+        group.position.copy(nodes[0].pos);
+
+        // Place Xbot directly inside group (world coords via group offset = -group.position)
+        const xbotHolder = new THREE.Group();
+        xbotHolder.add(xbot);
+        group.add(xbotHolder);
+        APP.scene.add(group);
+
+        const ent = APP.registerEntity(group, {
+          name: 'Xbot Ragdoll',
+          category: 'dynamic_sculpt',
+          grabbable: false,
+          holdable: false,
+          physics: { enabled: false, gravity: false }
+        });
+
+        const driveChain = [
+          ['spine', 'chest'], ['chest', 'neck'], ['neck', 'head'],
+          ['lArm', 'lForeArm'], ['lForeArm', 'lHand'],
+          ['rArm', 'rForeArm'], ['rForeArm', 'rHand'],
+          ['lUpLeg', 'lLeg'], ['lLeg', 'lFoot'],
+          ['rUpLeg', 'rLeg'], ['rLeg', 'rFoot']
+        ];
+
+        const mCurBasis = new THREE.Matrix4(), mDelta = new THREE.Matrix4();
+        const qDelta = new Q4(), qParent = new Q4(), qBone = new Q4(), vBone = new V3(), vChild = new V3();
+
+        const inst = {
+          type: 'ragdoll', alive: true, rec, group, entity: ent, nodes,
+          step(dt) {
+            if (!group.parent || rec?.cancelled) { this.alive = false; return false; }
+            const safeDt = Math.min(dt, 0.025), gStep = -9.81 * safeDt * safeDt;
+
+            for (let i = 0; i < nodes.length; i++) {
+              const n = nodes[i];
+              if (n.grabbed) continue;
+              tmpA.subVectors(n.pos, n.prev).multiplyScalar(0.988);
+              n.prev.copy(n.pos); n.pos.add(tmpA); n.pos.y += gStep;
+            }
+            for (let iter = 0; iter < 12; iter++) {
+              for (let i = 0; i < links.length; i++) {
+                const lk = links[i], a = nodes[lk.a], b = nodes[lk.b];
+                tmpA.subVectors(b.pos, a.pos);
+                const d = tmpA.length() || 1e-5, diff = ((d - lk.rest) / d) * lk.stiff;
+                if (a.grabbed && b.grabbed) continue;
+                if (a.grabbed) b.pos.addScaledVector(tmpA, -diff);
+                else if (b.grabbed) a.pos.addScaledVector(tmpA, diff);
+                else { a.pos.addScaledVector(tmpA, diff * 0.5); b.pos.addScaledVector(tmpA, -diff * 0.5); }
+              }
+              if (iter === 11) {
+                for (let i = 0; i < nodes.length; i++) if (!nodes[i].grabbed) collidePointWithScene(nodes[i].pos, nodes[i].prev, nodes[i].r, 0.78, 0.16);
+              }
+            }
+
+            group.position.copy(nodes[0].pos);
+            xbotHolder.position.copy(group.position).negate();
+            group.updateMatrixWorld(true);
+
+            // 1. Align Hips position & torso orientation
+            const hipsBone = B.hips;
+            if (hipsBone.parent) {
+              hipsBone.parent.updateWorldMatrix(true, false);
+              hipsBone.position.copy(nodes[0].pos);
+              hipsBone.parent.worldToLocal(hipsBone.position);
+
+              const curRight = tmpA.subVectors(nodes[idxOf.rUpLeg].pos, nodes[idxOf.lUpLeg].pos).normalize();
+              const curUp = tmpB.subVectors(nodes[idxOf.chest].pos, nodes[idxOf.hips].pos).normalize();
+              const curFwd = tmpC.crossVectors(curRight, curUp).normalize();
+              if (curFwd.lengthSq() > 0.1) {
+                curRight.crossVectors(curUp, curFwd).normalize();
+                mCurBasis.makeBasis(curRight, curUp, curFwd);
+                mDelta.multiplyMatrices(mCurBasis, restTorsoMatInv);
+                qDelta.setFromRotationMatrix(mDelta).multiply(restHipsWorldQ);
+                hipsBone.parent.getWorldQuaternion(qParent);
+                hipsBone.quaternion.copy(qParent.invert().multiply(qDelta));
+              }
+              hipsBone.updateMatrixWorld(true);
+            }
+
+            // 2. Align every limb & spine bone from current child direction -> target Verlet node direction
+            for (const [bKey, cKey] of driveChain) {
+              const bBone = B[bKey], cBone = B[cKey];
+              if (!bBone || !cBone || !bBone.parent) continue;
+              bBone.parent.updateWorldMatrix(true, false);
+              bBone.updateMatrixWorld(true);
+              bBone.getWorldPosition(vBone);
+              cBone.getWorldPosition(vChild);
+              const curDir = tmpA.subVectors(vChild, vBone);
+              const tgtDir = tmpB.subVectors(nodes[idxOf[cKey]].pos, nodes[idxOf[bKey]].pos);
+              if (curDir.lengthSq() < 1e-6 || tgtDir.lengthSq() < 1e-6) continue;
+              curDir.normalize(); tgtDir.normalize();
+
+              qDelta.setFromUnitVectors(curDir, tgtDir);
+              bBone.getWorldQuaternion(qBone);
+              qDelta.multiply(qBone);
+              bBone.parent.getWorldQuaternion(qParent);
+              bBone.quaternion.copy(qParent.invert().multiply(qDelta));
+              bBone.updateMatrixWorld(true);
+            }
+            return true;
+          }
+        };
+
+        activeInstances.push(inst);
+        return { ok: true, group, entity: ent, label: 'Xbot Ragdoll' };
+      }
+    }
+
+    // Minimal procedural fallback if offline and no local Xbot.glb exists
+    const group = new THREE.Group();
+    group.name = 'dynamic_ragdoll_fallback';
+    const spec = [
+      [0, 0, 0], [0, 0.14, 0], [0, 0.28, 0], [0, 0.35, 0], [0, 0.45, 0],
+      [-0.11, 0.28, 0], [-0.22, 0.21, 0.02], [-0.31, 0.12, 0.04],
+      [0.11, 0.28, 0], [0.22, 0.21, 0.02], [0.31, 0.12, 0.04],
+      [-0.065, -0.03, 0], [-0.075, -0.24, 0.02], [-0.08, -0.45, 0],
+      [0.065, -0.03, 0], [0.075, -0.24, 0.02], [0.08, -0.45, 0]
+    ];
+    const nodes = spec.map(([x, y, z], idx) => {
+      const p = new V3(x * H, y * H, z * H).applyQuaternion(yawQ).add(center);
+      return { pos: p, prev: p.clone(), r: idx === 4 ? H * 0.065 : H * 0.035, grabbed: false };
+    });
+    const bonePairs = [[0,1],[1,2],[2,3],[3,4],[2,5],[5,6],[6,7],[2,8],[8,9],[9,10],[0,11],[11,12],[12,13],[0,14],[14,15],[15,16]];
+    const links = bonePairs.map(([a, b]) => ({ a, b, rest: nodes[a].pos.distanceTo(nodes[b].pos), stiff: 1.0 }));
+    [[0,2,0.92],[5,8,0.95],[11,14,0.95]].forEach(([a,b,s]) => links.push({ a, b, rest: nodes[a].pos.distanceTo(nodes[b].pos), stiff: s }));
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex || '#94a3b8'), roughness: 0.45, metalness: 0.4 });
+    const headM = new THREE.Mesh(new THREE.SphereGeometry(H * 0.068, 16, 12), mat); headM.frustumCulled = false; group.add(headM);
+    const limbs = bonePairs.map(([a, b]) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(H * 0.025, H * 0.022, nodes[a].pos.distanceTo(nodes[b].pos), 8), mat);
+      m.frustumCulled = false; group.add(m); return { m, a, b };
+    });
+    group.position.copy(nodes[0].pos); APP.scene.add(group);
+    const ent = APP.registerEntity(group, { name: 'Ragdoll', category: 'dynamic_sculpt', grabbable: false, holdable: false, physics: { enabled: false, gravity: false } });
+    const inst = {
+      type: 'ragdoll', alive: true, rec, group, entity: ent, nodes,
+      step(dt) {
+        if (!group.parent || rec?.cancelled) { this.alive = false; return false; }
+        const safeDt = Math.min(dt, 0.025), gStep = -9.81 * safeDt * safeDt;
+        for (const n of nodes) { if (!n.grabbed) { tmpA.subVectors(n.pos, n.prev).multiplyScalar(0.988); n.prev.copy(n.pos); n.pos.add(tmpA); n.pos.y += gStep; } }
+        for (let it = 0; it < 10; it++) {
+          for (const lk of links) {
+            const a = nodes[lk.a], b = nodes[lk.b]; tmpA.subVectors(b.pos, a.pos); const d = tmpA.length() || 1e-5, df = ((d - lk.rest) / d) * lk.stiff;
+            if (!a.grabbed && !b.grabbed) { a.pos.addScaledVector(tmpA, df * 0.5); b.pos.addScaledVector(tmpA, -df * 0.5); }
+            else if (a.grabbed && !b.grabbed) b.pos.addScaledVector(tmpA, -df);
+            else if (b.grabbed && !a.grabbed) a.pos.addScaledVector(tmpA, df);
+          }
+          if (it === 9) for (const n of nodes) if (!n.grabbed) collidePointWithScene(n.pos, n.prev, n.r, 0.78, 0.16);
+        }
+        group.position.copy(nodes[0].pos);
+        headM.position.subVectors(nodes[4].pos, group.position);
+        for (const lm of limbs) {
+          lm.m.position.addVectors(nodes[lm.a].pos, nodes[lm.b].pos).multiplyScalar(0.5).sub(group.position);
+          tmpB.subVectors(nodes[lm.b].pos, nodes[lm.a].pos);
+          if (tmpB.lengthSq() > 1e-6) lm.m.quaternion.setFromUnitVectors(UP, tmpB.normalize());
+        }
+        return true;
+      }
+    };
+    activeInstances.push(inst);
+    return { ok: true, group, entity: ent, label: 'Ragdoll' };
+  }
+
+  // ------------------------------------------------------------------ 4. INTERLOCKING METALLIC CHAIN (Static Top Loop + Hand Collisions)
+  function makeChainLinkGeo(rx, ry, tubeR) {
+    const pts = [];
+    const steps = 20;
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2, cx = Math.cos(a), sy = Math.sin(a);
+      pts.push(new V3(Math.sign(cx) * Math.pow(Math.abs(cx), 0.72) * rx, Math.sign(sy) * Math.pow(Math.abs(sy), 0.72) * ry, 0));
+    }
+    return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts, true), 28, tubeR, 10, true);
+  }
+
+  function spawnChain(analyses, colorHex, rec) {
+    const sorted = analyses.slice().sort((a, b) => b.center.y - a.center.y);
+    const linkCount = clamp(sorted.length, 2, 18);
+    const avgR = clamp(sorted.reduce((s, a) => s + a.avgR, 0) / sorted.length, 0.045, 0.24);
+    const linkRy = avgR * 1.15, linkRx = avgR * 0.72, tubeR = clamp(avgR * 0.20, 0.008, 0.032);
+    const pitch = linkRy * 1.48;
+
+    const nodes = [];
+    const topCenter = sorted[0].center.clone();
+    for (let i = 0; i <= linkCount; i++) {
+      const p = i < sorted.length ? sorted[i].center.clone() : topCenter.clone().add(new V3(0, -i * pitch, 0));
+      if (i > 0 && p.distanceTo(nodes[i - 1].pos) < pitch * 0.35) {
+        p.copy(nodes[i - 1].pos).add(new V3((Math.random() - 0.5) * 0.015, -pitch, (Math.random() - 0.5) * 0.015));
+      }
+      nodes.push({ pos: p, prev: p.clone(), pinned: i <= 1, lockPermanent: i <= 1, grabbed: false, r: linkRx });
+    }
+    nodes[1].pos.set(nodes[0].pos.x, nodes[0].pos.y - pitch, nodes[0].pos.z);
+    nodes[1].prev.copy(nodes[1].pos);
+
+    const group = new THREE.Group();
+    group.name = 'dynamic_chain';
+    group.position.copy(nodes[0].pos);
+
+    const linkGeo = makeChainLinkGeo(linkRx, linkRy, tubeR);
+    const staticMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, metalness: 0.88, roughness: 0.20, emissive: 0x0284c7, emissiveIntensity: 0.35 });
+    const metalMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex && colorHex !== '#38bdf8' ? colorHex : '#cbd5e1'), metalness: 0.90, roughness: 0.26 });
+
+    const linkMeshes = [];
+    for (let i = 0; i < linkCount; i++) {
+      const m = new THREE.Mesh(linkGeo, i === 0 ? staticMat : metalMat);
+      m.frustumCulled = false; m.castShadow = true;
+      group.add(m); linkMeshes.push(m);
+    }
+
+    APP.scene.add(group);
+    const ent = APP.registerEntity(group, { name: 'Dynamic Chain', category: 'dynamic_sculpt', grabbable: false, holdable: false, physics: { enabled: false, gravity: false } });
+    const twistQ = new Q4().setFromAxisAngle(UP, Math.PI * 0.5);
+
+    const inst = {
+      type: 'chain', alive: true, rec, group, entity: ent, nodes,
+      step(dt) {
+        if (!group.parent || rec?.cancelled) { this.alive = false; return false; }
+        const safeDt = Math.min(dt, 0.025), gStep = -9.81 * safeDt * safeDt;
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          if (n.pinned || n.grabbed) { n.prev.copy(n.pos); continue; }
+          tmpA.subVectors(n.pos, n.prev).multiplyScalar(0.990);
+          n.prev.copy(n.pos); n.pos.add(tmpA); n.pos.y += gStep;
+        }
+        for (let iter = 0; iter < 14; iter++) {
+          for (let i = 0; i < linkCount; i++) {
+            const a = nodes[i], b = nodes[i + 1];
+            tmpA.subVectors(b.pos, a.pos);
+            const d = tmpA.length() || 1e-5, diff = (d - pitch) / d;
+            const aFix = a.pinned || a.grabbed, bFix = b.pinned || b.grabbed;
+            if (aFix && bFix) continue;
+            if (aFix) b.pos.addScaledVector(tmpA, -diff);
+            else if (bFix) a.pos.addScaledVector(tmpA, diff);
+            else { a.pos.addScaledVector(tmpA, diff * 0.5); b.pos.addScaledVector(tmpA, -diff * 0.5); }
+          }
+          if (iter === 13) for (let i = 1; i < nodes.length; i++) if (!nodes[i].pinned && !nodes[i].grabbed) collidePointWithScene(nodes[i].pos, nodes[i].prev, linkRx * 0.8, 0.80, 0.22);
+        }
+        group.position.copy(nodes[0].pos);
+        for (let i = 0; i < linkCount; i++) {
+          const a = nodes[i].pos, b = nodes[i + 1].pos;
+          linkMeshes[i].position.addVectors(a, b).multiplyScalar(0.5).sub(group.position);
+          tmpA.subVectors(a, b);
+          if (tmpA.lengthSq() > 1e-6) {
+            tmpA.normalize();
+            linkMeshes[i].quaternion.setFromUnitVectors(UP, tmpA);
+            if (i % 2 === 1) linkMeshes[i].quaternion.multiply(twistQ);
+          }
+        }
+        return true;
+      }
+    };
+    activeInstances.push(inst);
+    return { ok: true, group, entity: ent, label: 'Dynamic Chain' };
+  }
+
+  // ------------------------------------------------------------------ 5. REALISTIC REFRACTIVE BLURRED GLASS (Square / Rectangle)
+  let sharedGlassRT = null, sharedGlassNorm = null;
+  function getGlassBackdropRT() {
+    if (!sharedGlassRT) {
+      sharedGlassRT = new THREE.WebGLRenderTarget(512, 512, {
+        minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat
+      });
+    }
+    return sharedGlassRT;
+  }
+  function getGlassRippleNormalMap() {
+    if (sharedGlassNorm) return sharedGlassNorm;
+    const N = 256, cv = document.createElement('canvas'); cv.width = cv.height = N;
+    const ctx = cv.getContext('2d'), img = ctx.createImageData(N, N);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const u = x / N, v = y / N;
+      // Fine frosted pebble grain + subtle organic glass waviness
+      const h1 = Math.sin(u * 26.0 + Math.cos(v * 21.0)) * 0.35 + Math.cos(v * 23.0 - Math.sin(u * 19.0)) * 0.35;
+      const micro = Math.sin(u * 190.0 + v * 140.0) * Math.cos(v * 210.0 - u * 165.0) * 0.30;
+      const gx = (Math.cos(u * 26.0 + Math.cos(v * 21.0)) * 0.45 + Math.cos(u * 190.0 + v * 140.0) * 0.25) + h1 * 0.1 + micro * 0.2;
+      const gy = (-Math.sin(v * 23.0 - Math.sin(u * 19.0)) * 0.45 - Math.sin(v * 210.0 - u * 165.0) * 0.25);
+      const l = Math.hypot(gx, gy, 1.0);
+      const i = (y * N + x) * 4;
+      img.data[i] = ((-gx / l) * 0.5 + 0.5) * 255;
+      img.data[i + 1] = ((gy / l) * 0.5 + 0.5) * 255;
+      img.data[i + 2] = ((1.0 / l) * 0.5 + 0.5) * 255;
+      img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(2, 2); tex.needsUpdate = true;
+    sharedGlassNorm = tex;
+    return tex;
+  }
+
+  function refreshGlassBackdrop() {
+    if (!activeGlasses.length || !APP.renderer || !APP.camera) return;
+    const renderer = APP.renderer;
+    const rt = getGlassBackdropRT();
+
+    // Hide all glass panes temporarily so they don't capture themselves
+    const prevVis = activeGlasses.map((g) => { const v = g.group.visible; g.group.visible = false; return v; });
+    const prevRt = renderer.getRenderTarget();
+    const prevXr = renderer.xr.enabled;
+    const prevCol = renderer.getClearColor(new THREE.Color());
+    const prevAlpha = renderer.getClearAlpha();
+
+    try {
+      renderer.xr.enabled = false;
+      renderer.setRenderTarget(rt);
+      if (!APP.scene.background) renderer.setClearColor(0x000000, 0);
+      renderer.clear(true, true, true);
+      renderer.render(APP.scene, APP.camera);
+    } catch (_) {}
+    finally {
+      renderer.setClearColor(prevCol, prevAlpha);
+      renderer.xr.enabled = prevXr;
+      renderer.setRenderTarget(prevRt);
+      activeGlasses.forEach((g, idx) => { g.group.visible = prevVis[idx]; });
+    }
+  }
+
+  function spawnGlass(analyses, colorHex, rec) {
+    // Combine points if drawn as 4 strokes, or use single analysis
+    const allPts = [];
+    analyses.forEach((a) => allPts.push(...a.pts));
+    const merged = analyzeStroke({ pts: allPts });
+    const a = analyses.length === 1 ? analyses[0] : merged;
+
+    const center = a.center.clone();
+    const n = a.normal.clone().normalize();
+    const headP = (APP.headPos && APP.headPos.isVector3) ? APP.headPos : APP.camera.position;
+    if (n.dot(tmpA.subVectors(headP, center)) < 0) n.negate();
+
+    // Align rectangle axes to exact drawn orientation
+    const ca = Math.cos(a.rotAngle), sa = Math.sin(a.rotAngle);
+    const axisU = a.right2.clone().multiplyScalar(ca).addScaledVector(a.up2, sa).normalize();
+    const axisV = new V3().crossVectors(n, axisU).normalize();
+    const q = new Q4().setFromRotationMatrix(new THREE.Matrix4().makeBasis(axisU, axisV, n));
+
+    const W = clamp(a.spanU, 0.14, 2.6);
+    const H = clamp(a.spanV, 0.14, 2.2);
+    const depth = clamp(Math.min(W, H) * 0.035, 0.012, 0.028);
+    const bevel = Math.min(0.005, depth * 0.35);
+
+    const shape = new THREE.Shape();
+    const hw = W * 0.5, hh = H * 0.5, cr = Math.min(0.012, hw * 0.15, hh * 0.15);
+    shape.moveTo(-hw + cr, -hh);
+    shape.lineTo(hw - cr, -hh); shape.quadraticCurveTo(hw, -hh, hw, -hh + cr);
+    shape.lineTo(hw, hh - cr); shape.quadraticCurveTo(hw, hh, hw - cr, hh);
+    shape.lineTo(-hw + cr, hh); shape.quadraticCurveTo(-hw, hh, -hw, hh - cr);
+    shape.lineTo(-hw, -hh + cr); shape.quadraticCurveTo(-hw, -hh, -hw + cr, -hh);
+
+    const glassGeo = new THREE.ExtrudeGeometry(shape, {
+      depth, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 3
+    });
+    glassGeo.translate(0, 0, -depth * 0.5);
+
+    const rt = getGlassBackdropRT();
+    const normMap = getGlassRippleNormalMap();
+    const tintCol = new THREE.Color(colorHex && colorHex !== '#38bdf8' ? colorHex : '#dff4ff');
+
+    const glassMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: true, side: THREE.DoubleSide,
+      uniforms: {
+        uBackdrop: { value: rt.texture },
+        uNorm: { value: normMap },
+        uTint: { value: tintCol },
+        uSize: { value: new V2(W, H) }
+      },
+      vertexShader: [
+        'varying vec4 vClip; varying vec3 vW; varying vec3 vN; varying vec2 vL;',
+        'void main(){',
+        '  vL = position.xy;',
+        '  vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz;',
+        '  vN = normalize(mat3(modelMatrix) * normal);',
+        '  vClip = projectionMatrix * viewMatrix * w;',
+        '  gl_Position = vClip;',
+        '}'
+      ].join('\n'),
+      fragmentShader: [
+        'uniform sampler2D uBackdrop, uNorm; uniform vec3 uTint; uniform vec2 uSize;',
+        'varying vec4 vClip; varying vec3 vW; varying vec3 vN; varying vec2 vL;',
+        'void main(){',
+        '  vec2 sUV = (vClip.xy / vClip.w) * 0.5 + 0.5;',
+        '  vec2 gUV = vL / max(uSize, vec2(0.05)) + 0.5;',
+        '  vec3 nSample = texture2D(uNorm, gUV * 2.2).xyz * 2.0 - 1.0;',
+        '  vec2 distort = nSample.xy * 0.022;',
+        '  // 9-tap realistic frosted Gaussian blur + chromatic dispersion',
+        '  vec2 rad = vec2(0.011, 0.014);',
+        '  vec4 sum = vec4(0.0);',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort, 0.002, 0.998)) * 0.22;',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort + vec2( rad.x, 0.0), 0.002, 0.998)) * 0.11;',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort + vec2(-rad.x, 0.0), 0.002, 0.998)) * 0.11;',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort + vec2(0.0,  rad.y), 0.002, 0.998)) * 0.11;',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort + vec2(0.0, -rad.y), 0.002, 0.998)) * 0.11;',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort + vec2( rad.x,  rad.y) * 0.85, 0.002, 0.998)) * 0.085;',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort + vec2(-rad.x,  rad.y) * 0.85, 0.002, 0.998)) * 0.085;',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort + vec2( rad.x, -rad.y) * 0.85, 0.002, 0.998)) * 0.085;',
+        '  sum += texture2D(uBackdrop, clamp(sUV + distort + vec2(-rad.x, -rad.y) * 0.85, 0.002, 0.998)) * 0.085;',
+        '  vec3 V = normalize(cameraPosition - vW);',
+        '  vec3 N = normalize(vN + nSample * 0.14);',
+        '  float fr = pow(1.0 - abs(dot(N, V)), 2.4);',
+        '  float edgeCut = smoothstep(0.45, 0.50, max(abs(gUV.x - 0.5), abs(gUV.y - 0.5)));',
+        '  vec3 spec = vec3(0.88, 0.96, 1.0) * (fr * 0.55 + edgeCut * 0.48 + max(0.0, nSample.x * 0.18));',
+        '  // Where 3D objects/toolbars exist (sum.a > 0.05), show blurred scene; where empty/passthrough, preserve alpha!',
+        '  vec3 glassCol = mix(uTint * 0.82, sum.rgb * mix(vec3(1.0), uTint, 0.14), clamp(sum.a, 0.0, 1.0)) + spec;',
+        '  float alpha = clamp(max(sum.a, 0.26 + fr * 0.36 + edgeCut * 0.45), 0.0, 0.98);',
+        '  gl_FragColor = vec4(glassCol, alpha);',
+        '}'
+      ].join('\n')
+    });
+
+    const group = new THREE.Group();
+    group.name = 'dynamic_frosted_glass';
+    group.position.copy(center);
+    group.quaternion.copy(q);
+
+    const glassMesh = new THREE.Mesh(glassGeo, glassMat);
+    glassMesh.renderOrder = 60;
+    group.add(glassMesh);
+
+    // Subtle polished glass edge bevel highlight
+    const edgeWire = new THREE.LineSegments(
+      new THREE.EdgesGeometry(glassGeo, 28),
+      new THREE.LineBasicMaterial({ color: 0xe0f2fe, transparent: true, opacity: 0.55 })
+    );
+    group.add(edgeWire);
+
+    APP.scene.add(group);
+
+    // Desktop DOM backdrop-filter overlay so HTML toolbars & video passthrough behind the glass ALSO blur!
+    const domBlur = document.createElement('div');
+    domBlur.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9999;backdrop-filter:blur(8px) saturate(1.12);-webkit-backdrop-filter:blur(8px) saturate(1.12);display:none;';
+    document.body.appendChild(domBlur);
+
+    const ent = APP.registerEntity(group, {
+      name: 'Frosted Glass',
+      category: 'dynamic_sculpt',
+      grabbable: true,
+      holdable: false,
+      physics: { enabled: false, gravity: false }
+    });
+
+    const cornersLocal = [
+      new V3(-hw, -hh, 0), new V3(hw, -hh, 0), new V3(hw, hh, 0), new V3(-hw, hh, 0)
+    ];
+
+    const gObj = {
+      type: 'glass', alive: true, rec, group, entity: ent,
+      step() {
+        if (!group.parent || rec?.cancelled) { this.dispose(); return false; }
+
+        if (APP.xrMode === 'none' && APP.camera) {
+          group.updateMatrixWorld(true);
+          let allFront = true;
+          const pts2D = cornersLocal.map((lc) => {
+            const p = lc.clone().applyMatrix4(group.matrixWorld).project(APP.camera);
+            if (p.z >= 1.0 || p.z <= -1.0) allFront = false;
+            return `${((p.x * 0.5 + 0.5) * 100).toFixed(2)}% ${((-p.y * 0.5 + 0.5) * 100).toFixed(2)}%`;
+          });
+          if (allFront) {
+            domBlur.style.clipPath = `polygon(${pts2D.join(', ')})`;
+            domBlur.style.display = 'block';
+          } else {
+            domBlur.style.display = 'none';
+          }
+        } else {
+          domBlur.style.display = 'none';
+        }
+        return true;
+      },
+      dispose() {
+        this.alive = false;
+        const idx = activeGlasses.indexOf(this);
+        if (idx !== -1) activeGlasses.splice(idx, 1);
+        try { domBlur.remove(); } catch (_) {}
+      }
+    };
+
+    activeGlasses.push(gObj);
+    activeInstances.push(gObj);
+    APP.ui?.toast?.('🪟 Frosted Glass created — blurs objects, toolbars & passthrough!', 2600);
+    return { ok: true, group, entity: ent, label: 'Frosted Glass' };
+  }
+
+  // ------------------------------------------------------------------ Global Simulation Loop
+  const unsub = APP.onUpdate((dt) => {
+    const safeDt = Math.min(dt || 0.016, 0.04);
+    const tNow = performance.now() / 1000;
+
+    stepHandTouchCollisions(safeDt);
+    stepNodeGrabs(safeDt);
+
+    for (let i = activeInstances.length - 1; i >= 0; i--) {
+      const inst = activeInstances[i];
+      let keep = false;
+      try { keep = inst.step(safeDt, tNow); } catch (e) { console.warn('[dynamic_sculpt]', e); }
+      if (!keep) {
+        if (inst.dispose) inst.dispose();
+        activeInstances.splice(i, 1);
+      }
+    }
+
+    if (activeGlasses.length > 0) refreshGlassBackdrop();
+  });
+
+  // ------------------------------------------------------------------ Public Mode C Entry Point
+  async function manifest({ strokes, base, hint, yawQ, color, rec }) {
+    const res = classifyDynamicShape(strokes, base, hint);
+    if (!res) return { ok: false };
+
+    const type = typeof res === 'string' ? res : res.type;
+    const analyses = (typeof res === 'object' && res.analyses) ? res.analyses : strokes.map(analyzeStroke);
+
+    if (type === 'portal') return spawnPortal(analyses[0], color, rec);
+    if (type === 'glass') return spawnGlass(analyses, color, rec);
+    if (type === 'rope') return spawnRope(analyses[0], color, rec);
+    if (type === 'ragdoll') return await spawnRagdoll(analyses, base, yawQ, color, rec);
+    if (type === 'chain') return spawnChain(analyses, color, rec);
+
+    return { ok: false };
+  }
+
+  APP.dynamicSculpt = { manifest, activeInstances, activePortals, activeGlasses, classify: classifyDynamicShape };
+  APP._dynSculptCleanup = () => {
+    try { unsub && unsub(); } catch (_) {}
+    releaseNodeGrab('L');
+    releaseNodeGrab('R');
+    handTouchPrev.L.clear();
+    handTouchPrev.R.clear();
+    while (activeInstances.length) {
+      const inst = activeInstances.pop();
+      inst.alive = false;
+      if (inst.dispose) inst.dispose();
+      if (inst.group?.parent) inst.group.parent.remove(inst.group);
+      disposeDeep(inst.group);
+    }
+    activePortals.length = 0;
+    activeGlasses.length = 0;
+    if (sharedGlassRT) { sharedGlassRT.dispose(); sharedGlassRT = null; }
+    if (sharedGlassNorm) { sharedGlassNorm.dispose(); sharedGlassNorm = null; }
+    if (APP.dynamicSculpt?.manifest === manifest) APP.dynamicSculpt = null;
+  };
+})();
+@end
