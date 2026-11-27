@@ -354,7 +354,13 @@
     worker.onerror = () => { pend.forEach((p) => p.rej(new Error('worker error'))); pend.clear(); };
     return worker;
   }
-  const runWorker = (payload) => new Promise((res, rej) => { const id = ++wid; pend.set(id, { res, rej }); getWorker().postMessage(Object.assign({ id }, payload)); });
+  const runWorker = (payload) => new Promise((res, rej) => {
+    const id = ++wid;
+    const t = setTimeout(() => { pend.delete(id); try { worker && worker.terminate(); } catch (_) {} worker = null; rej(new Error('mesh worker timeout')); }, 20000);
+    pend.set(id, { res: (v) => { clearTimeout(t); res(v); }, rej: (e) => { clearTimeout(t); rej(e); } });
+    getWorker().postMessage(Object.assign({ id }, payload));
+  });
+  const withTimeout = (p, ms, msg) => new Promise((res, rej) => { const t = setTimeout(() => rej(new Error(msg)), ms); p.then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); }); });
   function geoFromOut(o) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(o.positions, 3));
@@ -457,7 +463,7 @@
 
   // ------------------------------------------------------------------ 3-view close-up snapshot (software painter, works inside XR)
   function renderViews(out) {
-    const PW = 256, cv = document.createElement('canvas'); cv.width = PW * 3; cv.height = PW;
+    const PW = 192, cv = document.createElement('canvas'); cv.width = PW * 3; cv.height = PW;
     const c = cv.getContext('2d'), Pp = out.positions, I = out.indices, nT = I.length / 3, nV = Pp.length / 3, sz = out.bbox.size;
     const az = 0.6, el = 0.45;
     const views = [{ n: 'FRONT', f: new V3(0, 0, -1) }, { n: 'SIDE', f: new V3(-1, 0, 0) }, { n: '3/4', f: new V3(-Math.sin(az) * Math.cos(el), -Math.sin(el), -Math.cos(az) * Math.cos(el)) }];
@@ -470,7 +476,7 @@
       scale = Math.min(scale, PW * 0.84 / Math.max(a1 - a0, b1 - b0, 1e-4)); v.cx = (a0 + a1) / 2; v.cy = (b0 + b1) / 2;
     });
     c.fillStyle = '#0b1118'; c.fillRect(0, 0, PW * 3, PW);
-    const stride = Math.max(1, Math.ceil(nT / 40000));
+    const stride = Math.max(1, Math.ceil(nT / 12000));
     views.forEach((v, vi) => {
       const ox = vi * PW; c.save(); c.beginPath(); c.rect(ox, 0, PW, PW); c.clip();
       const g = c.createLinearGradient(0, 0, 0, PW); g.addColorStop(0, '#16222e'); g.addColorStop(1, '#0a0f15'); c.fillStyle = g; c.fillRect(ox, 0, PW, PW);
@@ -527,13 +533,13 @@
     if (!APP.ai) throw new Error('APP.ai unavailable');
     const aiCaller = (APP.ai?.isLiveModelSelected?.() && APP.ai?.chatWithBuilder) ? APP.ai.chatWithBuilder : APP.ai.chat;
     let got = null;
-    const res = await aiCaller.call(APP.ai, {
+    const res = await withTimeout(aiCaller.call(APP.ai, {
       systemPrompt: opts.systemPrompt, prompt: opts.prompt, imageB64: opts.imageB64, tools: [opts.tool], maxSteps: opts.maxSteps || 2,
       onToolCall: async (name, args) => {
         if (name === opts.tool.name) { let a = args; if (typeof a === 'string') a = extractJSON(a); if (a && a.arguments) a = typeof a.arguments === 'string' ? extractJSON(a.arguments) : a.arguments; got = a; }
         return 'ok';
       }
-    });
+    }), 45000, 'AI timeout');
     if (!got) got = extractJSON(typeof res === 'string' ? res : (res && (res.text || res.content || res.message)) || '');
     return got;
   }
@@ -566,7 +572,7 @@
   }
   async function analyze(snap, base, extra) {
     let raw = null;
-    try { raw = await callAI({ systemPrompt: SYS, imageB64: snap, tool: SPEC_TOOL, maxSteps: 2, prompt: 'Identify the drawing and fill the refinement plan.\nGeometry descriptors (meters, frame F):\n' + JSON.stringify(describe(base)) + '\n' + (extra || '') }); }
+    try { raw = await callAI({ systemPrompt: SYS, imageB64: snap, tool: SPEC_TOOL, maxSteps: 1, prompt: 'Identify the drawing and fill the refinement plan.\nGeometry descriptors (meters, frame F):\n' + JSON.stringify(describe(base)) + '\n' + (extra || '') }); }
     catch (e) { console.warn('[inst4] AI analyze failed', e); }
     return cleanSpec(raw, base);
   }
@@ -598,8 +604,14 @@
       default: { const w = Math.sin(u * 400) * Math.sin(v * 400); o[0] = 0.5 + 0.25 * w + 0.1 * fbm(u * 30, v * 30, 2); o[1] = fbm(u * 5, v * 5, 3); o[2] = 0.9; }
     }
   }
+  const pbrCache = new Map();
   function bakePBR(kind, c1, c2) {
-    const N = 512, mk = () => { const c = document.createElement('canvas'); c.width = c.height = N; return c; };
+    const key = kind + ':' + c1.getHex() + ':' + c2.getHex();
+    if (pbrCache.has(key)) return pbrCache.get(key);
+    const out = bakePBRRaw(kind, c1, c2); pbrCache.set(key, out); return out;
+  }
+  function bakePBRRaw(kind, c1, c2) {
+    const N = 256, mk = () => { const c = document.createElement('canvas'); c.width = c.height = N; return c; };
     const ca = mk(), cn = mk(), cr = mk(), ia = ca.getContext('2d').createImageData(N, N), inn = cn.getContext('2d').createImageData(N, N), ir = cr.getContext('2d').createImageData(N, N);
     const H = new Float32Array(N * N), o = [0, 0, 0], h1 = c1.getHex(), h2 = c2.getHex();
     const A = [(h1 >> 16) & 255, (h1 >> 8) & 255, h1 & 255], B = [(h2 >> 16) & 255, (h2 >> 8) & 255, h2 & 255];
@@ -641,8 +653,10 @@
     }
     return map;
   }
+  let glbIndex = null;
   async function findGLB(keywords) {
-    const map = await collectGLBs(), kws = keywords.map(normName).filter(Boolean);
+    if (!glbIndex) glbIndex = collectGLBs();
+    const map = await glbIndex, kws = keywords.map(normName).filter(Boolean);
     for (const kw of kws) { const e = map.get(kw); if (e) return e; }
     for (const kw of kws) for (const [k, v] of map) if (k.split(' ').includes(kw)) return v;
     for (const kw of kws) for (const [k, v] of map) if (k.includes(kw) || (k.length > 3 && kw.includes(k))) return v;
@@ -652,7 +666,11 @@
     }
     return null;
   }
-  const loadGLB = (url) => new Promise((res, rej) => APP.gltfLoader.load(url, (g) => res(g.scene || g.scenes[0]), undefined, rej));
+  const glbCache = new Map();
+  const loadGLB = (url) => {
+    if (!glbCache.has(url)) glbCache.set(url, new Promise((res, rej) => APP.gltfLoader.load(url, (g) => res(g.scene || g.scenes[0]), undefined, rej)).catch((e) => { glbCache.delete(url); throw e; }));
+    return glbCache.get(url).then((s) => s.clone(true));
+  };
   function fitGLB(model, spec, base) {
     const holder = new THREE.Group(), scaler = new THREE.Group(), pre = new THREE.Group();
     pre.add(model); scaler.add(pre); holder.add(scaler); holder.updateMatrixWorld(true);
@@ -709,7 +727,7 @@
   async function modeA(rec, spec, base, alive) {
     setStatus('Refining volume (' + spec.label + ')…', 'busy');
     const avgR = rec.avgR, sharp = spec.sharpen;
-    const out = await runWorker({ strokes: rec.payload, ops: partsToOps(spec.parts, base, avgR), res: 84, smoothK: avgR * (sharp > 0.6 ? 0.35 : 1.0), iter: sharp > 0.6 ? 2 : 8, sharpen: sharp, creaseDeg: 38, symmetry: spec.symmetry, center: base.bbox.center });
+    const out = await runWorker({ strokes: rec.payload, ops: partsToOps(spec.parts, base, avgR), res: 72, smoothK: avgR * (sharp > 0.6 ? 0.35 : 1.0), iter: sharp > 0.6 ? 2 : 8, sharpen: sharp, creaseDeg: 38, symmetry: spec.symmetry, center: base.bbox.center });
     if (!alive()) return;
     const mat = pbrMaterial(spec), mesh = new THREE.Mesh(geoFromOut(out), mat); mesh.frustumCulled = false;
     mat.map.repeat.set(1, 1); finalize(rec, mesh, spec.label, out.bbox.center);
@@ -721,7 +739,65 @@
     if (!hit) { toast('No GLB in /assets/ for: ' + spec.keywords.join(', ') + ' — falling back to Mode A', 4200); return modeA(rec, spec, base, alive); }
     let model; try { model = await loadGLB(hit.url); } catch (e) { toast('GLB "' + hit.name + '" failed to load — Mode A', 3500); return modeA(rec, spec, base, alive); }
     if (!alive()) { disposeDeep(model); return; }
-    toast('Matched GLB: ' + hit.name, 2200); finalize(rec, fitGLB(model, spec, base), spec.label, base.bbox.center);
+    toast('Morphing into ' + hit.name, 2200); await morphInto(rec, fitGLB(model, spec, base), base, spec.label, alive);
+  }
+  // Mode B morph: each GLB vertex starts on its nearest sample of the drawn volume and eases into its own position.
+  // The morph runs as a hologram over the drawing, the drawing fades out, then the real materials reveal bottom-up.
+  function morphInto(rec, holder, base, label, alive) {
+    return new Promise((resolve) => {
+      holder.updateMatrixWorld(true);
+      const P0 = base.positions, nP = P0.length / 3, stp = Math.max(1, Math.floor(nP / 1500)), src = [];
+      for (let i = 0; i < nP; i += stp) src.push(P0[i * 3], P0[i * 3 + 1], P0[i * 3 + 2]);
+      const parts = [];
+      holder.traverse((m) => {
+        if (!m.isMesh || !m.geometry || !m.geometry.attributes.position) return;
+        const g = m.geometry.clone(); g.applyMatrix4(m.matrixWorld);
+        const rest = Float32Array.from(g.attributes.position.array), n = rest.length / 3, start = new Float32Array(rest.length);
+        for (let i = 0; i < n; i++) {
+          const x = rest[i * 3], y = rest[i * 3 + 1], z = rest[i * 3 + 2]; let best = Infinity, bi = 0;
+          for (let j = 0; j < src.length; j += 3) { const dx = src[j] - x, dy = src[j + 1] - y, dz = src[j + 2] - z, d = dx * dx + dy * dy + dz * dz; if (d < best) { best = d; bi = j; } }
+          start[i * 3] = src[bi]; start[i * 3 + 1] = src[bi + 1]; start[i * 3 + 2] = src[bi + 2];
+        }
+        g.attributes.position.array.set(start); g.attributes.position.needsUpdate = true;
+        const mesh = new THREE.Mesh(g, rec.holoMat), wire = new THREE.Mesh(g, rec.wireMat);
+        mesh.frustumCulled = false; wire.frustumCulled = false; mesh.add(wire);
+        parts.push({ mesh, wire, g, rest, start, orig: m.material });
+      });
+      if (!parts.length || !src.length) { finalize(rec, holder, label, base.bbox.center); return resolve(); }
+
+      const morphRoot = new THREE.Group(); parts.forEach((p) => morphRoot.add(p.mesh));
+      const bootTemps = rec.temps.slice(), DUR = 2.4;
+      holoBoundsUpdate(rec, morphRoot);
+      APP.scene.add(morphRoot);
+      let t = 0, unsub = null, settled = false;
+      const ease = (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+      const stop = () => { if (settled) return false; settled = true; try { unsub && unsub(); } catch (_) {} unsub = null; APP.scene.remove(morphRoot); return true; };
+      const cancel = () => { if (stop()) parts.forEach((p) => p.g.dispose()); resolve(); };
+      const done = () => {
+        if (!stop()) return;
+        parts.forEach((p) => {
+          p.g.attributes.position.array.set(p.rest); p.g.attributes.position.needsUpdate = true; p.g.computeVertexNormals();
+          p.mesh.remove(p.wire);
+          const om = p.orig;
+          p.mesh.material = Array.isArray(om) ? om.map((x) => x.clone()) : (om ? om.clone() : new THREE.MeshStandardMaterial({ color: 0xcfd8dc }));
+        });
+        bootTemps.forEach((o) => { o.visible = false; });
+        if (alive()) finalize(rec, morphRoot, label, base.bbox.center);
+        resolve();
+      };
+      unsub = APP.onUpdate((dt) => {
+        if (settled) return;
+        if (!alive()) return cancel();
+        t += dt; const k = Math.min(1, t / DUR), e = ease(k);
+        for (const p of parts) {
+          const a = p.g.attributes.position.array, s = p.start, r = p.rest;
+          for (let i = 0; i < a.length; i++) a[i] = s[i] + (r[i] - s[i]) * e;
+          p.g.attributes.position.needsUpdate = true;
+        }
+        bootTemps.forEach((o) => { o.visible = e < 0.5; });
+        if (k >= 1) done();
+      });
+    });
   }
   async function modeC(rec, spec, base, snap, alive) {
     setStatus('Generating realistic "' + spec.label + '"…', 'busy');
