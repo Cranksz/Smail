@@ -1,0 +1,1344 @@
+# ======================================================================
+# instruction3.txt — Lite High-Realism PBR Engine v5
+#   - 100% Surface-Locked Coordinates (Zero Texture Sliding/Swimming)
+#   - Strict Per-Material Realism (No Rust/Dust/Scratches on Food/Organics)
+#   - Real Cast Shadows on All Floors + Dynamic Key/Bounce/Rim Contrast
+#   - Crisp 512x512 Hairline Scratches, Cracks, Smudges & Film Grain
+#   - Visible Zero-Idle-Cost Velocity Motion Blur Trail + Vertex Smear
+# ======================================================================
+
+@ability: realism_master_engine
+@autorun
+@pin: Realism FX
+@desc: Lite high-realism PBR engine: surface-locked textures, strict material matching (rust/scratches only on matching metals, SSS on fruit/skin/leaves, cracks only on stone/wood, smudges on glass/gloss), strong shadows/lighting, and visible motion blur.
+@match: realism | realistic | wet surfaces | dry surfaces | dusty | clean surfaces | cracks | smudges | realistic glass | realistic metal | الواقعية | واقعي | زجاج | معدن
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene || !APP.renderer) return;
+
+  if (typeof APP._inst3RealismCleanup === 'function') {
+    try { APP._inst3RealismCleanup(); } catch (_) {}
+  }
+
+  const scene = APP.scene;
+  const renderer = APP.renderer;
+
+  // ====================================================================
+  // 1. REALISM CONFIG, DRAMATIC LIGHTING & FLOOR SHADOW CATCHER
+  // ====================================================================
+  const cfg = {
+    enabled: true,
+    calibrateProceduralColors: true,
+    wetness: 0.0,
+    dust: 0.55,       // Applied ONLY to stone/wood/aged metal (or when 'dusty' command is used)
+    dirt: 0.58,       // Applied ONLY to stone/wood/aged metal
+    scratches: 0.72,  // Fine hairline micro-scratches on metals
+    smudges: 0.65,    // Soft smudges on glass & high-gloss
+    cracks: 0.75,     // Fine cracks on stone/concrete/wood
+    grain: 0.042,     // Subtle photographic film micro-grain
+    parallaxScale: 0.022,
+    causticsStrength: 0.85,
+    motionBlur: true,
+    forceWeatheringAll: false
+  };
+
+  const isXRDevice = /quest|oculus|pico|xr/i.test(navigator.userAgent || '');
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.04;
+  if ('transmissionResolutionScale' in renderer) {
+    renderer.transmissionResolutionScale = isXRDevice ? 0.50 : 0.70;
+  }
+
+  // Rebalance key vs ambient light so shadows & 3D form have crisp, dramatic contrast
+  if (APP.ambientLight) {
+    APP.ambientLight.intensity = 0.42;
+    APP.ambientLight.color.setHex(0xb8d4f5);
+    APP.ambientLight.groundColor.setHex(0x111622);
+  }
+  if (APP.dirLight) {
+    APP.dirLight.intensity = 2.15;
+    APP.dirLight.color.setHex(0xfff4e2);
+    if (!APP.dirLight.target.parent) scene.add(APP.dirLight.target);
+    if (APP.dirLight.shadow) {
+      APP.dirLight.castShadow = true;
+      const sRes = isXRDevice ? 1024 : 2048;
+      APP.dirLight.shadow.mapSize.set(sRes, sRes);
+      APP.dirLight.shadow.camera.near = 0.2;
+      APP.dirLight.shadow.camera.far = 16;
+      APP.dirLight.shadow.camera.left = -3.8;
+      APP.dirLight.shadow.camera.right = 3.8;
+      APP.dirLight.shadow.camera.top = 3.8;
+      APP.dirLight.shadow.camera.bottom = -3.8;
+      APP.dirLight.shadow.bias = -0.00025;
+      APP.dirLight.shadow.normalBias = 0.018;
+      APP.dirLight.shadow.radius = 2.6;
+    }
+  }
+
+  const bounceLight = new THREE.DirectionalLight(0x7cb8ff, 0.32);
+  bounceLight.position.set(-2.8, -0.8, -2.4);
+  scene.add(bounceLight);
+
+  const rimLight = new THREE.DirectionalLight(0xffe7b8, 0.58);
+  rimLight.position.set(-1.6, 2.8, -3.8);
+  scene.add(rimLight);
+
+  // Real-time directional shadow catcher plane (fixes missing floor shadows in Desktop & VR!)
+  const groundShadowCatcher = new THREE.Mesh(
+    new THREE.PlaneGeometry(18, 18),
+    new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.54, depthWrite: false })
+  );
+  groundShadowCatcher.name = 'NXR_GroundShadowCatcher';
+  groundShadowCatcher.rotation.x = -Math.PI / 2;
+  groundShadowCatcher.position.y = 0.0035;
+  groundShadowCatcher.receiveShadow = true;
+  groundShadowCatcher.renderOrder = 1;
+  scene.add(groundShadowCatcher);
+
+  // Horizon-grounded Studio HDRI for realistic reflections
+  let studioEnvTex = null;
+  try {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envScene = new THREE.Scene();
+    envScene.background = new THREE.Color(0x0a1019);
+
+    envScene.add(new THREE.Mesh(
+      new THREE.SphereGeometry(18, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0x1e3552, side: THREE.BackSide })
+    ));
+
+    const floorBounce = new THREE.Mesh(
+      new THREE.CircleGeometry(18, 24),
+      new THREE.MeshBasicMaterial({ color: 0x05070a, side: THREE.DoubleSide })
+    );
+    floorBounce.rotation.x = Math.PI / 2;
+    floorBounce.position.y = -3.0;
+    envScene.add(floorBounce);
+
+    const horizonBand = new THREE.Mesh(
+      new THREE.CylinderGeometry(16, 16, 2.2, 32, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0x4d739e, side: THREE.BackSide })
+    );
+    horizonBand.position.y = 0.5;
+    envScene.add(horizonBand);
+
+    const softboxKey = new THREE.Mesh(new THREE.PlaneGeometry(9, 5.5), new THREE.MeshBasicMaterial({ color: 0xfff8ed, side: THREE.DoubleSide }));
+    softboxKey.position.set(6, 7.5, 5); softboxKey.lookAt(0, 0, 0); envScene.add(softboxKey);
+
+    const softboxFill = new THREE.Mesh(new THREE.PlaneGeometry(10, 4.5), new THREE.MeshBasicMaterial({ color: 0x7dd3fc, side: THREE.DoubleSide }));
+    softboxFill.position.set(-7.5, 4.8, -4); softboxFill.lookAt(0, 0, 0); envScene.add(softboxFill);
+
+    const rimStrip = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.0), new THREE.MeshBasicMaterial({ color: 0xfde68a, side: THREE.DoubleSide }));
+    rimStrip.position.set(0, 3.2, -8.5); rimStrip.lookAt(0, 0, 0); envScene.add(rimStrip);
+
+    studioEnvTex = pmrem.fromScene(envScene, 0.032).texture;
+    pmrem.dispose();
+    if (!APP.isAR) scene.environment = studioEnvTex;
+    APP.studioEnvTexture = studioEnvTex;
+  } catch (_) {}
+
+  // ====================================================================
+  // 2. 512x512 ULTRA-CRISP STOCHASTIC DETAIL ATLASES (FINE HAIRLINES)
+  // ====================================================================
+  function hash2i(ix, iy) {
+    let n = Math.imul(ix, 374761393) + Math.imul(iy, 668265263);
+    n = Math.imul(n ^ (n >>> 13), 1274126177);
+    return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+  }
+
+  function tileValueNoise(u, v, period, seed) {
+    const x = u * period, y = v * period;
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const fx = x - x0, fy = y - y0;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const ix0 = ((x0 % period) + period) % period;
+    const iy0 = ((y0 % period) + period) % period;
+    const ix1 = (ix0 + 1) % period;
+    const iy1 = (iy0 + 1) % period;
+    const a = hash2i(ix0 + seed, iy0 + seed * 3);
+    const b = hash2i(ix1 + seed, iy0 + seed * 3);
+    const c = hash2i(ix0 + seed, iy1 + seed * 3);
+    const d = hash2i(ix1 + seed, iy1 + seed * 3);
+    return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
+  }
+
+  function fbmTile(u, v, seed) {
+    let val = 0, amp = 0.5, freq = 8;
+    for (let o = 0; o < 4; o++) {
+      val += tileValueNoise(u, v, freq, seed + o * 97) * amp;
+      freq *= 2; amp *= 0.5;
+    }
+    return val;
+  }
+
+  function wrapStroke(ctx, x1, y1, cx, cy, x2, y2, S) {
+    for (let ox = -S; ox <= S; ox += S) {
+      for (let oy = -S; oy <= S; oy += S) {
+        if (x1 + ox < -90 || x1 + ox > S + 90 || y1 + oy < -90 || y1 + oy > S + 90) continue;
+        ctx.beginPath();
+        ctx.moveTo(x1 + ox, y1 + oy);
+        ctx.quadraticCurveTo(cx + ox, cy + oy, x2 + ox, y2 + oy);
+        ctx.stroke();
+      }
+    }
+  }
+
+  function buildStochasticAtlases() {
+    const S = 512;
+
+    // --- ATLAS A: R = Fine Grain, G = Fine Hairline Scratches, B = Organic Blotch, A = Tapered Cracks ---
+    const cA = document.createElement('canvas'); cA.width = cA.height = S;
+    const ctxA = cA.getContext('2d');
+    const imgA = ctxA.createImageData(S, S);
+
+    const cCrk = document.createElement('canvas'); cCrk.width = cCrk.height = S;
+    const ctxCrk = cCrk.getContext('2d');
+    ctxCrk.fillStyle = '#000000'; ctxCrk.fillRect(0, 0, S, S);
+    for (let c = 0; c < 22; c++) {
+      let cx = Math.random() * S, cy = Math.random() * S;
+      let ang = Math.random() * Math.PI * 2;
+      const segs = 5 + Math.floor(Math.random() * 6);
+      for (let s = 0; s < segs; s++) {
+        ang += (Math.random() - 0.5) * 1.1;
+        const len = 14 + Math.random() * 28;
+        const nx = cx + Math.cos(ang) * len, ny = cy + Math.sin(ang) * len;
+        const taper = 1.0 - s / segs;
+        ctxCrk.strokeStyle = `rgba(255,255,255,${(0.45 + taper * 0.50).toFixed(2)})`;
+        ctxCrk.lineWidth = 0.65 + taper * 0.95;
+        wrapStroke(ctxCrk, cx, cy, (cx + nx) * 0.5 + (Math.random() - 0.5) * 6, (cy + ny) * 0.5 + (Math.random() - 0.5) * 6, nx, ny, S);
+        cx = nx; cy = ny;
+      }
+    }
+    const crkData = ctxCrk.getImageData(0, 0, S, S).data;
+
+    // Realistic sparse hairline micro-scratches (NOT thick cartoon slashes!)
+    const cScr = document.createElement('canvas'); cScr.width = cScr.height = S;
+    const ctxScr = cScr.getContext('2d');
+    ctxScr.fillStyle = '#000000'; ctxScr.fillRect(0, 0, S, S);
+    for (let k = 0; k < 115; k++) {
+      const x1 = Math.random() * S, y1 = Math.random() * S;
+      const ang = (k % 3 === 0 ? 0.35 : Math.random() * Math.PI * 2) + (Math.random() - 0.5) * 0.35;
+      const len = 10 + Math.random() * 42;
+      const cx = x1 + Math.cos(ang + 0.14) * len * 0.5, cy = y1 + Math.sin(ang + 0.14) * len * 0.5;
+      const x2 = x1 + Math.cos(ang) * len, y2 = y1 + Math.sin(ang) * len;
+      ctxScr.strokeStyle = `rgba(255,255,255,${(0.22 + Math.random() * 0.58).toFixed(2)})`;
+      ctxScr.lineWidth = 0.45 + Math.random() * 0.55;
+      wrapStroke(ctxScr, x1, y1, cx, cy, x2, y2, S);
+    }
+    const scrData = ctxScr.getImageData(0, 0, S, S).data;
+
+    for (let y = 0; y < S; y++) {
+      const v = y / S;
+      for (let x = 0; x < S; x++) {
+        const u = x / S;
+        const grain = fbmTile(u, v, 11) * 0.62 + hash2i(x, y) * 0.38;
+        const blotch = Math.pow(THREE.MathUtils.clamp(fbmTile(u, v, 131) * 0.65 + fbmTile(u, v, 211) * 0.35, 0, 1), 1.2);
+        const i = (y * S + x) * 4;
+        imgA.data[i] = Math.round(grain * 255);
+        imgA.data[i + 1] = scrData[i];
+        imgA.data[i + 2] = Math.round(blotch * 255);
+        imgA.data[i + 3] = crkData[i];
+      }
+    }
+    ctxA.putImageData(imgA, 0, 0);
+    const detailTexA = new THREE.CanvasTexture(cA);
+    detailTexA.wrapS = detailTexA.wrapT = THREE.RepeatWrapping;
+    detailTexA.anisotropy = 4;
+    detailTexA.needsUpdate = true;
+
+    // --- ATLAS B (256x256): R = Smudges, G = Brushed Metal Grain, B = Micro-Cavity, A = Height ---
+    const SB = 256;
+    const cB = document.createElement('canvas'); cB.width = cB.height = SB;
+    const ctxB = cB.getContext('2d');
+    const imgB = ctxB.createImageData(SB, SB);
+
+    const cSmg = document.createElement('canvas'); cSmg.width = cSmg.height = SB;
+    const ctxSmg = cSmg.getContext('2d');
+    ctxSmg.fillStyle = '#000000'; ctxSmg.fillRect(0, 0, SB, SB);
+    for (let k = 0; k < 22; k++) {
+      const sx = Math.random() * SB, sy = Math.random() * SB;
+      const rx = 18 + Math.random() * 34, ry = 10 + Math.random() * 20;
+      const rot = Math.random() * Math.PI;
+      for (let ox = -SB; ox <= SB; ox += SB) {
+        for (let oy = -SB; oy <= SB; oy += SB) {
+          ctxSmg.save();
+          ctxSmg.translate(sx + ox, sy + oy);
+          ctxSmg.rotate(rot);
+          const grad = ctxSmg.createRadialGradient(0, 0, 2, 0, 0, rx);
+          grad.addColorStop(0, 'rgba(255,255,255,0.42)');
+          grad.addColorStop(0.65, 'rgba(200,200,200,0.18)');
+          grad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctxSmg.fillStyle = grad;
+          ctxSmg.scale(1, ry / rx);
+          ctxSmg.beginPath(); ctxSmg.arc(0, 0, rx, 0, Math.PI * 2); ctxSmg.fill();
+          ctxSmg.restore();
+        }
+      }
+    }
+    const smgData = ctxSmg.getImageData(0, 0, SB, SB).data;
+
+    for (let y = 0; y < SB; y++) {
+      const v = y / SB;
+      for (let x = 0; x < SB; x++) {
+        const u = x / SB;
+        const brushed = fbmTile(u * 0.18, v * 5.0, 53) * 0.76 + fbmTile(u, v, 79) * 0.24;
+        const relief = fbmTile(u, v, 271);
+        const i = (y * SB + x) * 4;
+        imgB.data[i] = Math.min(255, Math.round(smgData[i] * 0.88 + fbmTile(u, v, 389) * 28));
+        imgB.data[i + 1] = Math.round(brushed * 255);
+        imgB.data[i + 2] = Math.round(relief * 255);
+        imgB.data[i + 3] = Math.round(relief * 255);
+      }
+    }
+    ctxB.putImageData(imgB, 0, 0);
+    const detailTexB = new THREE.CanvasTexture(cB);
+    detailTexB.wrapS = detailTexB.wrapT = THREE.RepeatWrapping;
+    detailTexB.needsUpdate = true;
+
+    // --- GLASS OPTICAL RIPPLE NORMAL MAP ---
+    const GS = 128;
+    const gCan = document.createElement('canvas'); gCan.width = gCan.height = GS;
+    const gCtx = gCan.getContext('2d');
+    const gImg = gCtx.createImageData(GS, GS);
+    const gH = new Float32Array(GS * GS);
+    for (let y = 0; y < GS; y++) for (let x = 0; x < GS; x++) gH[y * GS + x] = fbmTile(x / GS, y / GS, 317);
+    for (let y = 0; y < GS; y++) {
+      for (let x = 0; x < GS; x++) {
+        const xm = (x - 1 + GS) % GS, xp = (x + 1) % GS, ym = (y - 1 + GS) % GS, yp = (y + 1) % GS;
+        const dx = (gH[y * GS + xm] - gH[y * GS + xp]) * 2.1, dy = (gH[ym * GS + x] - gH[yp * GS + x]) * 2.1;
+        const len = Math.hypot(dx, dy, 1.0), i = (y * GS + x) * 4;
+        gImg.data[i] = Math.round(((dx / len) * 0.5 + 0.5) * 255);
+        gImg.data[i + 1] = Math.round(((dy / len) * 0.5 + 0.5) * 255);
+        gImg.data[i + 2] = Math.round(((1.0 / len) * 0.5 + 0.5) * 255);
+        gImg.data[i + 3] = 255;
+      }
+    }
+    gCtx.putImageData(gImg, 0, 0);
+    const glassNormalTex = new THREE.CanvasTexture(gCan);
+    glassNormalTex.wrapS = glassNormalTex.wrapT = THREE.RepeatWrapping;
+    glassNormalTex.needsUpdate = true;
+
+    // --- SOFT CONTACT SHADOW ---
+    const sCan = document.createElement('canvas'); sCan.width = sCan.height = 128;
+    const sCtx = sCan.getContext('2d');
+    const rg = sCtx.createRadialGradient(64, 64, 4, 64, 64, 62);
+    rg.addColorStop(0, 'rgba(0,0,0,0.68)');
+    rg.addColorStop(0.50, 'rgba(0,0,0,0.28)');
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    sCtx.fillStyle = rg; sCtx.fillRect(0, 0, 128, 128);
+    const contactShadowTex = new THREE.CanvasTexture(sCan);
+    contactShadowTex.needsUpdate = true;
+
+    return { detailTexA, detailTexB, glassNormalTex, contactShadowTex };
+  }
+
+  const baked = buildStochasticAtlases();
+
+  const sharedUniforms = {
+    uNxrTime: { value: 0 },
+    uNxrWetness: { value: cfg.wetness },
+    uNxrDust: { value: cfg.dust },
+    uNxrDirt: { value: cfg.dirt },
+    uNxrScratches: { value: cfg.scratches },
+    uNxrSmudges: { value: cfg.smudges },
+    uNxrCracks: { value: cfg.cracks },
+    uNxrGrain: { value: cfg.grain },
+    uNxrParallax: { value: cfg.parallaxScale },
+    uNxrCausticsGlobal: { value: cfg.causticsStrength },
+    uNxrForceWeather: { value: 0.0 },
+    uNxrTexA: { value: baked.detailTexA },
+    uNxrTexB: { value: baked.detailTexB },
+    uNxrLightDir: { value: new THREE.Vector3(0.45, 0.82, 0.35).normalize() }
+  };
+
+  // ====================================================================
+  // 3. STRICT MATERIAL ARCHETYPE CLASSIFICATION (NO RUST ON BANANAS!)
+  // ====================================================================
+  function calibrateProceduralColor(col, archetype) {
+    if (!cfg.calibrateProceduralColors || !col || archetype === 'glass') return col;
+    const hsl = {};
+    col.getHSL(hsl);
+    if (hsl.s > 0.65) hsl.s = 0.65 + (hsl.s - 0.65) * 0.25;
+    if (hsl.l > 0.88) hsl.l = 0.88;
+    if (hsl.l < 0.05 && hsl.s > 0.1) hsl.l = 0.06;
+    return new THREE.Color().setHSL(hsl.h, hsl.s, hsl.l);
+  }
+
+  function detectMaterialInfo(mat, meshName, entityName) {
+    const label = `${meshName || ''} ${entityName || ''} ${mat.name || ''}`.toLowerCase();
+    const hasAlphaCutout = !!(mat.alphaMap || (mat.alphaTest && mat.alphaTest > 0) || (mat.transparent && mat.map && mat.opacity >= 0.88));
+
+    // 1. Glass / Crystal / Ice / Lens
+    if (!hasAlphaCutout && (
+      /\b(glass|crystal|ice|lens|window|bottle|diamond|gem|water|visor|windshield)\b/i.test(label) ||
+      (mat.transmission && mat.transmission > 0.25) ||
+      (mat.transparent && !mat.map && mat.opacity < 0.85 && mat.opacity > 0.08)
+    )) {
+      return { arch: 'glass', ferrous: false, weathered: false };
+    }
+
+    // 2. Organic Food / Fruit / Foliage / Skin / Animals (CLEAN SSS — NO rust, NO cracks, NO scratches!)
+    if (/\b(banana|apple|orange|lemon|lime|peach|pear|grape|berry|strawberry|melon|watermelon|mango|pineapple|cherry|tomato|carrot|potato|corn|bread|cake|pizza|burger|food|fruit|meat|fish|skin|flesh|face|hand|ear|leaf|leaves|foliage|plant|flower|petal|moss|fern|wax|candle|jade|coral|jelly|mushroom|animal|cat|dog|bird|frog|peel)\b/i.test(label)) {
+      return { arch: 'sss', ferrous: false, weathered: false };
+    }
+
+    // 3. Cloth / Fabric / Leather
+    if (/\b(cloth|fabric|linen|silk|cotton|velvet|wool|denim|leather|carpet|curtain|shirt|cape|coat|shoe|sneaker|rope)\b/i.test(label) ||
+        (mat.sheen && mat.sheen > 0.35)) {
+      return { arch: 'cloth', ferrous: false, weathered: false };
+    }
+
+    // 4. Metals (distinguish ferrous/aged steel vs noble clean metals like gold/silver/chrome)
+    if (/\b(metal|steel|iron|copper|bronze|brass|chrome|silver|gold|titanium|aluminum|alloy|armor|sword|blade|knife|axe|gun|rifle|mech|robot|chassis|pipe|gear|engine|wrench|hammer|anvil|coin|chain|helmet|shield|rust)\b/i.test(label) ||
+        (mat.metalness !== undefined && mat.metalness >= 0.65 && !mat.metalnessMap)) {
+      const isNobleClean = /\b(gold|silver|chrome|platinum|jewelry|ring|watch|mirror)\b/i.test(label) && !/\b(rust|old|aged|ancient)\b/i.test(label);
+      const isFerrous = !isNobleClean && /\b(iron|steel|rust|old|aged|ancient|pipe|anvil|chain|scrap|wreck|armor|sword|blade|robot|mech|gear|barrel|crate|metal)\b/i.test(label);
+      return { arch: 'metal', ferrous: isFerrous, weathered: isFerrous };
+    }
+
+    // 5. Stone / Concrete / Wood / Ruins (Cracks + Dust + Dirt + Parallax!)
+    if (/\b(stone|rock|boulder|cliff|brick|concrete|cement|statue|ruin|marble|granite|cobble|sandstone|pillar|wall|wood|log|plank|bark|crate|barrel|trunk|stump|clay|terracotta|ancient|old)\b/i.test(label)) {
+      return { arch: 'stone_wood', ferrous: false, weathered: true };
+    }
+
+    // 6. General / Painted / Ceramic / Mixed GLB
+    const isExplicitlyWeathered = /\b(old|aged|dirty|dusty|weathered|worn|rusty|muddy|battle|damaged)\b/i.test(label);
+    return { arch: 'clean_pbr', ferrous: isExplicitlyWeathered, weathered: isExplicitlyWeathered };
+  }
+
+  function inferSSSColor(mat, meshName, entityName) {
+    const label = `${meshName || ''} ${entityName || ''}`.toLowerCase();
+    if (/\b(leaf|leaves|foliage|plant|moss|jade|fern|grass|tree)\b/i.test(label)) return new THREE.Color(0x4ade80);
+    if (/\b(banana|lemon|corn|wax|candle|amber|honey)\b/i.test(label)) return new THREE.Color(0xfacc15);
+    if (/\b(orange|carrot|peach)\b/i.test(label)) return new THREE.Color(0xfb923c);
+    if (/\b(ice|crystal|snow)\b/i.test(label)) return new THREE.Color(0x7dd3fc);
+    if (mat.color && !mat.vertexColors) return mat.color.clone().lerp(new THREE.Color(0xff5a36), 0.42);
+    return new THREE.Color(0xff6b4a);
+  }
+
+  // ====================================================================
+  // 4. SURFACE-LOCKED PER-PIXEL REALISM SHADER
+  // ====================================================================
+  function upgradeMaterialRealistic(mat, info, meshName, entityName, objSeed = 0, isGLB = false) {
+    if (!mat || mat.isShaderMaterial || mat.userData?.nxrSkip) return mat;
+    const archetype = info.arch;
+    if (mat.userData?.nxrRealUpgraded && mat.userData?.nxrArchetype === archetype) return mat;
+
+    const hasOriginalPBRMaps = !!(mat.map || mat.normalMap || mat.roughnessMap || mat.metalnessMap || mat.aoMap);
+    const treatAsTexturedAsset = isGLB || hasOriginalPBRMaps;
+
+    let targetMat = mat;
+    if (!mat.isMeshStandardMaterial) {
+      targetMat = new THREE.MeshStandardMaterial({
+        color: mat.color ? mat.color.clone() : new THREE.Color(0xcbd5e1),
+        map: mat.map || null,
+        vertexColors: !!mat.vertexColors,
+        transparent: !!mat.transparent,
+        opacity: mat.opacity !== undefined ? mat.opacity : 1.0,
+        alphaTest: mat.alphaTest || 0,
+        side: mat.side !== undefined ? mat.side : THREE.FrontSide,
+        roughness: 0.52,
+        metalness: 0.04
+      });
+    } else if (archetype === 'glass' && !(targetMat instanceof THREE.MeshPhysicalMaterial)) {
+      const pm = new THREE.MeshPhysicalMaterial();
+      THREE.MeshStandardMaterial.prototype.copy.call(pm, targetMat);
+      pm.userData = Object.assign({}, targetMat.userData || {});
+      pm.onBeforeCompile = targetMat.onBeforeCompile;
+      pm.customProgramCacheKey = targetMat.customProgramCacheKey;
+      targetMat = pm;
+    }
+
+    if (!treatAsTexturedAsset && targetMat.color && !targetMat.vertexColors) {
+      targetMat.color.copy(calibrateProceduralColor(targetMat.color, archetype));
+    }
+
+    targetMat.envMap = (APP.isAR ? scene.environment : (studioEnvTex || APP.roomEnvTexture || scene.environment)) || null;
+    if (!targetMat.envMapIntensity || targetMat.envMapIntensity === 1) {
+      targetMat.envMapIntensity = archetype === 'metal' ? 2.1 : archetype === 'glass' ? 2.5 : 1.2;
+    }
+
+    let modeId = 0; // 0:clean_pbr, 1:metal, 2:glass, 3:sss, 4:stone_wood, 5:cloth
+    let sssStrength = 0.0;
+    let sssCol = new THREE.Color(0xff5533);
+
+    if (archetype === 'metal') {
+      modeId = 1;
+      if (!treatAsTexturedAsset) {
+        targetMat.metalness = Math.max(0.86, targetMat.metalness || 0.90);
+        targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.26, 0.14, 0.44);
+      }
+    } else if (archetype === 'glass') {
+      modeId = 2;
+      targetMat.transparent = false;
+      targetMat.opacity = 1.0;
+      targetMat.transmission = Math.max(0.92, targetMat.transmission || 0.94);
+      targetMat.ior = targetMat.ior || 1.52;
+      targetMat.thickness = targetMat.thickness || 0.34;
+      targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.10, 0.04, 0.22);
+      targetMat.metalness = 0.0;
+      targetMat.reflectivity = 1.0;
+      targetMat.clearcoat = 1.0;
+      targetMat.clearcoatRoughness = 0.04;
+      if (!targetMat.normalMap) {
+        targetMat.normalMap = baked.glassNormalTex;
+        targetMat.normalScale = new THREE.Vector2(0.18, 0.18);
+      }
+      if (targetMat.color) targetMat.attenuationColor = targetMat.color.clone().lerp(new THREE.Color(0xdcf6ff), 0.72);
+    } else if (archetype === 'sss') {
+      modeId = 3;
+      sssStrength = 0.95;
+      sssCol = inferSSSColor(targetMat, meshName, entityName);
+      if (!treatAsTexturedAsset) {
+        targetMat.roughness = THREE.MathUtils.clamp(targetMat.roughness || 0.54, 0.35, 0.78);
+        targetMat.metalness = 0.0;
+      }
+    } else if (archetype === 'cloth') {
+      modeId = 5;
+      if (!treatAsTexturedAsset) {
+        targetMat.roughness = Math.max(0.78, targetMat.roughness || 0.86);
+        targetMat.metalness = 0.0;
+      }
+    } else if (archetype === 'stone_wood') {
+      modeId = 4;
+      if (!treatAsTexturedAsset) {
+        targetMat.roughness = Math.max(0.64, targetMat.roughness || 0.80);
+        targetMat.metalness = 0.0;
+      }
+    }
+
+    const modeUniform = { value: modeId };
+    const sssUniform = { value: sssStrength };
+    const sssColUniform = { value: sssCol };
+    const seedUniform = { value: objSeed };
+    const isGLBUniform = { value: treatAsTexturedAsset ? 1.0 : 0.0 };
+    const isFerrousUniform = { value: info.ferrous ? 1.0 : 0.0 };
+    const isWeatheredUniform = { value: info.weathered ? 1.0 : 0.0 };
+
+    const prevCompile = targetMat.onBeforeCompile;
+    const prevKey = typeof targetMat.customProgramCacheKey === 'function' ? targetMat.customProgramCacheKey() : '';
+
+    targetMat.userData = targetMat.userData || {};
+    targetMat.userData.nxrRealUpgraded = true;
+    targetMat.userData.nxrArchetype = archetype;
+
+    targetMat.customProgramCacheKey = () => `${prevKey ? prevKey + '|' : ''}nxr_lite_real_v5_${modeId}_${treatAsTexturedAsset ? 1 : 0}`;
+    targetMat.onBeforeCompile = function (shader, r) {
+      if (prevCompile && prevCompile !== targetMat.onBeforeCompile) {
+        try { prevCompile.call(targetMat, shader, r); } catch (_) {}
+      }
+
+      shader.uniforms.uNxrTime = sharedUniforms.uNxrTime;
+      shader.uniforms.uNxrWetness = sharedUniforms.uNxrWetness;
+      shader.uniforms.uNxrDust = sharedUniforms.uNxrDust;
+      shader.uniforms.uNxrDirt = sharedUniforms.uNxrDirt;
+      shader.uniforms.uNxrScratches = sharedUniforms.uNxrScratches;
+      shader.uniforms.uNxrSmudges = sharedUniforms.uNxrSmudges;
+      shader.uniforms.uNxrCracks = sharedUniforms.uNxrCracks;
+      shader.uniforms.uNxrGrain = sharedUniforms.uNxrGrain;
+      shader.uniforms.uNxrParallax = sharedUniforms.uNxrParallax;
+      shader.uniforms.uNxrCausticsGlobal = sharedUniforms.uNxrCausticsGlobal;
+      shader.uniforms.uNxrForceWeather = sharedUniforms.uNxrForceWeather;
+      shader.uniforms.uNxrTexA = sharedUniforms.uNxrTexA;
+      shader.uniforms.uNxrTexB = sharedUniforms.uNxrTexB;
+      shader.uniforms.uNxrLightDir = sharedUniforms.uNxrLightDir;
+      shader.uniforms.uNxrMode = modeUniform;
+      shader.uniforms.uNxrSSSStrength = sssUniform;
+      shader.uniforms.uNxrSSSColor = sssColUniform;
+      shader.uniforms.uNxrSeed = seedUniform;
+      shader.uniforms.uNxrIsGLB = isGLBUniform;
+      shader.uniforms.uNxrFerrous = isFerrousUniform;
+      shader.uniforms.uNxrWeathered = isWeatheredUniform;
+
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', [
+          '#include <common>',
+          'attribute float aNxrCrevice;',
+          'attribute float aNxrBottom;',
+          'varying vec3 vNxrMeterLocal;',
+          'varying vec3 vNxrLNorm;',
+          'varying vec3 vNxrWPos;',
+          'varying vec3 vNxrWNorm;',
+          'varying float vNxrCrevice;',
+          'varying float vNxrBottom;'
+        ].join('\n'))
+        .replace('#include <begin_vertex>', [
+          '#include <begin_vertex>',
+          // Strictly object-locked meter-scale coordinates: NEVER swims when rotating or moving!
+          'vec3 nxrMScale = vec3(',
+          '  length(vec3(modelMatrix[0][0], modelMatrix[0][1], modelMatrix[0][2])),',
+          '  length(vec3(modelMatrix[1][0], modelMatrix[1][1], modelMatrix[1][2])),',
+          '  length(vec3(modelMatrix[2][0], modelMatrix[2][1], modelMatrix[2][2]))',
+          ');',
+          'vNxrMeterLocal = position * nxrMScale;',
+          'vNxrLNorm = normalize(objectNormal);',
+          'vNxrCrevice = aNxrCrevice;',
+          'vNxrBottom = aNxrBottom;'
+        ].join('\n'))
+        .replace('#include <project_vertex>', [
+          '#include <project_vertex>',
+          'vNxrWNorm = normalize( mat3( modelMatrix ) * objectNormal );',
+          'vNxrWPos = (modelMatrix * vec4( transformed, 1.0 )).xyz;'
+        ].join('\n'));
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', [
+          '#include <common>',
+          'uniform float uNxrTime;',
+          'uniform float uNxrWetness;',
+          'uniform float uNxrDust;',
+          'uniform float uNxrDirt;',
+          'uniform float uNxrScratches;',
+          'uniform float uNxrSmudges;',
+          'uniform float uNxrCracks;',
+          'uniform float uNxrGrain;',
+          'uniform float uNxrParallax;',
+          'uniform float uNxrCausticsGlobal;',
+          'uniform float uNxrForceWeather;',
+          'uniform sampler2D uNxrTexA;',
+          'uniform sampler2D uNxrTexB;',
+          'uniform vec3 uNxrLightDir;',
+          'uniform float uNxrMode;',
+          'uniform float uNxrSSSStrength;',
+          'uniform vec3 uNxrSSSColor;',
+          'uniform float uNxrSeed;',
+          'uniform float uNxrIsGLB;',
+          'uniform float uNxrFerrous;',
+          'uniform float uNxrWeathered;',
+          'varying vec3 vNxrMeterLocal;',
+          'varying vec3 vNxrLNorm;',
+          'varying vec3 vNxrWPos;',
+          'varying vec3 vNxrWNorm;',
+          'varying float vNxrCrevice;',
+          'varying float vNxrBottom;',
+          'vec2 nxrPlanarUV(vec3 p, vec3 n) {',
+          '  vec3 an = abs(n);',
+          '  if (an.x > an.y && an.x > an.z) return p.zy;',
+          '  if (an.z > an.y) return p.xy;',
+          '  return p.xz;',
+          '}',
+          'void nxrSampleStochastic(vec2 uv, float seed, out vec4 outA, out vec4 outB) {',
+          '  vec2 uA = uv * 1.15 + vec2(seed * 0.31, seed * 0.67);',
+          '  mat2 rot = mat2(0.7986, -0.6018, 0.6018, 0.7986);',
+          '  vec2 uB = (rot * uv) * 0.68 + vec2(0.43 + seed * 0.19, 0.79);',
+          '  vec4 a1 = texture2D(uNxrTexA, uA);',
+          '  vec4 a2 = texture2D(uNxrTexA, uB);',
+          '  vec4 b1 = texture2D(uNxrTexB, uA);',
+          '  vec4 b2 = texture2D(uNxrTexB, uB);',
+          '  float w = smoothstep(0.25, 0.75, a2.r * 0.6 + a1.b * 0.4);',
+          '  outA = vec4(mix(a1.r, a2.r, w), max(a1.g, a2.g), mix(a1.b, a2.b, w), max(a1.a, a2.a));',
+          '  outB = vec4(max(b1.r, b2.r), mix(b1.g, b2.g, w), mix(b1.b, b2.b, w), mix(b1.a, b2.a, w));',
+          '}',
+          'float nxrFastCaustic(vec2 p, float t) {',
+          '  float a = sin(p.x * 11.0 + t * 2.1) * cos(p.y * 13.0 - t * 1.7);',
+          '  float b = sin((p.x + p.y) * 15.0 - t * 2.6);',
+          '  return pow(clamp(0.5 + 0.5 * (a + b) * 0.5, 0.0, 1.0), 4.0);',
+          '}',
+          'float nxrScreenGrain(vec2 p) {',
+          '  return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);',
+          '}'
+        ].join('\n'))
+        .replace('#include <metalnessmap_fragment>', [
+          '#include <metalnessmap_fragment>',
+          'vec3 nxrVDirW = normalize(cameraPosition - vNxrWPos);',
+          'vec3 nxrNW = normalize(vNxrWNorm);',
+          'vec3 nxrNL = normalize(vNxrLNorm);',
+          '// Surface-locked triplanar UVs (stays 100% fixed to object geometry!)',
+          'vec2 nxrDUV = nxrPlanarUV(vNxrMeterLocal * 1.5, nxrNL);',
+          '',
+          'float nxrIsMetalArch = step(0.5, uNxrMode) * step(uNxrMode, 1.5);',
+          'float nxrIsGlass     = step(1.5, uNxrMode) * step(uNxrMode, 2.5);',
+          'float nxrIsSSS       = step(2.5, uNxrMode) * step(uNxrMode, 3.5);',
+          'float nxrIsStoneWood = step(3.5, uNxrMode) * step(uNxrMode, 4.5);',
+          'float nxrIsCloth     = step(4.5, uNxrMode);',
+          '',
+          '// Metal pixels: ONLY if archetype is metal OR GLB metalnessMap pixel is truly metallic (>0.65)!',
+          'float nxrMetalPx = max(nxrIsMetalArch, (1.0 - nxrIsSSS) * (1.0 - nxrIsGlass) * (1.0 - nxrIsCloth) * (1.0 - nxrIsStoneWood) * smoothstep(0.62, 0.86, metalnessFactor));',
+          'float nxrGlossPx = (1.0 - nxrMetalPx) * (1.0 - nxrIsSSS) * (1.0 - nxrIsCloth) * (1.0 - nxrIsStoneWood) * (1.0 - smoothstep(0.14, 0.36, roughnessFactor));',
+          '',
+          'vec4 nxrDetA, nxrDetB;',
+          'nxrSampleStochastic(nxrDUV, uNxrSeed, nxrDetA, nxrDetB);',
+          'if (nxrIsStoneWood > 0.5 && uNxrIsGLB < 0.5) {',
+          '  vec2 nxrViewTan = nxrPlanarUV(nxrVDirW, nxrNW);',
+          '  vec2 nxrPUV = nxrDUV - nxrViewTan * (1.0 - nxrDetB.a) * uNxrParallax * 0.5;',
+          '  nxrSampleStochastic(nxrPUV, uNxrSeed, nxrDetA, nxrDetB);',
+          '  nxrPUV = nxrDUV - nxrViewTan * (1.0 - nxrDetB.a) * uNxrParallax;',
+          '  nxrSampleStochastic(nxrPUV, uNxrSeed, nxrDetA, nxrDetB);',
+          '}',
+          '',
+          'float nxrGrain = nxrDetA.r;',
+          'float nxrScratch = smoothstep(0.46, 0.88, nxrDetA.g) * uNxrScratches;',
+          'float nxrBlotch = nxrDetA.b;',
+          'float nxrCrack = smoothstep(0.38, 0.82, nxrDetA.a) * uNxrCracks;',
+          'float nxrSmudge = smoothstep(0.28, 0.76, nxrDetB.r) * uNxrSmudges;',
+          'float nxrBrushed = nxrDetB.g;',
+          'float nxrBumpH = nxrDetB.a;',
+          '',
+          '// 1. METALS ONLY: Subtle hairline scratches, brushed grain, & rust ONLY on ferrous/aged metals!',
+          'float nxrScrM = 0.0;',
+          'if (nxrMetalPx > 0.02) {',
+          '  float nxrEdgeCurv = clamp(length(fwidth(nxrNW)) * 2.0, 0.0, 1.0);',
+          '  nxrScrM = nxrScratch * nxrMetalPx;',
+          '  float nxrCanRust = max(uNxrFerrous, uNxrForceWeather);',
+          '  float nxrOxide = smoothstep(0.58, 0.88, nxrBlotch + vNxrCrevice * 0.45) * nxrMetalPx * nxrCanRust;',
+          '  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * (0.92 + nxrBrushed * 0.16), nxrMetalPx * (1.0 - uNxrIsGLB * 0.5));',
+          '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.13, 0.04), nxrOxide * 0.58);',
+          '  diffuseColor.rgb = mix(diffuseColor.rgb, max(diffuseColor.rgb * 1.18, vec3(0.68, 0.71, 0.75)), nxrScrM * 0.18 + nxrEdgeCurv * nxrMetalPx * 0.16);',
+          '  roughnessFactor = mix(roughnessFactor, clamp(roughnessFactor + (nxrBrushed - 0.5) * 0.14, 0.10, 0.58), nxrMetalPx);',
+          '  roughnessFactor = mix(roughnessFactor, 0.88, nxrOxide * 0.65);',
+          '  roughnessFactor = mix(roughnessFactor, 0.10, nxrScrM * 0.82);',
+          '  metalnessFactor = mix(metalnessFactor, 0.25, nxrOxide * 0.55);',
+          '}',
+          '',
+          '// 2. GLASS & HIGH-GLOSS ONLY: Subtle fingerprint smudges (ZERO scratches, ZERO bumps)',
+          'float nxrGlossOrGlass = max(nxrGlossPx, nxrIsGlass);',
+          'if (nxrGlossOrGlass > 0.02) {',
+          '  roughnessFactor = clamp(roughnessFactor + nxrSmudge * nxrGlossOrGlass * 0.22, 0.03, 0.55);',
+          '}',
+          '',
+          '// 3. STONE / WOOD / CONCRETE ONLY: Cracks, organic mineral grain & bump relief',
+          'float nxrCrackMask = 0.0;',
+          'if (nxrIsStoneWood > 0.5) {',
+          '  diffuseColor.rgb *= mix(1.0, mix(0.84, 1.14, nxrGrain), 1.0 - uNxrIsGLB * 0.45);',
+          '  nxrCrackMask = nxrCrack * smoothstep(0.24, 0.72, nxrBlotch + vNxrCrevice * 0.30);',
+          '  diffuseColor.rgb *= (1.0 - nxrCrackMask * 0.62);',
+          '  roughnessFactor = clamp(roughnessFactor + (nxrGrain - 0.5) * 0.18 + nxrCrackMask * 0.22, 0.25, 0.98);',
+          '}',
+          '',
+          '// 4. DUST & DIRT: Strictly ONLY on stone/wood/weathered objects (NEVER on bananas/fruit/skin/clean objects!)',
+          'float nxrWeatherAllowed = max(uNxrWeathered, uNxrForceWeather) * (1.0 - nxrIsSSS) * (1.0 - nxrIsGlass);',
+          'float nxrUp = clamp(nxrNW.y * 0.5 + 0.5, 0.0, 1.0);',
+          'if (nxrWeatherAllowed > 0.02) {',
+          '  float nxrTopDust = smoothstep(0.28, 0.86, nxrNW.y) * (0.42 + 0.58 * nxrBlotch) + vNxrCrevice * 0.35;',
+          '  float nxrDustMask = clamp(nxrTopDust * uNxrDust * nxrWeatherAllowed, 0.0, 0.68);',
+          '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.58, 0.56, 0.52), nxrDustMask * 0.45);',
+          '  roughnessFactor = mix(roughnessFactor, 0.94, nxrDustMask * 0.70);',
+          '  float nxrBottomZone = (1.0 - smoothstep(0.0, 0.36, vNxrBottom)) * (0.40 + 0.60 * nxrBlotch);',
+          '  float nxrDirtMask = clamp((nxrBottomZone + vNxrCrevice * 0.65) * uNxrDirt * nxrWeatherAllowed, 0.0, 0.74);',
+          '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.14, 0.11, 0.08), nxrDirtMask * 0.60);',
+          '  roughnessFactor = mix(roughnessFactor, 0.96, nxrDirtMask * 0.72);',
+          '}',
+          '',
+          '// 5. WETNESS & NATURAL CREVICE SHADOWING (AO)',
+          'float nxrWetPatch = clamp(uNxrWetness * (0.42 + 0.75 * nxrUp * nxrBlotch), 0.0, 1.0) * (1.0 - nxrIsCloth * 0.4);',
+          'diffuseColor.rgb *= mix(1.0, 0.58, nxrWetPatch * 0.58);',
+          'roughnessFactor = mix(roughnessFactor, 0.04, nxrWetPatch * 0.86);',
+          'float nxrAO = (1.0 - clamp(vNxrCrevice, 0.0, 1.0) * 0.68);',
+          'diffuseColor.rgb *= nxrAO;',
+          '',
+          '// Bumps ONLY on Stone/Wood & Metal Hairlines — ZERO bumps on fruit/skin/glass/cloth/clean painted!',
+          'nxrBumpH = nxrBumpH - nxrCrackMask * 0.75 - nxrScrM * 0.35;',
+          'float nxrBumpAmt = (nxrMetalPx * 0.10 + nxrIsStoneWood * 0.34) * mix(1.0, 0.50, uNxrIsGLB);'
+        ].join('\n'))
+        .replace('#include <normal_fragment_maps>', [
+          '#include <normal_fragment_maps>',
+          'if (nxrBumpAmt > 0.001) {',
+          '  vec3 nxrDpx = dFdx(-vViewPosition);',
+          '  vec3 nxrDpy = dFdy(-vViewPosition);',
+          '  float nxrDhx = dFdx(nxrBumpH);',
+          '  float nxrDhy = dFdy(nxrBumpH);',
+          '  vec3 nxrR1 = cross(nxrDpy, normal);',
+          '  vec3 nxrR2 = cross(normal, nxrDpx);',
+          '  float nxrDet = dot(nxrDpx, nxrR1);',
+          '  if (abs(nxrDet) > 1e-8) {',
+          '    vec3 nxrSurfGrad = sign(nxrDet) * (nxrDhx * nxrR1 + nxrDhy * nxrR2);',
+          '    normal = normalize(abs(nxrDet) * normal - nxrSurfGrad * nxrBumpAmt);',
+          '  }',
+          '}'
+        ].join('\n'))
+        .replace('#include <lights_fragment_end>', [
+          '#include <lights_fragment_end>',
+          'reflectedLight.indirectDiffuse *= nxrAO;',
+          'reflectedLight.indirectSpecular *= mix(0.20, 1.0, nxrAO);',
+          'if (uNxrSSSStrength > 0.01) {',
+          '  vec3 nxrHBack = normalize(uNxrLightDir + nxrNW * 0.45);',
+          '  float nxrThin = mix(1.0, 0.35, clamp(vNxrCrevice, 0.0, 1.0));',
+          '  float nxrBack = pow(clamp(dot(nxrVDirW, -nxrHBack), 0.0, 1.0), 2.2) * nxrThin;',
+          '  float nxrWrap = max(0.0, (dot(nxrNW, uNxrLightDir) + 0.62) / 1.62);',
+          '  reflectedLight.directDiffuse += uNxrSSSColor * (nxrBack * 0.92 + nxrWrap * 0.28) * uNxrSSSStrength;',
+          '}',
+          'if (nxrIsGlass > 0.5) {',
+          '  float nxrFres = pow(1.0 - max(0.0, dot(nxrVDirW, nxrNW)), 3.0);',
+          '  reflectedLight.indirectSpecular += vec3(0.85, 0.95, 1.0) * nxrFres * 0.85;',
+          '}',
+          'float nxrCausticsVis = (nxrIsGlass > 0.5) ? 0.65 : (nxrWetPatch * nxrUp * 0.72);',
+          'if (nxrCausticsVis > 0.02 && uNxrCausticsGlobal > 0.01) {',
+          '  float nxrCVal = nxrFastCaustic(vNxrWPos.xz, uNxrTime);',
+          '  reflectedLight.directDiffuse += vec3(0.45, 0.90, 1.0) * nxrCVal * nxrCausticsVis * uNxrCausticsGlobal * 0.90;',
+          '}'
+        ].join('\n'))
+        .replace('#include <opaque_fragment>', [
+          'outgoingLight += (nxrScreenGrain(gl_FragCoord.xy + vec2(uNxrTime * 7.0)) - 0.5) * uNxrGrain;',
+          '#include <opaque_fragment>'
+        ].join('\n'));
+    };
+
+    targetMat.needsUpdate = true;
+    return targetMat;
+  }
+
+  // ====================================================================
+  // 5. PROCEDURAL SILHOUETTE BEVELING (SKIPPED FOR GLBs & SCULPTED)
+  // ====================================================================
+  function createBeveledCylinderGeometry(rT, rB, h, segs) {
+    const hh = h * 0.5;
+    const bT = rT > 0.004 ? Math.min(rT * 0.16, h * 0.09) : 0;
+    const bB = rB > 0.004 ? Math.min(rB * 0.16, h * 0.09) : 0;
+    const pts = [new THREE.Vector2(0.0001, -hh)];
+    if (bB > 0) {
+      pts.push(
+        new THREE.Vector2(Math.max(0.0008, rB - bB), -hh),
+        new THREE.Vector2(rB - bB * 0.22, -hh + bB * 0.3),
+        new THREE.Vector2(rB, -hh + bB)
+      );
+    } else {
+      pts.push(new THREE.Vector2(Math.max(0.0001, rB), -hh));
+    }
+    if (bT > 0) {
+      pts.push(
+        new THREE.Vector2(rT, hh - bT),
+        new THREE.Vector2(rT - bT * 0.22, hh - bT * 0.3),
+        new THREE.Vector2(Math.max(0.0008, rT - bT), hh),
+        new THREE.Vector2(0.0001, hh)
+      );
+    } else {
+      pts.push(new THREE.Vector2(Math.max(0.0001, rT), hh));
+    }
+    const geo = new THREE.LatheGeometry(pts, Math.max(14, segs || 20));
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  function bevelAndSealProceduralParts(group) {
+    if (group.userData?.nxrSealed) return;
+    group.userData.nxrSealed = true;
+
+    group.traverse((c) => {
+      if (!c.isMesh || !c.geometry || c.userData?.nxrDecal) return;
+      const p = c.geometry.parameters;
+      if (c.geometry.type === 'BoxGeometry' && p && APP.RoundedBoxGeometry) {
+        const w = p.width || 1, h = p.height || 1, d = p.depth || 1;
+        const r = Math.min(w, h, d) * 0.065;
+        if (r > 0.0004) {
+          const old = c.geometry;
+          c.geometry = new APP.RoundedBoxGeometry(w, h, d, 2, r);
+          old.dispose();
+        }
+      } else if (c.geometry.type === 'CylinderGeometry' && p && !p.openEnded) {
+        const rT = p.radiusTop ?? 1, rB = p.radiusBottom ?? 1, h = p.height ?? 1;
+        if (Math.min(Math.max(rT, rB), h) > 0.008) {
+          const old = c.geometry;
+          c.geometry = createBeveledCylinderGeometry(rT, rB, h, p.radialSegments);
+          old.dispose();
+        }
+      }
+    });
+
+    group.updateMatrixWorld(true);
+    const invGroup = group.matrixWorld.clone().invert();
+    const parts = [];
+    group.traverse((c) => {
+      if (!c.isMesh || !c.geometry || c.userData?.nxrDecal) return;
+      c.geometry.computeBoundingBox();
+      const relM = invGroup.clone().multiply(c.matrixWorld);
+      const box = c.geometry.boundingBox.clone().applyMatrix4(relM);
+      const sz = new THREE.Vector3(), ctr = new THREE.Vector3();
+      box.getSize(sz); box.getCenter(ctr);
+      parts.push({ mesh: c, box, ctr, vol: sz.x * sz.y * sz.z });
+    });
+
+    if (parts.length > 1 && parts.length <= 42) {
+      parts.sort((a, b) => b.vol - a.vol);
+      const closestA = new THREE.Vector3(), closestB = new THREE.Vector3(), delta = new THREE.Vector3();
+      for (let i = 1; i < parts.length; i++) {
+        const p = parts[i];
+        let bestDist = Infinity, bestDelta = null;
+        for (let j = 0; j < parts.length; j++) {
+          if (i === j || parts[j].vol < p.vol * 0.5) continue;
+          parts[j].box.clampPoint(p.ctr, closestA);
+          p.box.clampPoint(closestA, closestB);
+          const d = closestA.distanceTo(closestB);
+          if (d < bestDist) {
+            bestDist = d;
+            delta.subVectors(closestA, closestB);
+            bestDelta = delta.clone();
+          }
+        }
+        if (bestDelta && bestDist > 0.0015 && bestDist < 0.024) {
+          const shift = bestDelta.length() + 0.003;
+          bestDelta.normalize().multiplyScalar(shift);
+          if (p.mesh.parent) {
+            const worldShift = bestDelta.clone().applyMatrix4(new THREE.Matrix4().extractRotation(group.matrixWorld));
+            const invParent = new THREE.Matrix4().extractRotation(p.mesh.parent.matrixWorld).invert();
+            worldShift.applyMatrix4(invParent);
+            p.mesh.position.add(worldShift);
+          }
+        }
+      }
+    }
+  }
+
+  function bakeFastCreviceAndHeight(group) {
+    group.updateMatrixWorld(true);
+    const invGroup = group.matrixWorld.clone().invert();
+    const meshes = [], meshBoxes = [];
+
+    group.traverse((c) => {
+      if (c.isMesh && c.geometry && !c.userData?.nxrDecal) {
+        if (!c.geometry.attributes.normal) c.geometry.computeVertexNormals();
+        c.geometry.computeBoundingBox();
+        const boxG = c.geometry.boundingBox.clone();
+        const relM = invGroup.clone().multiply(c.matrixWorld);
+        boxG.applyMatrix4(relM);
+        meshes.push({ mesh: c, relM, boxG });
+        meshBoxes.push(boxG);
+      }
+    });
+    if (!meshes.length) return;
+
+    const minYGroup = meshes.reduce((m, x) => Math.min(m, x.boxG.min.y), Infinity);
+    const maxYGroup = meshes.reduce((m, x) => Math.max(m, x.boxG.max.y), -Infinity);
+    const spanY = Math.max(0.05, maxYGroup - minYGroup);
+
+    const vPos = new THREE.Vector3(), vNorm = new THREE.Vector3(), closest = new THREE.Vector3();
+    const normalMat = new THREE.Matrix3();
+    for (let mi = 0; mi < meshes.length; mi++) {
+      const { mesh, relM } = meshes[mi];
+      const geo = mesh.geometry, posAttr = geo.attributes.position, normAttr = geo.attributes.normal;
+      if (!posAttr) continue;
+      const count = posAttr.count;
+      const crevArr = new Float32Array(count);
+      const botArr = new Float32Array(count);
+      const stride = count > 4500 ? 3 : 1;
+      normalMat.getNormalMatrix(relM);
+
+      for (let i = 0; i < count; i++) {
+        if (stride > 1 && i % stride !== 0) {
+          crevArr[i] = crevArr[i - 1] || 0;
+          botArr[i] = botArr[i - 1] || 0.5;
+          continue;
+        }
+        vPos.fromBufferAttribute(posAttr, i).applyMatrix4(relM);
+        let occ = 0;
+        for (let oi = 0; oi < meshBoxes.length; oi++) {
+          if (oi === mi) continue;
+          meshBoxes[oi].clampPoint(vPos, closest);
+          const d = vPos.distanceTo(closest);
+          if (d < 0.095) occ = Math.max(occ, (1.0 - d / 0.095) * 0.90);
+        }
+        const floorDist = vPos.y - minYGroup;
+        if (floorDist < 0.065) occ = Math.max(occ, (1.0 - Math.max(0, floorDist) / 0.065) * 0.58);
+
+        if (normAttr) {
+          vNorm.fromBufferAttribute(normAttr, i).applyMatrix3(normalMat).normalize();
+          if (vNorm.y < 0) occ = Math.max(occ, Math.min(0.38, -vNorm.y * 0.38));
+        }
+        crevArr[i] = THREE.MathUtils.clamp(occ, 0, 1);
+        botArr[i] = THREE.MathUtils.clamp(floorDist / spanY, 0, 1);
+      }
+      geo.setAttribute('aNxrCrevice', new THREE.BufferAttribute(crevArr, 1));
+      geo.setAttribute('aNxrBottom', new THREE.BufferAttribute(botArr, 1));
+    }
+  }
+
+  // ====================================================================
+  // 6. REAL-TIME VELOCITY MOTION BLUR TRAIL (ZERO COST WHEN STILL!)
+  // ====================================================================
+  const activeTrails = new Map(); // ent -> { g1, g2, mat1, mat2, hist: [] }
+
+  function buildTrailProxyGroup(ent, opacity, tintColor) {
+    const grp = new THREE.Group();
+    grp.userData.nxrDecal = true;
+    const mat = new THREE.MeshBasicMaterial({
+      color: tintColor,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      blending: THREE.NormalBlending
+    });
+    mat.userData.nxrSkip = true;
+
+    let meshCount = 0;
+    ent.group.traverse((c) => {
+      if (meshCount >= 10 || !c.isMesh || !c.geometry || c.userData?.nxrDecal) return;
+      const clone = new THREE.Mesh(c.geometry, mat);
+      clone.raycast = () => {};
+      clone.userData.nxrDecal = true;
+      // Copy local transform relative to ent.group
+      ent.group.updateMatrixWorld(true);
+      const rel = ent.group.matrixWorld.clone().invert().multiply(c.matrixWorld);
+      rel.decompose(clone.position, clone.quaternion, clone.scale);
+      grp.add(clone);
+      meshCount++;
+    });
+
+    grp.visible = false;
+    scene.add(grp);
+    return { grp, mat };
+  }
+
+  function stepEntityMotionBlur(ent, speed, dt) {
+    let entry = activeTrails.get(ent);
+    if (speed < 0.22) {
+      if (entry) {
+        entry.g1.visible = false;
+        entry.g2.visible = false;
+        entry.hist.length = 0;
+      }
+      return;
+    }
+
+    if (!entry) {
+      let avgCol = new THREE.Color(0x94a3b8);
+      ent.group.traverse((c) => {
+        if (c.isMesh && !c.userData?.nxrDecal && c.material?.color) {
+          avgCol = c.material.color.clone();
+        }
+      });
+      const t1 = buildTrailProxyGroup(ent, 0.22, avgCol);
+      const t2 = buildTrailProxyGroup(ent, 0.11, avgCol);
+      entry = { g1: t1.grp, g2: t2.grp, mat1: t1.mat, mat2: t2.mat, hist: [] };
+      activeTrails.set(ent, entry);
+    }
+
+    entry.hist.unshift({
+      pos: ent.group.position.clone(),
+      quat: ent.group.quaternion.clone()
+    });
+    if (entry.hist.length > 6) entry.hist.pop();
+
+    const h1 = entry.hist[Math.min(2, entry.hist.length - 1)];
+    const h2 = entry.hist[Math.min(5, entry.hist.length - 1)];
+    const blurAlpha = THREE.MathUtils.clamp((speed - 0.22) * 0.35, 0.05, 0.30);
+
+    entry.g1.visible = true;
+    entry.g1.position.copy(h1.pos);
+    entry.g1.quaternion.copy(h1.quat);
+    entry.g1.scale.copy(ent.group.scale);
+    entry.mat1.opacity = blurAlpha;
+
+    entry.g2.visible = true;
+    entry.g2.position.copy(h2.pos);
+    entry.g2.quaternion.copy(h2.quat);
+    entry.g2.scale.copy(ent.group.scale);
+    entry.mat2.opacity = blurAlpha * 0.48;
+  }
+
+  function cleanupTrail(ent) {
+    const entry = activeTrails.get(ent);
+    if (!entry) return;
+    if (entry.g1.parent) entry.g1.parent.remove(entry.g1);
+    if (entry.g2.parent) entry.g2.parent.remove(entry.g2);
+    entry.mat1.dispose();
+    entry.mat2.dispose();
+    activeTrails.delete(ent);
+  }
+
+  // ====================================================================
+  // 7. HEAT SHIMMER, CAUSTICS & SOFT CONTACT SHADOWS
+  // ====================================================================
+  const heatMirages = [];
+  function attachLiteHeatShimmerIfHot(ent) {
+    if (!ent || !ent.group || ent.group.getObjectByName('NXR_HeatShimmer')) return;
+    const label = `${ent.name || ''} ${ent.category || ''}`.toLowerCase();
+    if (ent.category !== 'torch' && !/\b(fire|flame|torch|lava|magma|furnace|forge|candle)\b/i.test(label)) return;
+
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      uniforms: { uTime: sharedUniforms.uNxrTime },
+      vertexShader: 'uniform float uTime; varying vec2 vUv; void main(){ vUv=uv; vec3 p=position; p.x+=sin(uTime*10.0+position.y*22.0)*0.012*uv.y; gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.0); }',
+      fragmentShader: 'uniform float uTime; varying vec2 vUv; void main(){ float wave=sin(vUv.y*28.0-uTime*14.0+sin(vUv.x*12.0)*2.0)*0.5+0.5; float fade=sin(vUv.x*3.14159)*(1.0-vUv.y)*smoothstep(0.0,0.25,vUv.y); gl_FragColor=vec4(vec3(1.0,0.65,0.28)*wave,fade*0.14); }'
+    });
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.09, 0.42, 12, 8, true), mat);
+    m.name = 'NXR_HeatShimmer'; m.userData.nxrDecal = true; m.position.set(0, 0.68, 0);
+    ent.group.add(m); heatMirages.push(m);
+  }
+
+  const causticDecals = [];
+  function attachCausticsIfRefractive(ent, hasGlass) {
+    if (!hasGlass && !/\b(water|glass|crystal|pool|ice)\b/i.test(ent.name || '')) return;
+    if (ent.group.getObjectByName('NXR_CausticsProjector')) return;
+
+    const cMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: { uTime: sharedUniforms.uNxrTime },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+      fragmentShader: 'uniform float uTime; varying vec2 vUv; void main(){ float d=length(vUv-0.5)*2.0; float mask=pow(max(0.0,1.0-d),1.8); float c1=sin(vUv.x*24.0+uTime*2.2)*cos(vUv.y*24.0-uTime*1.8); float c2=sin((vUv.x+vUv.y)*30.0-uTime*2.8); float c=pow(clamp(0.5+0.25*(c1+c2),0.0,1.0),4.0); gl_FragColor=vec4(vec3(0.45,0.92,1.0)*c*1.4,mask*clamp(c*1.3,0.0,0.75)); }'
+    });
+    const cMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.88, 0.88), cMat);
+    cMesh.name = 'NXR_CausticsProjector'; cMesh.userData.nxrDecal = true;
+    cMesh.rotation.x = -Math.PI / 2; cMesh.position.set(0, 0.012, 0);
+    ent.group.add(cMesh); causticDecals.push(cMesh);
+  }
+
+  function attachSoftContactShadow(ent) {
+    if (!ent || !ent.group || ent.category === 'world_fx' || ent.category === 'portal' || ent.category === 'board' || ent.category === 'cloth' || ent.isPen) return;
+    if (ent.group.getObjectByName('NXR_ContactShadow')) return;
+
+    ent.group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(ent.group);
+    if (box.isEmpty()) return;
+    const size = new THREE.Vector3(); box.getSize(size);
+    const spanX = Math.max(0.24, Math.min(2.6, size.x * 1.65));
+    const spanZ = Math.max(0.24, Math.min(2.6, size.z * 1.65));
+
+    const sMat = new THREE.MeshBasicMaterial({ map: baked.contactShadowTex, transparent: true, opacity: 0.78, depthWrite: false });
+    sMat.userData.nxrSkip = true;
+    const sMesh = new THREE.Mesh(new THREE.PlaneGeometry(spanX, spanZ), sMat);
+    sMesh.name = 'NXR_ContactShadow'; sMesh.userData.nxrDecal = true;
+    sMesh.rotation.x = -Math.PI / 2; sMesh.position.set(0, 0.0045, 0);
+    ent.group.add(sMesh);
+  }
+
+  // ====================================================================
+  // 8. ENTITY REALISM PROCESSOR
+  // ====================================================================
+  let entitySeedCounter = 1;
+  function enhanceEntityRealism(ent) {
+    if (!cfg.enabled || !ent || !ent.group) return;
+    if (ent.category === 'board' || ent.category === 'portal' || ent.category === 'world_fx' || ent.category === 'cloth' || ent.category === 'asset_image' || ent.category === 'asset_video') return;
+
+    const isGLB = ent.category === 'asset_glb' || ent.category === 'sculpted';
+    if (!isGLB) {
+      bevelAndSealProceduralParts(ent.group);
+    }
+    bakeFastCreviceAndHeight(ent.group);
+
+    if (!ent.group.userData.nxrSeed) ent.group.userData.nxrSeed = (entitySeedCounter++) * 1.37;
+    if (!ent.group.userData.nxrPrevPos) ent.group.userData.nxrPrevPos = ent.group.position.clone();
+    if (!ent.group.userData.nxrVel) ent.group.userData.nxrVel = new THREE.Vector3();
+
+    let hasGlass = false;
+    const objSeed = ent.group.userData.nxrSeed;
+    ent.group.traverse((c) => {
+      if (!c.isMesh || c.userData?.nxrDecal || !c.material) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      const nextMats = mats.map((m) => {
+        const info = detectMaterialInfo(m, c.name, ent.name);
+        if (info.arch === 'glass') hasGlass = true;
+        return upgradeMaterialRealistic(m, info, c.name, ent.name, objSeed, isGLB);
+      });
+      c.material = Array.isArray(c.material) ? nextMats : nextMats[0];
+      c.castShadow = true;
+      c.receiveShadow = true;
+    });
+
+    attachLiteHeatShimmerIfHot(ent);
+    attachCausticsIfRefractive(ent, hasGlass);
+    attachSoftContactShadow(ent);
+  }
+
+  // ====================================================================
+  // 9. HOOKS & PROCEDURAL AI PROMPT
+  // ====================================================================
+  const origCraftMat = APP.craft.mat;
+  APP.craft.mat = function realisticCraftMat(color = 0x38bdf8, opts = {}) {
+    const base = origCraftMat(color, opts);
+    const hint = opts.type || opts.material || '';
+    const info = detectMaterialInfo(base, hint, '');
+    return upgradeMaterialRealistic(base, info, hint, '', Math.random() * 10, false);
+  };
+
+  APP.craft.blendedJoint = function (pA, pB, rA, rB, color, matOpts = {}) {
+    const curve = new THREE.LineCurve3(new THREE.Vector3(...pA), new THREE.Vector3(...pB));
+    const segs = 12, radSegs = 18;
+    const geo = new THREE.TubeGeometry(curve, segs, 1.0, radSegs, false);
+    const pos = geo.attributes.position;
+    const v = new THREE.Vector3(), cPt = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      const ring = Math.floor(i / (radSegs + 1));
+      const t = Math.min(1, ring / segs);
+      curve.getPoint(t, cPt);
+      v.fromBufferAttribute(pos, i).sub(cPt);
+      const r = THREE.MathUtils.lerp(rA, rB, t) * (1.0 + Math.sin(t * Math.PI) * 0.08);
+      v.multiplyScalar(r).add(cPt);
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+    geo.computeVertexNormals();
+    return new THREE.Mesh(geo, APP.craft.mat(color, matOpts));
+  };
+
+  if (APP.visual && typeof APP.visual.applyDissolveShader === 'function' && !APP.visual._nxr3WrappedDissolve) {
+    const origDissolve = APP.visual.applyDissolveShader;
+    APP.visual.applyDissolveShader = function (group, mode, ...rest) {
+      const r = origDissolve.call(this, group, mode, ...rest);
+      if (mode === 'materialize' && group) {
+        setTimeout(() => { if (group.userData?.entity) enhanceEntityRealism(group.userData.entity); }, 1250);
+      }
+      return r;
+    };
+    APP.visual._nxr3WrappedDissolve = true;
+  }
+
+  if (typeof APP.createProcedural === 'function' && !APP._nxr3WrappedCreateProc) {
+    const origCreateProc = APP.createProcedural;
+    APP.createProcedural = function (codeString, opts = {}) {
+      const res = origCreateProc.call(this, codeString, opts);
+      if (res?.ok && res.entity) enhanceEntityRealism(res.entity);
+      return res;
+    };
+    APP._nxr3WrappedCreateProc = true;
+  }
+
+  const REALISM_AI_PROMPT = [
+    '',
+    'REALISTIC SEAMLESS 3D MODELING RULES (NO CARTOONY PRIMITIVES!):',
+    '- NEVER build objects as disconnected spheres, boxes, and cylinders floating with air gaps.',
+    '- ALWAYS join parts with overlapping geometry, flared collars, flanges, `LatheGeometry`, `TubeGeometry`, or `APP.craft.blendedJoint(pA, pB, rA, rB, col)`.',
+    '- Name meshes accurately (`metal_`, `iron_`, `gold_`, `glass_`, `wood_`, `stone_`, `cloth_`, `skin_`, `leaf_`, `fruit_`, `banana_`) so realistic PBR effects apply ONLY to the right material.'
+  ].join('\n');
+
+  function wrapAIChat() {
+    if (!APP.ai || typeof APP.ai.chat !== 'function' || APP.ai._nxr3WrappedChat) return;
+    const origChat = APP.ai.chat;
+    APP.ai.chat = async function (opts = {}) {
+      const nextOpts = Object.assign({}, opts);
+      if (Array.isArray(nextOpts.tools) && nextOpts.tools.some((t) => t && t.name === 'create_procedural_object')) {
+        nextOpts.systemPrompt = String(nextOpts.systemPrompt || '') + REALISM_AI_PROMPT;
+      }
+      return await origChat(nextOpts);
+    };
+    APP.ai._nxr3WrappedChat = true;
+  }
+  wrapAIChat();
+  const unsubMods = APP.on('modules:loaded', wrapAIChat);
+
+  const unsubCreate = APP.on('entity:created', (ent) => enhanceEntityRealism(ent));
+  if (Array.isArray(APP.entities)) {
+    for (const ent of APP.entities) enhanceEntityRealism(ent);
+  }
+
+  // Per-frame lightweight updates: Dynamic Shadow Tracking, Wetness, Contact Shadows & Motion Blur
+  const tmpVel = new THREE.Vector3();
+  function updateRealism(dt, elapsed) {
+    const delta = Math.max(0.004, Math.min(0.05, dt || 0.016));
+    sharedUniforms.uNxrTime.value = elapsed || (performance.now() * 0.001);
+
+    if (!APP.isAR && studioEnvTex && scene.environment !== studioEnvTex) {
+      scene.environment = studioEnvTex;
+    }
+
+    // Keep Directional Shadow Frustum & Floor Shadow Catcher centered around user!
+    const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0);
+    groundShadowCatcher.visible = !APP.isAR;
+    groundShadowCatcher.position.set(hp.x, 0.0035, hp.z);
+    if (APP.dirLight) {
+      APP.dirLight.target.position.set(hp.x, 0, hp.z);
+      APP.dirLight.position.set(hp.x + 2.4, 4.4, hp.z + 2.2);
+      APP.dirLight.target.updateMatrixWorld();
+      sharedUniforms.uNxrLightDir.value.set(2.4, 4.4, 2.2).normalize();
+    }
+
+    const hasRainOrWater = (APP.entities || []).some((e) => e && e.category === 'world_fx' && /rain|water/i.test(e.name || ''));
+    const targetWet = hasRainOrWater ? Math.max(cfg.wetness, 0.85) : cfg.wetness;
+    sharedUniforms.uNxrWetness.value += (targetWet - sharedUniforms.uNxrWetness.value) * Math.min(1, delta * 2.5);
+
+    const ents = APP.entities || [];
+    const aliveSet = new Set(ents);
+    for (const trailedEnt of Array.from(activeTrails.keys())) {
+      if (!aliveSet.has(trailedEnt) || !trailedEnt.group?.parent) cleanupTrail(trailedEnt);
+    }
+
+    for (let i = 0; i < ents.length; i++) {
+      const e = ents[i];
+      if (!e || !e.group || !e.group.parent) continue;
+
+      const cs = e.group.getObjectByName('NXR_ContactShadow');
+      if (cs) {
+        const lift = Math.max(0, e.group.position.y);
+        cs.position.y = -lift + 0.0045;
+        cs.material.opacity = Math.max(0, 0.78 - lift * 0.90);
+        cs.visible = cs.material.opacity > 0.03;
+      }
+
+      if (cfg.motionBlur && e.group.userData.nxrPrevPos) {
+        tmpVel.subVectors(e.group.position, e.group.userData.nxrPrevPos).divideScalar(delta).clampLength(0, 8.0);
+        e.group.userData.nxrPrevPos.copy(e.group.position);
+        const smoothV = e.group.userData.nxrVel;
+        smoothV.lerp(tmpVel, Math.min(1, delta * 22.0));
+        stepEntityMotionBlur(e, smoothV.length(), delta);
+      }
+    }
+  }
+
+  const unsubFrame = APP.onUpdate ? APP.onUpdate(updateRealism) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(updateRealism);
+
+  APP._inst3RealismCleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame();
+    else APP.frameHooks?.delete(updateRealism);
+    if (typeof unsubCreate === 'function') unsubCreate();
+    if (typeof unsubMods === 'function') unsubMods();
+    for (const ent of Array.from(activeTrails.keys())) cleanupTrail(ent);
+    if (groundShadowCatcher.parent) groundShadowCatcher.parent.remove(groundShadowCatcher);
+    groundShadowCatcher.geometry.dispose();
+    groundShadowCatcher.material.dispose();
+    if (bounceLight.parent) bounceLight.parent.remove(bounceLight);
+    if (rimLight.parent) rimLight.parent.remove(rimLight);
+    for (const m of heatMirages) { if (m.parent) m.parent.remove(m); m.material.dispose(); m.geometry.dispose(); }
+    for (const c of causticDecals) { if (c.parent) c.parent.remove(c); c.material.dispose(); c.geometry.dispose(); }
+    baked.detailTexA.dispose();
+    baked.detailTexB.dispose();
+    baked.glassNormalTex.dispose();
+    baked.contactShadowTex.dispose();
+    if (studioEnvTex) studioEnvTex.dispose();
+  };
+
+  APP.realism = {
+    config: cfg,
+    enhanceEntity: enhanceEntityRealism,
+    setWetness(val) {
+      cfg.wetness = THREE.MathUtils.clamp(Number(val), 0, 1);
+      sharedUniforms.uNxrWetness.value = cfg.wetness;
+      return cfg.wetness;
+    },
+    setDustAndDirt(dustVal, dirtVal, forceAll) {
+      if (dustVal !== undefined) { cfg.dust = THREE.MathUtils.clamp(Number(dustVal), 0, 1); sharedUniforms.uNxrDust.value = cfg.dust; }
+      if (dirtVal !== undefined) { cfg.dirt = THREE.MathUtils.clamp(Number(dirtVal), 0, 1); sharedUniforms.uNxrDirt.value = cfg.dirt; }
+      if (forceAll !== undefined) { cfg.forceWeatheringAll = !!forceAll; sharedUniforms.uNxrForceWeather.value = forceAll ? 1.0 : 0.0; }
+      return { dust: cfg.dust, dirt: cfg.dirt };
+    },
+    setWeathering(scratches, smudges, cracks) {
+      if (scratches !== undefined) { cfg.scratches = THREE.MathUtils.clamp(Number(scratches), 0, 1); sharedUniforms.uNxrScratches.value = cfg.scratches; }
+      if (smudges !== undefined) { cfg.smudges = THREE.MathUtils.clamp(Number(smudges), 0, 1); sharedUniforms.uNxrSmudges.value = cfg.smudges; }
+      if (cracks !== undefined) { cfg.cracks = THREE.MathUtils.clamp(Number(cracks), 0, 1); sharedUniforms.uNxrCracks.value = cfg.cracks; }
+      return { scratches: cfg.scratches, smudges: cfg.smudges, cracks: cfg.cracks };
+    },
+    applyMaterialPreset(targetQuery, archetype) {
+      const ent = APP.findEntity ? APP.findEntity(targetQuery || 'latest') : null;
+      if (!ent || !ent.group) return { ok: false, error: 'Target entity not found.' };
+      const seed = ent.group.userData?.nxrSeed || 1.7;
+      const isGLB = ent.category === 'asset_glb';
+      const info = { arch: archetype, ferrous: archetype === 'metal', weathered: archetype === 'stone_wood' || archetype === 'metal' };
+      ent.group.traverse((c) => {
+        if (c.isMesh && !c.userData?.nxrDecal && c.material) {
+          c.material = upgradeMaterialRealistic(c.material, info, c.name, ent.name, seed, isGLB);
+        }
+      });
+      if (archetype === 'glass') attachCausticsIfRefractive(ent, true);
+      return { ok: true, message: `Applied realistic ${archetype} shader to ${ent.name}.` };
+    }
+  };
+
+  APP.registerAbilityHandler?.('realism_master_engine', function (text) {
+    const low = String(text || '').toLowerCase();
+    if (low.includes('wet') || low.includes('رطب')) { APP.realism.setWetness(0.85); APP.ui?.toast?.('Surface Wetness: HIGH'); return { ok: true }; }
+    if (low.includes('dry') || low.includes('جاف')) { APP.realism.setWetness(0.0); APP.ui?.toast?.('Surface Wetness: DRY'); return { ok: true }; }
+    if (low.includes('dusty')) { APP.realism.setDustAndDirt(0.90, 0.80, true); APP.ui?.toast?.('Dust & Dirt: HIGH'); return { ok: true }; }
+    if (low.includes('clean')) { APP.realism.setDustAndDirt(0.0, 0.0, false); APP.realism.setWeathering(0.2, 0.15, 0.0); APP.ui?.toast?.('Surfaces Cleaned'); return { ok: true }; }
+    if (low.includes('crack')) { APP.realism.setWeathering(undefined, undefined, 0.95); APP.ui?.toast?.('Stone/Wood Cracks: HIGH'); return { ok: true }; }
+    if (low.includes('smudge')) { APP.realism.setWeathering(undefined, 0.95, undefined); APP.ui?.toast?.('Glass/Gloss Smudges: HIGH'); return { ok: true }; }
+    if (low.includes('glass') || low.includes('زجاج')) { const r = APP.realism.applyMaterialPreset('latest', 'glass'); APP.ui?.toast?.(r.message || r.error); return r; }
+    if (low.includes('metal') || low.includes('معدن')) { const r = APP.realism.applyMaterialPreset('latest', 'metal'); APP.ui?.toast?.(r.message || r.error); return r; }
+    (APP.entities || []).forEach((e) => enhanceEntityRealism(e));
+    APP.ui?.toast?.('Lite Realism Engine v5 active!');
+    return { ok: true };
+  });
+
+  APP.ui?.toast?.('Lite Realism Engine v5 (instruction3.txt) loaded!', 3000);
+})();
+@end
