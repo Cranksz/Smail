@@ -1,1601 +1,1074 @@
-# ======================================================================
-# instruction4.txt — Models & GLB Manipulation Engine (APP.manip v2)
-#   1. Localized Watertight Voronoi Fracture (Touch-Point Break + Caps)
-#   2. Thermal Sphere Localized Liquid Melting & Drip Pooling
-#   3. Volumetric Softbody (Stretch, Poke, Squeeze + Granular Tear)
-#   4. Dense Smoky Hologram Cloud (Hand-Parting Vortex Dispersion)
-#   5. Magic-Merge ("Venom" Symbiote Surface Liquid Fusion)
-# ======================================================================
+// ======================================================================
+// instruction4.txt — Model & GLB Manipulation Engine (APP.manip v3)
+//   voronoi  : touch/click -> real shattering into irregular shards + chips + dust
+//   melt     : sphere / pointer heats a part -> it sags, flows, drips and pools
+//   softbody : model becomes a lattice-driven body: poke, stretch, squeeze, tear to granules
+//   smoke    : model becomes a volumetric smoke cloud that parts around your hand
+//   merge    : Venom - nearby objects grow liquid bridges, then swallow into one object
+// ======================================================================
 
 @ability: model_manipulation_engine
 @autorun
 @pin: Model FX
-@desc: VR + 2D Manipulation Studio for any 3D/GLB model: Touch-Localized Solid Voronoi Fracture, Melting Sphere, Tearable Softbody, Smoky Hologram Cloud, and Venom Magic-Merge.
+@desc: Touch-driven 3D model FX studio: realistic Voronoi shatter, liquid melt, tearable softbody, smoke cloud, and Venom merge.
 @match: model fx | manipulate | voronoi | shatter | melt | softbody | smoky hologram | smoke cloud | magic merge | venom merge | تفتيت | ذوبان | دمج
 @code:
 (function () {
   const APP = window.APP || (window.APP = {});
   const THREE = APP.THREE;
   if (!THREE || !APP.scene) return;
+  if (typeof APP._inst4Cleanup === 'function') { try { APP._inst4Cleanup(); } catch (_) {} }
 
-  if (typeof APP._inst4Cleanup === 'function') {
-    try { APP._inst4Cleanup(); } catch (_) {}
-  }
-
-  const manipCfg = {
-    mode: 'off', // 'off' | 'voronoi' | 'melt' | 'softbody' | 'smoke' | 'merge'
-    meltRadius: 0.30,
-    tearThreshold: 1.78
+  const FLOOR = 0.006;
+  const CFG = {
+    mode: 'off',            // 'off' | 'voronoi' | 'melt' | 'softbody' | 'smoke' | 'merge'
+    meltRadius: 0.2,
+    meltSpeed: 2.4,
+    softRes: 6,             // lattice nodes per axis
+    tearStretch: 1.7,       // spring breaks when stretched to 1.7x rest length
+    smokeCount: 7000,
+    mergeRange: 0.26,
+    mergeRate: 0.1,
+    venom: new THREE.Color(0x05060a)
+  };
+  const HINTS = {
+    voronoi: 'Touch a model fast (VR) or click it: it shatters where you hit.',
+    melt: 'Move the orange sphere onto a part, or press and drag on it.',
+    softbody: 'Touch or click a model to make it soft. Poke, stretch, squeeze; pull hard to tear.',
+    smoke: 'Touch a model to turn it into smoke, then pass your hand through it.',
+    merge: 'Bring two objects close: they fuse like venom and become one.'
   };
 
-  function isManipulableEntity(e) {
-    if (!e || !e.group?.parent) return false;
+  const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+  const M4 = () => new THREE.Matrix4();
+  const M3 = () => new THREE.Matrix3();
+  const clamp = THREE.MathUtils.clamp;
+  const lerp = THREE.MathUtils.lerp;
+  const randDir = () => V(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+
+  let clockT = 0;
+  let meltTool = null, toolbarEl = null, unsubFrame = null;
+  let pointerDownNow = false, pointerMeltPt = null, pointerSmoke = null, pointerSmokeT = 0, pointerGrab = null;
+  const handPrev = new Map(), handVel = new Map(), cooldown = new Map();
+  const softbodies = new Set(), smokes = new Set(), meltSet = new Set(), dirtyStates = new Set();
+  const deformStates = new WeakMap();
+  const merges = new Map();
+  const drops = [];
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+
+  // ------------------------------------------------------------------
+  // Shared helpers
+  // ------------------------------------------------------------------
+  function isManipulable(e) {
+    if (!e || !e.group || !e.group.parent) return false;
     if (e.isPen || e.isStroke || e.userData?.isManipTool) return false;
     if (['world_fx', 'board', 'portal', 'tool', 'tool_pen', 'smoke_holo'].includes(e.category)) return false;
-    if (e.group.name && (e.group.name.includes('APP_GEENY') || e.group.name.includes('TOOLBAR') || e.group.name.includes('Thermal_Melt') || e.group.name.includes('Venom_'))) return false;
+    const n = e.group.name || '';
+    if (/APP_GEENY|TOOLBAR|Thermal_Melt|Venom_|Tear_Granules|Break_FX/.test(n)) return false;
     return true;
   }
 
-  function resolveTargetEntity(targetArg) {
-    if (targetArg && typeof targetArg === 'object' && targetArg.group) return targetArg;
-    const q = String(targetArg || '').trim();
+  function resolveTarget(arg) {
+    if (arg && typeof arg === 'object' && arg.group) return arg;
+    const q = String(arg || '').trim();
     if (q && q !== 'latest') {
       const found = APP.findEntity?.(q);
-      if (isManipulableEntity(found)) return found;
+      if (isManipulable(found)) return found;
     }
     if (APP.lastEntityId) {
       const last = (APP.entities || []).find((e) => e && e.id === APP.lastEntityId);
-      if (isManipulableEntity(last)) return last;
+      if (isManipulable(last)) return last;
     }
-    const cands = (APP.entities || []).filter(isManipulableEntity);
+    const cands = (APP.entities || []).filter(isManipulable);
     return cands[cands.length - 1] || null;
   }
 
-  // ====================================================================
-  // 1. LOCALIZED WATERTIGHT VORONOI FRACTURE (Touch-Point Break!)
-  // ====================================================================
-  function clipTriangleAgainstPlane(tri, pPoint, pNorm) {
-    // Keep half-space where dot(v - pPoint, pNorm) <= 0
-    const d0 = (tri[0].x - pPoint.x) * pNorm.x + (tri[0].y - pPoint.y) * pNorm.y + (tri[0].z - pPoint.z) * pNorm.z;
-    const d1 = (tri[1].x - pPoint.x) * pNorm.x + (tri[1].y - pPoint.y) * pNorm.y + (tri[1].z - pPoint.z) * pNorm.z;
-    const d2 = (tri[2].x - pPoint.x) * pNorm.x + (tri[2].y - pPoint.y) * pNorm.y + (tri[2].z - pPoint.z) * pNorm.z;
-    const d = [d0, d1, d2];
-    const inIdx = [], outIdx = [];
-    for (let i = 0; i < 3; i++) {
-      if (d[i] <= 1e-5) inIdx.push(i);
-      else outIdx.push(i);
-    }
-    if (inIdx.length === 3) return { tris: [tri], cut: null };
-    if (inIdx.length === 0) return { tris: [], cut: null };
+  function meshesOf(entity) {
+    const out = [];
+    entity.group.traverse((c) => {
+      if (c.isMesh && c.geometry?.attributes?.position && !c.userData?.nxrDecal) out.push(c);
+    });
+    return out;
+  }
 
-    function interp(ia, ib) {
-      const denom = d[ia] - d[ib];
-      const t = Math.abs(denom) > 1e-8 ? THREE.MathUtils.clamp(d[ia] / denom, 0, 1) : 0.5;
-      return new THREE.Vector3().lerpVectors(tri[ia], tri[ib], t);
+  function firstMeshColor(ent) {
+    for (const m of meshesOf(ent)) {
+      const mat = Array.isArray(m.material) ? m.material[0] : m.material;
+      if (mat?.color) return mat.color.clone();
     }
+    return new THREE.Color(0x9aa5b1);
+  }
 
-    if (inIdx.length === 1) {
-      const i0 = inIdx[0], i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
-      const pA = interp(i0, i1), pB = interp(i0, i2);
-      return { tris: [[tri[i0].clone(), pA, pB]], cut: [pA.clone(), pB.clone()] };
+  // Give a mesh its own material copies so color/emissive changes don't leak to other objects.
+  function ownMaterials(mesh) {
+    if (!mesh.userData.__ownMat) {
+      const cl = (m) => (m && m.clone ? m.clone() : m);
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map(cl) : cl(mesh.material);
+      mesh.userData.__ownMat = true;
     }
-    const o0 = outIdx[0], i1 = (o0 + 1) % 3, i2 = (o0 + 2) % 3;
-    const pA = interp(i1, o0), pB = interp(i2, o0);
+    return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  }
+
+  function worldTriangles(entity, maxTris) {
+    entity.group.updateMatrixWorld(true);
+    const tris = [], box = new THREE.Box3();
+    for (const m of meshesOf(entity)) {
+      const p = m.geometry.attributes.position, idx = m.geometry.index;
+      const tc = idx ? idx.count / 3 : p.count / 3;
+      const stride = maxTris && tc > maxTris ? Math.ceil(tc / maxTris) : 1;
+      for (let t = 0; t < tc; t += stride) {
+        const ia = idx ? idx.getX(t * 3) : t * 3;
+        const ib = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+        const ic = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+        const a = V().fromBufferAttribute(p, ia).applyMatrix4(m.matrixWorld);
+        const b = V().fromBufferAttribute(p, ib).applyMatrix4(m.matrixWorld);
+        const c = V().fromBufferAttribute(p, ic).applyMatrix4(m.matrixWorld);
+        tris.push([a, b, c]);
+        box.expandByPoint(a); box.expandByPoint(b); box.expandByPoint(c);
+      }
+    }
+    return { tris, box };
+  }
+
+  function volumeOf(b) {
+    const s = b.getSize(V());
+    return s.x * s.y * s.z;
+  }
+
+  function boxGap(a, b) {
+    const dx = Math.max(0, a.min.x - b.max.x, b.min.x - a.max.x);
+    const dy = Math.max(0, a.min.y - b.max.y, b.min.y - a.max.y);
+    const dz = Math.max(0, a.min.z - b.max.z, b.min.z - a.max.z);
+    return Math.hypot(dx, dy, dz);
+  }
+
+  function touchedEntity(p) {
+    let best = null, bestVol = Infinity;
+    for (const e of APP.entities || []) {
+      if (!isManipulable(e)) continue;
+      const b = new THREE.Box3().setFromObject(e.group).expandByScalar(0.02);
+      if (!b.containsPoint(p)) continue;
+      const v = volumeOf(b);
+      if (v < bestVol) { bestVol = v; best = e; }
+    }
+    return best;
+  }
+
+  function setRay(e) {
+    const el = APP.renderer?.domElement;
+    const r = el ? el.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    ndc.x = ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1;
+    ndc.y = -((e.clientY - r.top) / Math.max(1, r.height)) * 2 + 1;
+    ray.setFromCamera(ndc, APP.camera);
+  }
+
+  function pick(e) {
+    if (!APP.camera) return null;
+    setRay(e);
+    let best = null;
+    for (const ent of APP.entities || []) {
+      if (!isManipulable(ent)) continue;
+      const hit = ray.intersectObject(ent.group, true).find((h) => h.object.isMesh);
+      if (hit && (!best || hit.distance < best.distance)) best = { point: hit.point.clone(), ent, distance: hit.distance };
+    }
+    return best;
+  }
+
+  function buildGeo(tris, origin) {
+    const arr = new Float32Array(tris.length * 9);
+    let k = 0;
+    for (const t of tris) for (const v of t) {
+      arr[k++] = v.x - origin.x; arr[k++] = v.y - origin.y; arr[k++] = v.z - origin.z;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    g.computeVertexNormals();
+    return g;
+  }
+
+  // ------------------------------------------------------------------
+  // 1. VORONOI SHATTER
+  // ------------------------------------------------------------------
+  // Keeps the half-space where dot(x - p, n) <= 0 and returns cut segments on the plane.
+  function clipTri(tri, p, n) {
+    const d = [0, 1, 2].map((i) => (tri[i].x - p.x) * n.x + (tri[i].y - p.y) * n.y + (tri[i].z - p.z) * n.z);
+    const inside = [], outside = [];
+    for (let i = 0; i < 3; i++) (d[i] <= 1e-6 ? inside : outside).push(i);
+    if (!outside.length) return { tris: [tri], cut: null };
+    if (!inside.length) return { tris: [], cut: null };
+    const at = (a, b) => {
+      const den = d[a] - d[b];
+      const t = Math.abs(den) > 1e-9 ? clamp(d[a] / den, 0, 1) : 0.5;
+      return V().lerpVectors(tri[a], tri[b], t);
+    };
+    if (inside.length === 1) {
+      const i0 = inside[0], i1 = (i0 + 1) % 3, i2 = (i0 + 2) % 3;
+      const pA = at(i0, i1), pB = at(i0, i2);
+      return { tris: [[tri[i0].clone(), pA, pB]], cut: [pA, pB] };
+    }
+    const o = outside[0], i1 = (o + 1) % 3, i2 = (o + 2) % 3;
+    const pA = at(i1, o), pB = at(i2, o);
     return {
-      tris: [
-        [tri[i1].clone(), tri[i2].clone(), pB],
-        [tri[i1].clone(), pB.clone(), pA]
-      ],
-      cut: [pA.clone(), pB.clone()]
+      tris: [[tri[i1].clone(), tri[i2].clone(), pB], [tri[i1].clone(), pB.clone(), pA]],
+      cut: [pA, pB]
     };
   }
 
-  function spawnFractureDustAndDebris(center, size, baseCol) {
-    const dustGroup = new THREE.Group();
-    dustGroup.name = 'Voronoi_Dust_FX';
-
-    const COUNT = 170;
-    const pos = new Float32Array(COUNT * 3);
-    const vel = Array.from({ length: COUNT }, () => new THREE.Vector3());
-    const life = new Float32Array(COUNT);
-    const isDust = new Float32Array(COUNT);
-    const spread = Math.max(0.08, Math.min(0.28, Math.max(size.x, size.y, size.z) * 0.35));
-
-    for (let i = 0; i < COUNT; i++) {
-      pos[i * 3] = center.x + (Math.random() - 0.5) * spread;
-      pos[i * 3 + 1] = Math.max(0.03, center.y + (Math.random() - 0.5) * spread);
-      pos[i * 3 + 2] = center.z + (Math.random() - 0.5) * spread;
-      const d = i < 50;
-      isDust[i] = d ? 1.0 : 0.0;
-      const spd = d ? 0.45 : 1.55;
-      vel[i].set((Math.random() - 0.5) * spd, (d ? 0.22 : 0.65) + Math.random() * spd * 0.6, (Math.random() - 0.5) * spd);
-      life[i] = d ? (1.0 + Math.random() * 0.7) : (0.65 + Math.random() * 0.55);
+  function spawnBreakFX(origin, scale, col) {
+    const N = 110;
+    const pos = new Float32Array(N * 3), life = new Float32Array(N), maxL = new Float32Array(N);
+    const kind = new Float32Array(N), size = new Float32Array(N), vel = [];
+    for (let i = 0; i < N; i++) {
+      const dust = i < 70;
+      kind[i] = dust ? 1 : 0;
+      pos[i * 3] = origin.x + (Math.random() - 0.5) * scale * 0.4;
+      pos[i * 3 + 1] = Math.max(FLOOR, origin.y + (Math.random() - 0.5) * scale * 0.4);
+      pos[i * 3 + 2] = origin.z + (Math.random() - 0.5) * scale * 0.4;
+      const dir = randDir();
+      vel.push(dust
+        ? dir.multiplyScalar(0.18 + Math.random() * 0.25).add(V(0, 0.12, 0))
+        : dir.multiplyScalar(0.8 + Math.random() * 1.4).add(V(0, 0.5, 0)));
+      maxL[i] = life[i] = dust ? 1.2 + Math.random() * 0.9 : 0.7 + Math.random() * 0.6;
+      size[i] = dust ? 36 + Math.random() * 40 : 5 + Math.random() * 7;
     }
-
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('aLife', new THREE.BufferAttribute(life, 1));
-    geo.setAttribute('aDust', new THREE.BufferAttribute(isDust, 1));
-
-    const pts = new THREE.Points(geo, new THREE.ShaderMaterial({
+    geo.setAttribute('aMax', new THREE.BufferAttribute(maxL, 1));
+    geo.setAttribute('aKind', new THREE.BufferAttribute(kind, 1));
+    geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    const base = col ? col.clone() : new THREE.Color(0x9aa5b1);
+    const mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false,
-      uniforms: { uCol: { value: baseCol.clone().lerp(new THREE.Color(0x94a3b8), 0.45) }, uPx: { value: window.devicePixelRatio || 1 } },
-      vertexShader: 'attribute float aLife; attribute float aDust; uniform float uPx; varying float vLife; varying float vDust; void main(){ vLife=aLife; vDust=aDust; vec4 mv=modelViewMatrix*vec4(position,1.0); float sz=aDust>0.5 ? mix(46.0, 18.0, clamp(aLife*0.5,0.0,1.0)) : 7.5; gl_PointSize=aLife>0.01?clamp((sz*uPx)/max(0.3,-mv.z), 1.5, 28.0):0.0; gl_Position=projectionMatrix*mv; }',
-      fragmentShader: 'uniform vec3 uCol; varying float vLife; varying float vDust; void main(){ float d=length(gl_PointCoord-0.5)*2.0; if(d>1.0)discard; float a=vDust>0.5 ? (1.0-d*d)*clamp(vLife*0.28,0.0,0.28) : (1.0-d)*clamp(vLife,0.0,1.0); gl_FragColor=vec4(uCol, a); }'
-    }));
+      uniforms: {
+        uPx: { value: window.devicePixelRatio || 1 },
+        uDust: { value: base.clone().lerp(new THREE.Color(0xcbd5e1), 0.55) },
+        uChip: { value: base.clone().multiplyScalar(0.6) }
+      },
+      vertexShader: [
+        'attribute float aLife; attribute float aMax; attribute float aKind; attribute float aSize; uniform float uPx;',
+        'varying float vK; varying float vT;',
+        'void main(){ vK=aKind; vT=clamp(aLife/max(aMax,0.001),0.0,1.0); vec4 mv=modelViewMatrix*vec4(position,1.0);',
+        '  float grow = aKind>0.5 ? (1.0 + (1.0-vT)*1.6) : 1.0;',
+        '  gl_PointSize = aLife>0.0 ? clamp(aSize*grow*uPx/max(0.3,-mv.z), 1.0, 64.0) : 0.0;',
+        '  gl_Position = projectionMatrix*mv; }'
+      ].join('\n'),
+      fragmentShader: [
+        'uniform vec3 uDust; uniform vec3 uChip; varying float vK; varying float vT;',
+        'void main(){ vec2 c=gl_PointCoord-0.5; float r=length(c)*2.0; if(r>1.0) discard;',
+        '  if(vK>0.5){ gl_FragColor=vec4(uDust,(1.0-r*r)*vT*0.32); }',
+        '  else { gl_FragColor=vec4(uChip,(1.0-smoothstep(0.7,1.0,r))*vT); } }'
+      ].join('\n')
+    });
+    const pts = new THREE.Points(geo, mat);
     pts.frustumCulled = false;
-    dustGroup.add(pts);
-    APP.scene.add(dustGroup);
-
-    const fxEnt = APP.registerEntity(dustGroup, {
-      name: 'Fracture Dust', category: 'world_fx', grabbable: false, physics: { enabled: false },
+    const grp = new THREE.Group();
+    grp.name = 'Break_FX';
+    grp.add(pts);
+    APP.scene.add(grp);
+    let done = false;
+    const ent = APP.registerEntity(grp, {
+      name: 'Break FX', category: 'world_fx', grabbable: false, physics: { enabled: false },
       onUpdate: (dt) => {
-        const delta = Math.min(0.04, dt || 0.016);
-        let alive = false;
-        for (let i = 0; i < COUNT; i++) {
-          if (life[i] <= 0) { pos[i * 3 + 1] = -99; continue; }
-          alive = true; life[i] -= delta;
-          if (isDust[i] > 0.5) { vel[i].multiplyScalar(0.95); vel[i].y += 0.14 * delta; }
-          else vel[i].y -= 8.8 * delta;
-          pos[i * 3] += vel[i].x * delta; pos[i * 3 + 1] += vel[i].y * delta; pos[i * 3 + 2] += vel[i].z * delta;
-          if (isDust[i] < 0.5 && pos[i * 3 + 1] < 0.01) { pos[i * 3 + 1] = 0.01; vel[i].y *= -0.35; vel[i].x *= 0.6; vel[i].z *= 0.6; }
+        if (done) return;
+        const d = Math.min(0.04, Math.max(0.004, dt || 0.016));
+        let any = false;
+        for (let i = 0; i < N; i++) {
+          if (life[i] <= 0) continue;
+          any = true;
+          life[i] -= d;
+          const v = vel[i];
+          if (kind[i] > 0.5) { v.multiplyScalar(Math.exp(-2.2 * d)); v.y += 0.05 * d; }
+          else v.y -= 9.8 * d;
+          pos[i * 3] += v.x * d; pos[i * 3 + 1] += v.y * d; pos[i * 3 + 2] += v.z * d;
+          if (kind[i] < 0.5 && pos[i * 3 + 1] < FLOOR) {
+            pos[i * 3 + 1] = FLOOR; v.y *= -0.3; v.x *= 0.6; v.z *= 0.6;
+          }
         }
-        geo.attributes.position.needsUpdate = true; geo.attributes.aLife.needsUpdate = true;
-        if (!alive) APP.removeEntity?.(fxEnt, false);
+        geo.attributes.position.needsUpdate = true;
+        geo.attributes.aLife.needsUpdate = true;
+        if (!any) {
+          done = true;
+          geo.dispose(); mat.dispose();
+          APP.removeEntity?.(ent, false);
+        }
       }
     });
   }
 
-  function fractureEntity(targetArg, impactWorldPt) {
-    const target = resolveTargetEntity(targetArg);
-    if (!target) return { ok: false, error: 'No target object found to fracture.' };
+  function fractureEntity(targetArg, hitPt) {
+    const target = resolveTarget(targetArg);
+    if (!target) return { ok: false, error: 'No target object found to break.' };
+    const { tris, box } = worldTriangles(target, 9000);
+    if (tris.length < 4) return { ok: false, error: 'Not enough geometry to break.' };
+    const size = box.getSize(V()), center = box.getCenter(V());
+    const maxDim = Math.max(size.x, size.y, size.z, 0.02);
+    const impact = hitPt ? V().copy(hitPt) : center.clone();
 
-    target.group.updateMatrixWorld(true);
-    const worldBox = new THREE.Box3().setFromObject(target.group);
-    if (worldBox.isEmpty()) return { ok: false, error: 'Target has no mesh geometry.' };
-    const size = new THREE.Vector3(), center = new THREE.Vector3();
-    worldBox.getSize(size); worldBox.getCenter(center);
-    const maxDim = Math.max(size.x, size.y, size.z);
-
-    const impactPt = impactWorldPt ? impactWorldPt.clone() : center.clone().add(new THREE.Vector3(size.x * 0.2, size.y * 0.2, 0));
-    const impactDir = impactPt.clone().sub(center);
-    if (impactDir.lengthSq() < 1e-5) impactDir.set(0, 1, 0);
-    impactDir.normalize();
-
-    const rawOuterTris = [];
-    const rawInnerTris = [];
-    let sampleMat = null;
-    const v0 = new THREE.Vector3(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
-
-    target.group.traverse((c) => {
-      if (!c.isMesh || !c.geometry?.attributes?.position || c.userData?.nxrDecal) return;
-      const geo = c.geometry, pos = geo.attributes.position, idx = geo.index;
-      if (!c.userData?.isInnerCap && !sampleMat) sampleMat = Array.isArray(c.material) ? c.material[0] : c.material;
-      const triCount = idx ? Math.floor(idx.count / 3) : Math.floor(pos.count / 3);
-      const stride = Math.max(1, Math.ceil(triCount / 2200));
-      const dest = c.userData?.isInnerCap ? rawInnerTris : rawOuterTris;
-      for (let t = 0; t < triCount; t += stride) {
-        const i0 = idx ? idx.getX(t * 3) : t * 3, i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1, i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
-        v0.fromBufferAttribute(pos, i0).applyMatrix4(c.matrixWorld);
-        v1.fromBufferAttribute(pos, i1).applyMatrix4(c.matrixWorld);
-        v2.fromBufferAttribute(pos, i2).applyMatrix4(c.matrixWorld);
-        dest.push([v0.clone(), v1.clone(), v2.clone()]);
-      }
-    });
-
-    if (rawOuterTris.length + rawInnerTris.length < 4) return { ok: false, error: 'Not enough geometry to fracture.' };
-
-    // Localized Radial Voronoi Seeds:
-    // Seed 0 = Main Unbroken Body (only if object is large enough to chip a piece off!)
-    // Seeds 1..10 = Irregular tiny-to-medium shards clustered around exact touch point!
-    const isSmallPiece = maxDim < 0.22;
+    // Irregular seeds: a dense cluster around the hit (small chips) plus sparse outer seeds (big pieces).
+    const want = maxDim < 0.2 ? 5 + Math.floor(Math.random() * 3) : 8 + Math.floor(Math.random() * 5);
     const seeds = [];
-    if (!isSmallPiece) {
-      seeds.push(center.clone().addScaledVector(impactDir, -maxDim * 0.24)); // Index 0 = Remaining Solid Body
+    for (let a = 0; a < 600 && seeds.length < want; a++) {
+      const near = Math.random() < 0.55;
+      const p = near
+        ? impact.clone().addScaledVector(randDir(), Math.pow(Math.random(), 0.8) * maxDim * 0.45)
+        : V(center.x + (Math.random() - 0.5) * size.x * 1.1,
+            center.y + (Math.random() - 0.5) * size.y * 1.1,
+            center.z + (Math.random() - 0.5) * size.z * 1.1);
+      p.clamp(box.min, box.max);
+      const minSep = maxDim * (near ? 0.12 + Math.random() * 0.1 : 0.22 + Math.random() * 0.2);
+      if (seeds.every((s) => s.distanceTo(p) > minSep)) seeds.push(p);
     }
-    const localShardCount = isSmallPiece ? 7 : 10;
-    for (let i = 0; i < localShardCount; i++) {
-      // Exponential radial distribution: tiny chips near touch point, larger wedges further out!
-      const rad = Math.pow((i + 0.5) / localShardCount, 1.45) * maxDim * (isSmallPiece ? 0.55 : 0.42);
-      const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
-      const sPt = impactPt.clone().addScaledVector(dir, rad);
-      sPt.x = THREE.MathUtils.clamp(sPt.x, worldBox.min.x + 0.01, worldBox.max.x - 0.01);
-      sPt.y = THREE.MathUtils.clamp(sPt.y, worldBox.min.y + 0.01, worldBox.max.y - 0.01);
-      sPt.z = THREE.MathUtils.clamp(sPt.z, worldBox.min.z + 0.01, worldBox.max.z - 0.01);
-      seeds.push(sPt);
-    }
+    if (seeds.length < 2) return { ok: false, error: 'Could not plan the fracture.' };
 
-    const baseCol = sampleMat?.color ? sampleMat.color.clone() : new THREE.Color(0x94a3b8);
-    const outerMat = sampleMat ? sampleMat.clone() : new THREE.MeshStandardMaterial({ color: baseCol, roughness: 0.55 });
+    const srcMesh = meshesOf(target)[0];
+    const srcMat = srcMesh ? (Array.isArray(srcMesh.material) ? srcMesh.material[0] : srcMesh.material) : null;
+    const baseCol = srcMat?.color ? srcMat.color.clone() : new THREE.Color(0x9aa5b1);
+    const outerMat = srcMat ? srcMat.clone() : new THREE.MeshStandardMaterial({ color: baseCol, roughness: 0.5 });
     outerMat.side = THREE.DoubleSide;
-    const innerMat = new THREE.MeshStandardMaterial({
-      color: baseCol.clone().multiplyScalar(0.55),
-      roughness: 0.94, metalness: 0.05, side: THREE.DoubleSide
+    outerMat.map = null; // shards carry no UVs, so drop the texture and keep the color
+    const capMat = new THREE.MeshStandardMaterial({
+      color: baseCol.clone().multiplyScalar(0.45), roughness: 0.95, metalness: 0, side: THREE.DoubleSide
     });
 
-    const shardsSpawned = [];
-    const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), triNorm = new THREE.Vector3();
-
-    for (let si = 0; si < seeds.length; si++) {
-      const sA = seeds[si];
-      const isMainRemainder = !isSmallPiece && si === 0;
-      const neighbors = seeds
-        .map((sB, idx) => ({ idx, sB, d: sA.distanceToSquared(sB) }))
-        .filter((n) => n.idx !== si && n.d > 1e-6)
-        .sort((a, b) => a.d - b.d)
-        .slice(0, isMainRemainder ? 10 : 7);
-
-      let outerTris = rawOuterTris.slice();
-      let innerTris = rawInnerTris.slice();
-
-      for (let ni = 0; ni < neighbors.length; ni++) {
-        const sB = neighbors[ni].sB;
-        const pMid = new THREE.Vector3().addVectors(sA, sB).multiplyScalar(0.5);
-        const pNorm = new THREE.Vector3().subVectors(sB, sA).normalize();
-
-        const nextOuter = [], nextInner = [], cutSegments = [];
-
-        for (let ti = 0; ti < outerTris.length; ti++) {
-          const res = clipTriangleAgainstPlane(outerTris[ti], pMid, pNorm);
-          for (let k = 0; k < res.tris.length; k++) nextOuter.push(res.tris[k]);
-          if (res.cut) cutSegments.push(res.cut);
-        }
-        for (let ti = 0; ti < innerTris.length; ti++) {
-          const res = clipTriangleAgainstPlane(innerTris[ti], pMid, pNorm);
-          for (let k = 0; k < res.tris.length; k++) nextInner.push(res.tris[k]);
-          if (res.cut) cutSegments.push(res.cut);
-        }
-
-        outerTris = nextOuter;
-        innerTris = nextInner;
-        if (!outerTris.length && !innerTris.length) break;
-
-        // Build WATERTIGHT Cap Triangles on this plane and add into innerTris so subsequent planes clip them too!
-        if (cutSegments.length >= 3) {
-          const capCenter = new THREE.Vector3();
-          for (let k = 0; k < cutSegments.length; k++) capCenter.add(cutSegments[k][0]).add(cutSegments[k][1]);
-          capCenter.divideScalar(cutSegments.length * 2);
-
-          for (let k = 0; k < cutSegments.length; k++) {
-            const a = cutSegments[k][0], b = cutSegments[k][1];
-            if (a.distanceToSquared(b) < 1e-8) continue;
-            e1.subVectors(b, a);
-            e2.subVectors(capCenter, a);
-            triNorm.crossVectors(e1, e2);
-            if (triNorm.dot(pNorm) < 0) innerTris.push([capCenter.clone(), b.clone(), a.clone()]);
-            else innerTris.push([capCenter.clone(), a.clone(), b.clone()]);
+    const shards = [];
+    for (let i = 0; i < seeds.length; i++) {
+      const s = seeds[i];
+      let outer = tris, inner = [];
+      for (let j = 0; j < seeds.length && (outer.length || inner.length); j++) {
+        if (j === i) continue;
+        const o = seeds[j];
+        const n = V().subVectors(o, s).normalize();
+        const p = V().addVectors(s, o).multiplyScalar(0.5);
+        const nO = [], nI = [], cut = [];
+        for (const t of outer) { const r = clipTri(t, p, n); for (const x of r.tris) nO.push(x); if (r.cut) cut.push(r.cut); }
+        for (const t of inner) { const r = clipTri(t, p, n); for (const x of r.tris) nI.push(x); if (r.cut) cut.push(r.cut); }
+        outer = nO; inner = nI;
+        // Close the cell with cap triangles on this bisector plane (they get clipped by later planes too).
+        if (cut.length >= 2) {
+          const capC = V();
+          for (const seg of cut) capC.add(seg[0]).add(seg[1]);
+          capC.divideScalar(cut.length * 2);
+          for (const seg of cut) {
+            const a = seg[0], b = seg[1];
+            if (a.distanceToSquared(b) < 1e-10) continue;
+            const nrm = V().crossVectors(V().subVectors(b, a), V().subVectors(capC, a));
+            if (nrm.dot(n) >= 0) inner.push([capC.clone(), a.clone(), b.clone()]);
+            else inner.push([capC.clone(), b.clone(), a.clone()]);
           }
         }
       }
+      if (outer.length < 2) continue;
 
-      if (outerTris.length + innerTris.length < 2) continue;
+      const c = V();
+      let cnt = 0;
+      for (const t of outer) for (const v of t) { c.add(v); cnt++; }
+      c.divideScalar(cnt);
 
-      const shardCenter = new THREE.Vector3();
-      let vCnt = 0;
-      for (const t of outerTris) { shardCenter.add(t[0]).add(t[1]).add(t[2]); vCnt += 3; }
-      for (const t of innerTris) { shardCenter.add(t[0]).add(t[1]).add(t[2]); vCnt += 3; }
-      shardCenter.divideScalar(vCnt);
-
-      const shardGroup = new THREE.Group();
-      shardGroup.name = isMainRemainder ? target.name : `${target.name}_Shard_${si}`;
-      shardGroup.position.copy(shardCenter);
-
-      function buildGeoFromTris(tris) {
-        const arr = new Float32Array(tris.length * 9);
-        for (let i = 0; i < tris.length; i++) {
-          for (let k = 0; k < 3; k++) {
-            const idx = (i * 3 + k) * 3;
-            arr[idx] = tris[i][k].x - shardCenter.x;
-            arr[idx + 1] = tris[i][k].y - shardCenter.y;
-            arr[idx + 2] = tris[i][k].z - shardCenter.z;
-          }
-        }
-        const g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-        g.computeVertexNormals();
-        return g;
+      const grp = new THREE.Group();
+      grp.name = `${target.name}_Shard_${i}`;
+      grp.position.copy(c);
+      const om = new THREE.Mesh(buildGeo(outer, c), outerMat);
+      om.castShadow = true; om.receiveShadow = true;
+      grp.add(om);
+      if (inner.length) {
+        const im = new THREE.Mesh(buildGeo(inner, c), capMat);
+        im.castShadow = true;
+        grp.add(im);
       }
+      APP.scene.add(grp);
 
-      if (outerTris.length) {
-        const outerMesh = new THREE.Mesh(buildGeoFromTris(outerTris), outerMat);
-        outerMesh.castShadow = true; outerMesh.receiveShadow = true;
-        shardGroup.add(outerMesh);
-      }
-      if (innerTris.length) {
-        const innerMesh = new THREE.Mesh(buildGeoFromTris(innerTris), innerMat);
-        innerMesh.castShadow = true; innerMesh.receiveShadow = true;
-        innerMesh.userData.isInnerCap = true;
-        shardGroup.add(innerMesh);
-      }
-
-      APP.scene.add(shardGroup);
-
-      if (isMainRemainder) {
-        // Keep untouched main body intact right in place so user can break more parts off!
-        const remEnt = APP.registerEntity(shardGroup, {
-          name: target.name,
-          category: target.category || 'object',
-          grabbable: true,
-          holdable: true,
-          hasGravity: !!target.hasGravity,
-          physics: { gravity: !!target.hasGravity, enabled: true }
-        });
-        APP.lastEntityId = remEnt.id;
-      } else {
-        const outDir = shardCenter.clone().sub(impactPt);
-        if (outDir.lengthSq() < 0.001) outDir.set(Math.random() - 0.5, 0.5, Math.random() - 0.5);
-        outDir.normalize();
-        const impulseSpd = 0.75 + Math.random() * 1.45;
-        const angVel = new THREE.Vector3((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6);
-
-        const sEnt = APP.registerEntity(shardGroup, {
-          name: shardGroup.name,
-          category: 'shard',
-          grabbable: true,
-          holdable: true,
-          hasGravity: true,
-          restitution: 0.30,
-          velocity: new THREE.Vector3(outDir.x * impulseSpd, Math.abs(outDir.y) * impulseSpd + 0.55, outDir.z * impulseSpd),
-          physics: { gravity: true, enabled: true, bounce: 0.30 },
-          onUpdate: (dt) => {
-            if (sEnt.isHeld || sEnt.heldBy) return;
-            const delta = Math.min(0.04, dt || 0.016);
-            if (shardGroup.position.y > 0.05) {
-              shardGroup.rotation.x += angVel.x * delta;
-              shardGroup.rotation.y += angVel.y * delta;
-              shardGroup.rotation.z += angVel.z * delta;
-            } else angVel.multiplyScalar(0.82);
-          }
-        });
-        shardsSpawned.push(sEnt);
-      }
-    }
-
-    spawnFractureDustAndDebris(impactPt, size, baseCol);
-    APP.removeEntity?.(target, false);
-    return { ok: true, shards: shardsSpawned.length, message: `Broke ${shardsSpawned.length} Voronoi shard(s) at touch point!` };
-  }
-
-  // ====================================================================
-  // 2. THERMAL MELT SPHERE (Safe Vertex Sag, Drips & Floor Pooling)
-  // ====================================================================
-  let meltSphereEnt = null;
-  let meltSphereActive = false;
-  const meltStates = new WeakMap();
-  const moltenDrops = [];
-
-  function spawnMoltenDrop(worldPt, col) {
-    if (moltenDrops.length > 40) return;
-    const m = new THREE.Mesh(
-      new THREE.SphereGeometry(0.012, 8, 8),
-      new THREE.MeshStandardMaterial({ color: col, emissive: 0xff4500, emissiveIntensity: 0.9, roughness: 0.1 })
-    );
-    m.position.copy(worldPt);
-    APP.scene.add(m);
-    moltenDrops.push({ mesh: m, vy: -0.2, life: 1.6 });
-  }
-
-  function prepareMeltMesh(mesh) {
-    if (meltStates.has(mesh)) return meltStates.get(mesh);
-    const geo = mesh.geometry;
-    if (!geo?.attributes?.position) return null;
-    const pos = geo.attributes.position;
-    const heat = new Float32Array(pos.count);
-    const seed = new Float32Array(pos.count);
-    for (let i = 0; i < pos.count; i++) seed[i] = Math.random();
-
-    // Clone material safely without fragile shader injection
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    mesh.material = mats.map((m) => (m && typeof m.clone === 'function' ? m.clone() : m));
-    if (!Array.isArray(mesh.material)) mesh.material = mesh.material[0];
-
-    const st = { heat, seed, dropTimer: 0 };
-    meltStates.set(mesh, st);
-    return st;
-  }
-
-  function applyMeltAtWorldPoint(worldPt, radius, dt) {
-    const tmpW = new THREE.Vector3(), tmpL = new THREE.Vector3(), mBox = new THREE.Box3(), cW = new THREE.Vector3();
-    for (const ent of APP.entities || []) {
-      if (!isManipulableEntity(ent)) continue;
-      ent.group.updateMatrixWorld(true);
-      ent.group.traverse((mesh) => {
-        if (!mesh.isMesh || !mesh.geometry?.attributes?.position || mesh.userData?.nxrDecal) return;
-        mBox.setFromObject(mesh).expandByScalar(radius);
-        if (!mBox.containsPoint(worldPt)) return;
-        mBox.getCenter(cW);
-
-        const st = prepareMeltMesh(mesh);
-        if (!st) return;
-        const pos = mesh.geometry.attributes.position;
-        let dirty = false, maxHeat = 0, lowestHotPt = null;
-
-        for (let i = 0; i < pos.count; i++) {
-          const i3 = i * 3;
-          tmpL.set(pos.array[i3], pos.array[i3 + 1], pos.array[i3 + 2]);
-          tmpW.copy(tmpL).applyMatrix4(mesh.matrixWorld);
-          const d = tmpW.distanceTo(worldPt);
-          if (d < radius) {
-            const prox = 1.0 - d / radius;
-            st.heat[i] = Math.min(1.0, st.heat[i] + prox * prox * dt * 2.2);
-          }
-          const h = st.heat[i];
-          if (h > maxHeat) maxHeat = h;
-          if (h > 0.03) {
-            const lobe = 1.0 + 0.45 * Math.sin(tmpW.x * 28.0 + tmpW.z * 26.0 + st.seed[i] * 6.28);
-            const drop = h * h * 0.48 * lobe * dt;
-            if (tmpW.y > 0.015) {
-              tmpW.y = Math.max(0.010, tmpW.y - drop);
-              // Viscous lateral bulge while sagging
-              const dx = tmpW.x - worldPt.x, dz = tmpW.z - worldPt.z;
-              tmpW.x += dx * 0.22 * h * dt;
-              tmpW.z += dz * 0.22 * h * dt;
-              if (!lowestHotPt || tmpW.y < lowestHotPt.y) lowestHotPt = tmpW.clone();
-            } else {
-              // Spread puddle onto floor
-              const dx = tmpW.x - cW.x, dz = tmpW.z - cW.z;
-              const distXZ = Math.hypot(dx, dz) || 0.01;
-              tmpW.x += (dx / distXZ) * 0.28 * h * dt;
-              tmpW.z += (dz / distXZ) * 0.28 * h * dt;
-              tmpW.y = 0.008;
-            }
-            tmpL.copy(tmpW);
-            mesh.worldToLocal(tmpL);
-            pos.array[i3] = tmpL.x; pos.array[i3 + 1] = tmpL.y; pos.array[i3 + 2] = tmpL.z;
-            dirty = true;
-          }
-        }
-        if (dirty) {
-          pos.needsUpdate = true;
-          mesh.geometry.computeVertexNormals();
-          mesh.geometry.computeBoundingBox();
-          mesh.geometry.computeBoundingSphere();
-
-          const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-          if (mat && 'roughness' in mat) mat.roughness = THREE.MathUtils.lerp(mat.roughness, 0.08, maxHeat * 0.1);
-          if (mat && mat.emissive) {
-            mat.emissive.lerp(new THREE.Color(0xff4500), maxHeat * 0.08);
-            mat.emissiveIntensity = Math.min(0.65, (mat.emissiveIntensity || 0) + maxHeat * 0.05);
-          }
-
-          st.dropTimer += dt;
-          if (lowestHotPt && lowestHotPt.y > 0.08 && st.dropTimer > 0.14) {
-            st.dropTimer = 0;
-            spawnMoltenDrop(lowestHotPt, mat?.color || 0xff6622);
-          }
+      const out = V().subVectors(c, impact);
+      if (out.lengthSq() < 1e-6) out.copy(randDir());
+      out.normalize();
+      const speed = 0.4 + Math.random() * 1.1;
+      const velocity = out.multiplyScalar(speed).add(V(0, 0.3 + Math.random() * 0.5, 0));
+      const spin = V((Math.random() - 0.5) * 7, (Math.random() - 0.5) * 7, (Math.random() - 0.5) * 7);
+      let ent = null;
+      ent = APP.registerEntity(grp, {
+        name: grp.name, category: 'shard', grabbable: true, holdable: true, hasGravity: true,
+        restitution: 0.28, velocity,
+        physics: { gravity: true, enabled: true, bounce: 0.28 },
+        onUpdate: (dt) => {
+          if (ent?.isHeld || ent?.heldBy) return;
+          const d = Math.min(0.04, dt || 0.016);
+          if (grp.position.y > 0.04) {
+            grp.rotation.x += spin.x * d; grp.rotation.y += spin.y * d; grp.rotation.z += spin.z * d;
+          } else spin.multiplyScalar(0.85);
         }
       });
+      shards.push(ent);
     }
+    if (!shards.length) return { ok: false, error: 'Fracture produced no pieces.' };
+
+    spawnBreakFX(impact, maxDim, baseCol);
+    APP.removeEntity?.(target, false);
+    APP.lastEntityId = shards[shards.length - 1].id;
+    return { ok: true, shards: shards.length, message: `Broke into ${shards.length} pieces!` };
   }
 
-  function toggleMeltSphere(on) {
-    meltSphereActive = on !== undefined ? !!on : !meltSphereActive;
-    if (meltSphereActive) {
-      if (!meltSphereEnt || !meltSphereEnt.group?.parent) {
-        const g = new THREE.Group();
-        g.name = 'Thermal_Melt_Sphere';
-        const core = new THREE.Mesh(
-          new THREE.SphereGeometry(0.068, 24, 20),
-          new THREE.MeshStandardMaterial({ color: 0xff5500, emissive: 0xff3b00, emissiveIntensity: 2.2, roughness: 0.2 })
-        );
-        const halo = new THREE.Mesh(
-          new THREE.SphereGeometry(manipCfg.meltRadius * 0.45, 20, 16),
-          new THREE.MeshBasicMaterial({ color: 0xff8833, transparent: true, opacity: 0.18, wireframe: true })
-        );
-        const light = new THREE.PointLight(0xff5500, 1.8, 2.5);
-        g.add(core, halo, light);
-        const sp = APP.getSpawnPosition ? APP.getSpawnPosition(0.68, true) : new THREE.Vector3(0, 1.25, -0.68);
-        g.position.set(sp.x, 1.25, sp.z);
-        APP.scene.add(g);
-        meltSphereEnt = APP.registerEntity(g, {
-          name: 'Thermal Melt Sphere', category: 'tool', grabbable: true, holdable: true,
-          physics: { enabled: false }, userData: { isManipTool: true },
-          onUpdate: (dt) => {
-            if (!meltSphereActive) { g.visible = false; return; }
-            g.visible = true;
-            halo.rotation.y += dt * 1.6;
-            applyMeltAtWorldPoint(g.position, manipCfg.meltRadius, Math.min(0.04, dt || 0.016));
-          }
-        });
-        meltSphereEnt.userData = { isManipTool: true };
-      } else meltSphereEnt.group.visible = true;
-      return { ok: true, message: 'Thermal Melt Sphere active! Move it near any model part to melt it.' };
-    } else if (meltSphereEnt?.group) {
-      meltSphereEnt.group.visible = false;
-      return { ok: true, message: 'Melt Sphere hidden.' };
+  // ------------------------------------------------------------------
+  // Granular chunks (used by softbody tearing)
+  // ------------------------------------------------------------------
+  function spawnGranules(worldPt, col, count) {
+    const geo = new THREE.DodecahedronGeometry(0.012, 0);
+    const mat = new THREE.MeshStandardMaterial({ color: col.clone(), roughness: 0.85 });
+    const inst = new THREE.InstancedMesh(geo, mat, count);
+    const grp = new THREE.Group();
+    grp.name = 'Tear_Granules';
+    grp.add(inst);
+    APP.scene.add(grp);
+    const p = [], v = [], s = [];
+    for (let i = 0; i < count; i++) {
+      p.push(worldPt.clone().add(randDir().multiplyScalar(0.02)));
+      v.push(randDir().multiplyScalar(0.8 + Math.random() * 1.2).add(V(0, 0.6, 0)));
+      s.push(0.6 + Math.random());
     }
-  }
-
-  // ====================================================================
-  // 3. VOLUMETRIC SOFTBODY (Crash-Proof Index Collapsing Tear + Granules)
-  // ====================================================================
-  const activeSoftbodies = new Set();
-
-  function spawnGranularTearClumps(worldPt, baseCol, count = 36) {
-    const grp = new THREE.Group(); grp.name = 'Softbody_Tear_Granules';
-    const inst = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.016, 0), new THREE.MeshStandardMaterial({ color: baseCol, roughness: 0.82 }), count);
-    const pos = Array.from({ length: count }, () => worldPt.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.06, (Math.random() - 0.5) * 0.06, (Math.random() - 0.5) * 0.06)));
-    const vel = Array.from({ length: count }, () => new THREE.Vector3((Math.random() - 0.5) * 1.1, 0.3 + Math.random() * 0.9, (Math.random() - 0.5) * 1.1));
-    const scale = Array.from({ length: count }, () => 0.6 + Math.random() * 0.9);
-    const dummy = new THREE.Object3D(); grp.add(inst); APP.scene.add(grp);
-    let age = 0;
-    const fxEnt = APP.registerEntity(grp, {
+    const dummy = new THREE.Object3D();
+    let age = 0, done = false;
+    const ent = APP.registerEntity(grp, {
       name: 'Tear Granules', category: 'world_fx', grabbable: false, physics: { enabled: false },
       onUpdate: (dt) => {
-        const delta = Math.min(0.04, dt || 0.016); age += delta;
+        if (done) return;
+        const d = Math.min(0.04, Math.max(0.004, dt || 0.016));
+        age += d;
         for (let i = 0; i < count; i++) {
-          vel[i].y -= 8.4 * delta; pos[i].addScaledVector(vel[i], delta);
-          if (pos[i].y < 0.015) { pos[i].y = 0.015; vel[i].y *= -0.25; vel[i].x *= 0.65; vel[i].z *= 0.65; }
-          dummy.position.copy(pos[i]); dummy.rotation.set(i + age * 2, i * 0.7, 0); dummy.scale.setScalar(scale[i]); dummy.updateMatrix();
+          v[i].y -= 9.8 * d;
+          p[i].addScaledVector(v[i], d);
+          if (p[i].y < FLOOR) { p[i].y = FLOOR; v[i].y *= -0.3; v[i].x *= 0.6; v[i].z *= 0.6; }
+          dummy.position.copy(p[i]);
+          dummy.rotation.set(age * 3 + i, i * 0.7, 0);
+          dummy.scale.setScalar(s[i]);
+          dummy.updateMatrix();
           inst.setMatrixAt(i, dummy.matrix);
         }
         inst.instanceMatrix.needsUpdate = true;
-        if (age > 7.5) APP.removeEntity?.(fxEnt, false);
+        if (age > 6) {
+          done = true;
+          geo.dispose(); mat.dispose();
+          APP.removeEntity?.(ent, false);
+        }
       }
     });
   }
 
-  function convertToSoftbody(targetArg) {
-    const target = resolveTargetEntity(targetArg);
-    if (!target) return { ok: false, error: 'No target object found for Softbody.' };
-    if (target.userData?.isSoftbody) return { ok: true, message: `${target.name} is already a Softbody!` };
-
-    target.group.updateMatrixWorld(true);
-    const localBox = new THREE.Box3(), invRoot = target.group.matrixWorld.clone().invert(), meshes = [];
-    let sampleCol = new THREE.Color(0x94a3b8);
-
-    target.group.traverse((c) => {
-      if (!c.isMesh || !c.geometry?.attributes?.position || c.userData?.nxrDecal) return;
-      if (c.material?.color) sampleCol.copy(c.material.color);
-      c.geometry.computeBoundingBox();
-      localBox.union(c.geometry.boundingBox.clone().applyMatrix4(invRoot.clone().multiply(c.matrixWorld)));
-      meshes.push(c);
-    });
-    if (!meshes.length || localBox.isEmpty()) return { ok: false, error: 'Target has no deformable geometry.' };
-
-    const min = localBox.min, max = localBox.max;
-    const span = new THREE.Vector3().subVectors(max, min).max(new THREE.Vector3(0.08, 0.08, 0.08));
-    const NX = 5, NY = 5, NZ = 5, N = NX * NY * NZ;
-    const cur = [], prev = [], tornNode = new Uint8Array(N);
-
-    for (let z = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++) {
-      const pLocal = new THREE.Vector3(min.x + (x / (NX - 1)) * span.x, min.y + (y / (NY - 1)) * span.y, min.z + (z / (NZ - 1)) * span.z);
-      const pWorld = pLocal.applyMatrix4(target.group.matrixWorld);
-      cur.push(pWorld.clone()); prev.push(pWorld.clone());
+  // ------------------------------------------------------------------
+  // 2. MELT (heat -> sag -> flow -> pool -> drip)
+  // ------------------------------------------------------------------
+  function deformState(mesh) {
+    let st = deformStates.get(mesh);
+    if (st) return st;
+    const p = mesh.geometry.attributes.position, n = p.count;
+    const rest = new Float32Array(n * 3), seed = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      rest[i * 3] = p.getX(i); rest[i * 3 + 1] = p.getY(i); rest[i * 3 + 2] = p.getZ(i);
+      seed[i] = Math.random() * 6.28;
     }
+    const mats = ownMaterials(mesh);
+    st = {
+      mesh, n, rest, seed,
+      disp: new Float32Array(n * 3), vel: new Float32Array(n * 3), heat: new Float32Array(n),
+      mats, origRough: mats[0]?.roughness ?? 0.5,
+      dirty: false, tick: 0, calm: 0, timer: 0, lastSrc: null, inSet: false
+    };
+    deformStates.set(mesh, st);
+    return st;
+  }
+
+  function flushDeform() {
+    for (const st of dirtyStates) {
+      const mesh = st.mesh;
+      dirtyStates.delete(st);
+      if (!mesh.parent) continue;
+      const p = mesh.geometry.attributes.position;
+      for (let i = 0; i < st.n; i++) {
+        const i3 = i * 3;
+        p.setXYZ(i, st.rest[i3] + st.disp[i3], st.rest[i3 + 1] + st.disp[i3 + 1], st.rest[i3 + 2] + st.disp[i3 + 2]);
+      }
+      p.needsUpdate = true;
+      st.tick++;
+      if (st.tick % 2 === 0) mesh.geometry.computeVertexNormals();
+      mesh.geometry.computeBoundingSphere();
+      mesh.geometry.computeBoundingBox();
+      st.dirty = false;
+    }
+  }
+
+  function spawnDrop(p, col) {
+    if (drops.length > 45) return;
+    const c = new THREE.Color(0xff6a1a);
+    if (col && col.isColor) c.lerp(col, 0.35);
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.007 + Math.random() * 0.006, 10, 8),
+      new THREE.MeshStandardMaterial({ color: c, emissive: 0xff4a10, emissiveIntensity: 0.8, roughness: 0.12, transparent: true })
+    );
+    m.position.copy(p);
+    APP.scene.add(m);
+    drops.push({ m, vy: -0.05, splat: false, life: 2.5 });
+  }
+
+  function stepDrops(dt) {
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const d = drops[i];
+      if (!d.splat) {
+        d.vy -= 9.8 * dt;
+        d.m.position.y += d.vy * dt;
+        if (d.m.position.y <= FLOOR) {
+          d.m.position.y = FLOOR;
+          d.m.scale.set(2.6, 0.2, 2.6);
+          d.splat = true;
+        }
+      }
+      d.life -= dt;
+      if (d.splat) d.m.material.opacity = clamp(d.life / 0.8, 0, 1);
+      if (d.life <= 0) {
+        APP.scene.remove(d.m);
+        d.m.geometry.dispose();
+        d.m.material.dispose();
+        drops.splice(i, 1);
+      }
+    }
+  }
+
+  function stepMeltMesh(st, srcsWorld, dt) {
+    const mesh = st.mesh, M = mesh.matrixWorld;
+    const invM = M4().copy(M).invert();
+    const down = V(0, -1, 0).transformDirection(invM);            // gravity in mesh-local space
+    const sc = V().setFromMatrixScale(M);
+    const sY = Math.max(1e-4, sc.y), sAvg = Math.max(1e-4, (sc.x + sc.y + sc.z) / 3);
+    const srcs = srcsWorld.map((s) => V().copy(s).applyMatrix4(invM));
+    const r = CFG.meltRadius / sAvg;
+    if (srcs.length) st.lastSrc = srcs[0];
+    const cen = st.lastSrc;
+    const { rest, disp, vel, heat, seed, n } = st;
+    let maxH = 0, energy = 0, lowest = null, lowestY = Infinity;
+    const w = V();
+
+    for (let i = 0; i < n; i++) {
+      const i3 = i * 3;
+      const lx = rest[i3] + disp[i3], ly = rest[i3 + 1] + disp[i3 + 1], lz = rest[i3 + 2] + disp[i3 + 2];
+
+      for (const s of srcs) {
+        const d = Math.hypot(lx - s.x, ly - s.y, lz - s.z);
+        if (d < r) { const k = 1 - d / r; heat[i] = Math.min(1, heat[i] + k * k * dt * CFG.meltSpeed); }
+      }
+
+      const h = heat[i];
+      if (h > 0.003) {
+        // gravity pulls the molten part down
+        vel[i3] += down.x * 3.0 * h * dt;
+        vel[i3 + 1] += down.y * 3.0 * h * dt;
+        vel[i3 + 2] += down.z * 3.0 * h * dt;
+        // lateral flow away from the heat source
+        if (cen) {
+          const rx = lx - cen.x, ry = ly - cen.y, rz = lz - cen.z, rl = Math.hypot(rx, ry, rz) || 1;
+          const f = 0.35 * h * dt;
+          vel[i3] += (rx / rl) * f; vel[i3 + 1] += (ry / rl) * f * 0.4; vel[i3 + 2] += (rz / rl) * f;
+        }
+        // wobble gives the liquid distortion
+        const wv = clockT * 5 + seed[i] + lx * 11;
+        vel[i3] += Math.sin(wv) * 0.18 * h * dt;
+        vel[i3 + 2] += Math.cos(wv * 1.13) * 0.18 * h * dt;
+        // viscosity: hot parts flow more freely
+        const damp = Math.exp(-(1.2 + 1.4 * (1 - h)) * dt);
+        vel[i3] *= damp; vel[i3 + 1] *= damp; vel[i3 + 2] *= damp;
+        disp[i3] += vel[i3] * dt; disp[i3 + 1] += vel[i3 + 1] * dt; disp[i3 + 2] += vel[i3 + 2] * dt;
+
+        // floor: molten material pools and spreads instead of passing through
+        w.set(rest[i3] + disp[i3], rest[i3 + 1] + disp[i3 + 1], rest[i3 + 2] + disp[i3 + 2]).applyMatrix4(M);
+        if (w.y < FLOOR) {
+          disp[i3 + 1] += (FLOOR - w.y) / sY;
+          vel[i3 + 1] = 0; vel[i3] *= 0.85; vel[i3 + 2] *= 0.85;
+        } else if (w.y < lowestY) {
+          lowestY = w.y; lowest = w.clone();
+        }
+        const mag = Math.hypot(disp[i3], disp[i3 + 1], disp[i3 + 2]);
+        if (mag > 0.35) { const k = 0.35 / mag; disp[i3] *= k; disp[i3 + 1] *= k; disp[i3 + 2] *= k; }
+        if (h > maxH) maxH = h;
+      }
+      energy += Math.abs(vel[i3]) + Math.abs(vel[i3 + 1]) + Math.abs(vel[i3 + 2]);
+    }
+
+    if (maxH > 0.003) {
+      st.dirty = true;
+      dirtyStates.add(st);
+      for (const mat of st.mats) {
+        if (mat.emissive) { mat.emissive.setRGB(maxH * 0.85, maxH * 0.22, maxH * 0.03); mat.emissiveIntensity = 1; }
+        if ('roughness' in mat) mat.roughness = lerp(st.origRough, 0.12, maxH);
+      }
+      st.timer += dt;
+      if (lowest && lowestY > 0.1 && st.timer > 0.22) {
+        st.timer = 0;
+        spawnDrop(lowest, st.mats[0]?.color);
+      }
+    }
+    st.calm = energy / Math.max(1, n) < 0.0015 ? st.calm + dt : 0;
+  }
+
+  function stepMeltAll(dt, srcs) {
+    const box = new THREE.Box3();
+    if (srcs.length) {
+      for (const e of APP.entities || []) {
+        if (!isManipulable(e) || e === meltTool) continue;
+        e.group.updateMatrixWorld(true);
+        for (const mesh of meshesOf(e)) {
+          if (deformStates.get(mesh)?.inSet) continue;
+          box.setFromObject(mesh).expandByScalar(CFG.meltRadius);
+          if (srcs.some((s) => box.containsPoint(s))) {
+            const st = deformState(mesh);
+            st.inSet = true; st.calm = 0;
+            meltSet.add(st);
+          }
+        }
+      }
+    }
+    for (const st of [...meltSet]) {
+      if (!st.mesh.parent) { st.inSet = false; meltSet.delete(st); continue; }
+      st.mesh.updateWorldMatrix(true, false);
+      box.setFromObject(st.mesh).expandByScalar(CFG.meltRadius);
+      const near = srcs.filter((s) => box.containsPoint(s));
+      stepMeltMesh(st, near, dt);
+      if (st.calm > 3) { st.inSet = false; meltSet.delete(st); }
+    }
+  }
+
+  function ensureMeltTool(on) {
+    if (on) {
+      if (!meltTool || !meltTool.group?.parent) {
+        const g = new THREE.Group();
+        g.name = 'Thermal_Melt_Sphere';
+        const core = new THREE.Mesh(
+          new THREE.SphereGeometry(0.06, 24, 18),
+          new THREE.MeshStandardMaterial({ color: 0xff5a1a, emissive: 0xff3b00, emissiveIntensity: 2.0, roughness: 0.25 })
+        );
+        const halo = new THREE.Mesh(
+          new THREE.SphereGeometry(CFG.meltRadius, 24, 16),
+          new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0.1, depthWrite: false, wireframe: true })
+        );
+        const light = new THREE.PointLight(0xff5a1a, 1.4, 1.6);
+        g.add(core, halo, light);
+        const sp = APP.getSpawnPosition ? APP.getSpawnPosition(0.6, true) : V(0, 1.2, -0.6);
+        g.position.copy(sp);
+        APP.scene.add(g);
+        meltTool = APP.registerEntity(g, {
+          name: 'Thermal Melt Sphere', category: 'tool', grabbable: true, holdable: true,
+          physics: { enabled: false }, userData: { isManipTool: true },
+          onUpdate: (dt) => { halo.rotation.y += dt * 1.2; }
+        });
+        meltTool.userData = { isManipTool: true };
+      }
+      meltTool.group.visible = true;
+    } else if (meltTool?.group) {
+      meltTool.group.visible = false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 3. SOFTBODY (lattice-driven, pokeable, stretchable, tearable)
+  // ------------------------------------------------------------------
+  function makeSoftbody(targetArg) {
+    const target = resolveTarget(targetArg);
+    if (!target) return { ok: false, error: 'No target object found for Softbody.' };
+    if (target.userData?.isSoftbody) return { ok: true, id: target.id, message: `${target.name} is already soft.` };
+    const gW = target.group;
+    gW.updateMatrixWorld(true);
+    const meshes = meshesOf(target);
+    if (!meshes.length) return { ok: false, error: 'Target has no deformable geometry.' };
+
+    const invG0 = M4().copy(gW.matrixWorld).invert();
+    const bmin = V(Infinity, Infinity, Infinity), bmax = V(-Infinity, -Infinity, -Infinity);
+    const parts = meshes.map((m) => {
+      const rel = M4().multiplyMatrices(invG0, m.matrixWorld);   // mesh-local -> group-local, constant
+      const p = m.geometry.attributes.position, count = p.count;
+      const localRest = new Float32Array(count * 3), rootRest = new Float32Array(count * 3);
+      const tmp = V();
+      for (let i = 0; i < count; i++) {
+        localRest[i * 3] = p.getX(i); localRest[i * 3 + 1] = p.getY(i); localRest[i * 3 + 2] = p.getZ(i);
+        tmp.set(localRest[i * 3], localRest[i * 3 + 1], localRest[i * 3 + 2]).applyMatrix4(rel);
+        rootRest[i * 3] = tmp.x; rootRest[i * 3 + 1] = tmp.y; rootRest[i * 3 + 2] = tmp.z;
+        bmin.min(tmp); bmax.max(tmp);
+      }
+      const src = m.geometry.index ? m.geometry.index.array : null;
+      const triCount = src ? src.length / 3 : count / 3;
+      const origIdx = new Uint32Array(triCount * 3);
+      for (let k = 0; k < triCount * 3; k++) origIdx[k] = src ? src[k] : k;
+      return {
+        mesh: m, count, triCount, localRest, rootRest, origIdx,
+        relInv3: M3().setFromMatrix4(M4().copy(rel).invert())
+      };
+    });
+
+    const N = CFG.softRes, NN = N * N * N;
+    const span = V().subVectors(bmax, bmin).max(V(0.05, 0.05, 0.05));
+    const ni = (x, y, z) => (z * N + y) * N + x;
+    const rest = new Float32Array(NN * 3), cur = new Float32Array(NN * 3), prev = new Float32Array(NN * 3);
+    const torn = new Uint8Array(NN);
+    for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const i = ni(x, y, z) * 3;
+      rest[i] = bmin.x + (x / (N - 1)) * span.x;
+      rest[i + 1] = bmin.y + (y / (N - 1)) * span.y;
+      rest[i + 2] = bmin.z + (z / (N - 1)) * span.z;
+    }
+    cur.set(rest); prev.set(rest);
+    const spacing = Math.max(span.x, span.y, span.z) / (N - 1);
 
     const springs = [];
-    function nodeIdx(x, y, z) { return (z * NY + y) * NX + x; }
-    function addSp(a, b, stiff) { const d = cur[a].distanceTo(cur[b]); if (d > 1e-5) springs.push({ a, b, rest: d, tearDist: d * manipCfg.tearThreshold, stiff, broken: false }); }
-    for (let z = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++) {
-      const i = nodeIdx(x, y, z);
-      if (x < NX - 1) addSp(i, nodeIdx(x + 1, y, z), 0.72);
-      if (y < NY - 1) addSp(i, nodeIdx(x, y + 1, z), 0.72);
-      if (z < NZ - 1) addSp(i, nodeIdx(x, y, z + 1), 0.72);
-      if (x < NX - 1 && y < NY - 1) { addSp(i, nodeIdx(x + 1, y + 1, z), 0.45); addSp(nodeIdx(x + 1, y, z), nodeIdx(x, y + 1, z), 0.45); }
-      if (y < NY - 1 && z < NZ - 1) { addSp(i, nodeIdx(x, y + 1, z + 1), 0.45); addSp(nodeIdx(x, y + 1, z), nodeIdx(x, y, z + 1), 0.45); }
-      if (x < NX - 1 && z < NZ - 1) { addSp(i, nodeIdx(x + 1, y, z + 1), 0.45); addSp(nodeIdx(x + 1, y, z), nodeIdx(x, y, z + 1), 0.45); }
+    const addS = (a, b, k) => {
+      const A = a * 3, B = b * 3;
+      const d = Math.hypot(rest[A] - rest[B], rest[A + 1] - rest[B + 1], rest[A + 2] - rest[B + 2]);
+      if (d > 1e-6) springs.push({ a, b, rest: d, tear: d * CFG.tearStretch, k, broken: false });
+    };
+    for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const a = ni(x, y, z);
+      if (x < N - 1) addS(a, ni(x + 1, y, z), 0.85);
+      if (y < N - 1) addS(a, ni(x, y + 1, z), 0.85);
+      if (z < N - 1) addS(a, ni(x, y, z + 1), 0.85);
+      if (x < N - 1 && y < N - 1) { addS(a, ni(x + 1, y + 1, z), 0.4); addS(ni(x + 1, y, z), ni(x, y + 1, z), 0.4); }
+      if (y < N - 1 && z < N - 1) { addS(a, ni(x, y + 1, z + 1), 0.4); addS(ni(x, y + 1, z), ni(x, y, z + 1), 0.4); }
+      if (x < N - 1 && z < N - 1) { addS(a, ni(x + 1, y, z + 1), 0.4); addS(ni(x + 1, y, z), ni(x, y, z + 1), 0.4); }
     }
 
-    const meshBindings = [], tmpP = new THREE.Vector3();
-    for (const m of meshes) {
-      // Ensure indexed geometry so torn faces can be cleanly skipped without custom shader injection
-      if (!m.geometry.index) {
-        const count = m.geometry.attributes.position.count;
-        const idxArr = new Uint32Array(count);
-        for (let i = 0; i < count; i++) idxArr[i] = i;
-        m.geometry.setIndex(new THREE.BufferAttribute(idxArr, 1));
+    // Lattice cell lookup for a root-space point.
+    const cellOf = (px, py, pz) => {
+      const fx = clamp((px - bmin.x) / span.x * (N - 1), 0, N - 1);
+      const fy = clamp((py - bmin.y) / span.y * (N - 1), 0, N - 1);
+      const fz = clamp((pz - bmin.z) / span.z * (N - 1), 0, N - 1);
+      const ix = Math.min(N - 2, Math.floor(fx)), iy = Math.min(N - 2, Math.floor(fy)), iz = Math.min(N - 2, Math.floor(fz));
+      return { ix, iy, iz, tx: fx - ix, ty: fy - iy, tz: fz - iz };
+    };
+    for (const p of parts) {
+      p.bIdx = new Int16Array(p.count * 3);
+      p.bT = new Float32Array(p.count * 3);
+      for (let i = 0; i < p.count; i++) {
+        const c = cellOf(p.rootRest[i * 3], p.rootRest[i * 3 + 1], p.rootRest[i * 3 + 2]);
+        p.bIdx[i * 3] = c.ix; p.bIdx[i * 3 + 1] = c.iy; p.bIdx[i * 3 + 2] = c.iz;
+        p.bT[i * 3] = c.tx; p.bT[i * 3 + 1] = c.ty; p.bT[i * 3 + 2] = c.tz;
       }
-      const origIndex = m.geometry.index.array.slice();
-      const pos = m.geometry.attributes.position;
-      const relMat = invRoot.clone().multiply(m.matrixWorld);
-      const binds = [];
-      for (let i = 0; i < pos.count; i++) {
-        tmpP.fromBufferAttribute(pos, i).applyMatrix4(relMat);
-        const fx = THREE.MathUtils.clamp(((tmpP.x - min.x) / span.x) * (NX - 1), 0, NX - 1.0001);
-        const fy = THREE.MathUtils.clamp(((tmpP.y - min.y) / span.y) * (NY - 1), 0, NY - 1.0001);
-        const fz = THREE.MathUtils.clamp(((tmpP.z - min.z) / span.z) * (NZ - 1), 0, NZ - 1.0001);
-        const ix = Math.floor(fx), iy = Math.floor(fy), iz = Math.floor(fz);
-        binds.push({ ix, iy, iz, tx: fx - ix, ty: fy - iy, tz: fz - iz });
+      p.triCell = new Int32Array(p.triCount);
+      for (let t = 0; t < p.triCount; t++) {
+        let cx = 0, cy = 0, cz = 0;
+        for (let k = 0; k < 3; k++) {
+          const id = p.origIdx[t * 3 + k];
+          cx += p.rootRest[id * 3]; cy += p.rootRest[id * 3 + 1]; cz += p.rootRest[id * 3 + 2];
+        }
+        const c = cellOf(cx / 3, cy / 3, cz / 3);
+        p.triCell[t] = (c.iz * (N - 1) + c.iy) * (N - 1) + c.ix;
       }
-      const mats = Array.isArray(m.material) ? m.material : [m.material];
-      mats.forEach((mt) => { if (mt) mt.side = THREE.DoubleSide; });
-      meshBindings.push({ mesh: m, relInv: new THREE.Matrix4(), binds, origIndex });
     }
 
-    target.group.position.set(0, 0, 0); target.group.rotation.set(0, 0, 0); target.group.scale.set(1, 1, 1);
-    target.group.updateMatrixWorld(true);
-    for (const mb of meshBindings) mb.relInv.copy(mb.mesh.matrixWorld).invert();
-
-    target.userData = target.userData || {}; target.userData.isSoftbody = true;
-    target.grabbable = false; if (target.physics) target.physics.enabled = false;
-
-    const grabbedByHand = new Map();
-    const tmpDelta = new THREE.Vector3(), tmpW = new THREE.Vector3(), tmpL = new THREE.Vector3();
-    const c000 = new THREE.Vector3(), c100 = new THREE.Vector3(), c010 = new THREE.Vector3(), c110 = new THREE.Vector3();
-    const c001 = new THREE.Vector3(), c101 = new THREE.Vector3(), c011 = new THREE.Vector3(), c111 = new THREE.Vector3();
-
-    const sbRecord = {
-      entity: target,
-      applyPointerPull: (worldPt, worldVel, isDown) => {
-        if (!isDown) return;
-        for (let i = 0; i < N; i++) {
-          const d = cur[i].distanceTo(worldPt);
-          if (d < 0.22) cur[i].addScaledVector(worldVel, (1.0 - d / 0.22) * 1.25);
-        }
-      },
-      step: (dt) => {
-        if (!target.group?.parent) { activeSoftbodies.delete(sbRecord); return; }
-        const safeDt = Math.min(0.025, Math.max(0.004, dt || 0.016));
-        const grav = -7.2 * safeDt * safeDt;
-
-        for (const [hk, h] of Object.entries(APP.hands || {})) {
-          if (!h || !h.active) { grabbedByHand.delete(hk); continue; }
-          const tip = h.isHand ? h.fingerTips?.index : h.pos;
-          if (!tip) continue;
-          const pinching = !!(h.pinching || h.trigger || h.gripping);
-          if (pinching) {
-            if (!grabbedByHand.has(hk)) {
-              const caught = [];
-              for (let i = 0; i < N; i++) if (cur[i].distanceTo(tip) < 0.18) caught.push({ idx: i, off: cur[i].clone().sub(tip) });
-              if (caught.length) grabbedByHand.set(hk, caught);
-            } else {
-              for (const c of grabbedByHand.get(hk)) { cur[c.idx].lerp(tmpW.copy(tip).add(c.off), 0.78); prev[c.idx].copy(cur[c.idx]); }
-            }
-          } else {
-            grabbedByHand.delete(hk);
-            for (let i = 0; i < N; i++) {
-              tmpDelta.subVectors(cur[i], tip); const d = tmpDelta.length();
-              if (d < 0.11 && d > 1e-4) cur[i].addScaledVector(tmpDelta.normalize(), 0.11 - d);
-            }
-          }
-        }
-
-        for (let i = 0; i < N; i++) {
-          const p = cur[i], pr = prev[i];
-          const vx = (p.x - pr.x) * 0.975, vy = (p.y - pr.y) * 0.975, vz = (p.z - pr.z) * 0.975;
-          pr.copy(p); p.x += vx; p.y += vy + grav; p.z += vz;
-          if (p.y < 0.02) { p.y = 0.02; pr.x = THREE.MathUtils.lerp(pr.x, p.x, 0.25); pr.z = THREE.MathUtils.lerp(pr.z, p.z, 0.25); }
-        }
-
-        let toreHere = null, newTear = false;
-        for (let iter = 0; iter < 5; iter++) {
-          for (let i = 0; i < springs.length; i++) {
-            const s = springs[i]; if (s.broken) continue;
-            const pa = cur[s.a], pb = cur[s.b]; tmpDelta.subVectors(pb, pa); const d = tmpDelta.length();
-            if (d < 1e-6) continue;
-            if (iter === 0 && d > s.tearDist) {
-              s.broken = true; tornNode[s.a] = 1; tornNode[s.b] = 1; newTear = true;
-              if (!toreHere) toreHere = pa.clone().add(pb).multiplyScalar(0.5);
-              continue;
-            }
-            const diff = ((d - s.rest) / d) * s.stiff;
-            pa.addScaledVector(tmpDelta, diff * 0.5); pb.addScaledVector(tmpDelta, -diff * 0.5);
-          }
-        }
-
-        if (toreHere) {
-          spawnGranularTearClumps(toreHere, sampleCol, 34);
-          APP.ui?.toast?.('Softbody tore into granular chunks!', 1800);
-        }
-
-        for (const mb of meshBindings) {
-          if (newTear) {
-            // Rebuild index buffer excluding faces whose lattice cells tore
-            const idxA = mb.mesh.geometry.index.array;
-            let ptr = 0;
-            for (let t = 0; t < mb.origIndex.length; t += 3) {
-              const i0 = mb.origIndex[t], i1 = mb.origIndex[t + 1], i2 = mb.origIndex[t + 2];
-              const b0 = mb.binds[i0];
-              if (b0 && tornNode[nodeIdx(b0.ix, b0.iy, b0.iz)] && tornNode[nodeIdx(b0.ix + 1, b0.iy + 1, b0.iz + 1)]) continue;
-              idxA[ptr++] = i0; idxA[ptr++] = i1; idxA[ptr++] = i2;
-            }
-            mb.mesh.geometry.index.needsUpdate = true;
-            mb.mesh.geometry.setDrawRange(0, ptr);
-          }
-
-          const pos = mb.mesh.geometry.attributes.position;
-          for (let i = 0; i < mb.binds.length; i++) {
-            const b = mb.binds[i];
-            const i000 = nodeIdx(b.ix, b.iy, b.iz), i100 = nodeIdx(b.ix + 1, b.iy, b.iz);
-            const i010 = nodeIdx(b.ix, b.iy + 1, b.iz), i110 = nodeIdx(b.ix + 1, b.iy + 1, b.iz);
-            const i001 = nodeIdx(b.ix, b.iy, b.iz + 1), i101 = nodeIdx(b.ix + 1, b.iy, b.iz + 1);
-            const i011 = nodeIdx(b.ix, b.iy + 1, b.iz + 1), i111 = nodeIdx(b.ix + 1, b.iy + 1, b.iz + 1);
-
-            c000.copy(cur[i000]).lerp(cur[i100], b.tx); c010.copy(cur[i010]).lerp(cur[i110], b.tx);
-            c001.copy(cur[i001]).lerp(cur[i101], b.tx); c011.copy(cur[i011]).lerp(cur[i111], b.tx);
-            c100.copy(c000).lerp(c010, b.ty); c101.copy(c001).lerp(c011, b.ty);
-            tmpW.copy(c100).lerp(c101, b.tz);
-            tmpL.copy(tmpW).applyMatrix4(mb.relInv);
-            pos.setXYZ(i, tmpL.x, tmpL.y, tmpL.z);
-          }
-          pos.needsUpdate = true;
-          mb.mesh.geometry.computeVertexNormals();
-          mb.mesh.geometry.computeBoundingBox();
-          mb.mesh.geometry.computeBoundingSphere();
-        }
+    const rebuildIndex = (p) => {
+      const out = new Uint32Array(p.triCount * 3);
+      let k = 0;
+      for (let t = 0; t < p.triCount; t++) {
+        const base = p.triCell[t];
+        const cx = base % (N - 1), cy = Math.floor(base / (N - 1)) % (N - 1), cz = Math.floor(base / ((N - 1) * (N - 1)));
+        let tornN = 0;
+        for (let c = 0; c < 8; c++) if (torn[ni(cx + (c & 1), cy + ((c >> 1) & 1), cz + ((c >> 2) & 1))]) tornN++;
+        if (tornN >= 2) continue;   // cells cut by a tear are removed -> visible crack
+        out[k++] = p.origIdx[t * 3]; out[k++] = p.origIdx[t * 3 + 1]; out[k++] = p.origIdx[t * 3 + 2];
       }
+      p.mesh.geometry.setIndex(new THREE.BufferAttribute(out.slice(0, k), 1));
+      p.mesh.geometry.computeBoundingSphere();
     };
 
-    activeSoftbodies.add(sbRecord);
-    return { ok: true, id: target.id, message: `Converted "${target.name}" into a tearable Softbody!` };
+    const writeMesh = (p) => {
+      const pos = p.mesh.geometry.attributes.position, e = p.relInv3.elements;
+      for (let i = 0; i < p.count; i++) {
+        const b = i * 3, ix = p.bIdx[b], iy = p.bIdx[b + 1], iz = p.bIdx[b + 2];
+        const tx = p.bT[b], ty = p.bT[b + 1], tz = p.bT[b + 2];
+        let dx = 0, dy = 0, dz = 0;
+        for (let c = 0; c < 8; c++) {
+          const ox = c & 1, oy = (c >> 1) & 1, oz = (c >> 2) & 1;
+          const wgt = (ox ? tx : 1 - tx) * (oy ? ty : 1 - ty) * (oz ? tz : 1 - tz);
+          const n = ni(ix + ox, iy + oy, iz + oz) * 3;
+          dx += wgt * (cur[n] - rest[n]); dy += wgt * (cur[n + 1] - rest[n + 1]); dz += wgt * (cur[n + 2] - rest[n + 2]);
+        }
+        pos.setXYZ(i,
+          p.localRest[b] + e[0] * dx + e[3] * dy + e[6] * dz,
+          p.localRest[b + 1] + e[1] * dx + e[4] * dy + e[7] * dz,
+          p.localRest[b + 2] + e[2] * dx + e[5] * dy + e[8] * dz);
+      }
+      pos.needsUpdate = true;
+      p.mesh.geometry.computeVertexNormals();
+      p.mesh.geometry.computeBoundingSphere();
+    };
+
+    const grabs = new Map();
+    const sampleCol = firstMeshColor(target);
+    const sb = {
+      entity: target,
+      dragNode: null,
+      world: (i) => V(cur[i * 3], cur[i * 3
+      world: (i) => V(cur[i * 3], cur[i * 3 + 1], cur[i * 3 + 2]).applyMatrix4(gW.matrixWorld),
+      toRoot: (p) => V().copy(p).applyMatrix4(M4().copy(gW.matrixWorld).invert()),
+      pick: (wp) => {
+        const r = sb.toRoot(wp);
+        let best = -1, bd = Infinity;
+        for (let i = 0; i < NN; i++) {
+          const d = Math.hypot(cur[i * 3] - r.x, cur[i * 3 + 1] - r.y, cur[i * 3 + 2] - r.z);
+          if (d < bd) { bd = d; best = i; }
+        }
+        return best >= 0 && bd < spacing * 1.5 ? { i: best, root: r } : null;
+      },
+      step: null
+    };
+
+    sb.step = (dt, tips) => {
+      if (!gW.parent) { softbodies.delete(sb); return; }
+      gW.updateMatrixWorld(true);
+      const G = gW.matrixWorld;
+      const invG = M4().copy(G).invert();
+      const m3 = M3().setFromMatrix4(invG);
+      const gRoot = V(0, -1, 0).applyMatrix3(m3).normalize();
+      const upRoot = V(0, 1, 0).applyMatrix3(m3).normalize();
+      const floorRoot = V(0, FLOOR, 0).applyMatrix4(invG);
+      const h = Math.min(0.02, Math.max(0.004, dt));
+      const h2 = h * h;
+
+      // Hands: pinch to grab nodes; otherwise the hand pushes them (poke / squeeze)
+      for (const tp of tips) {
+        const rp = V().copy(tp.pos).applyMatrix4(invG);
+        if (tp.pressed) {
+          let g = grabs.get(tp.key);
+          if (!g) {
+            g = [];
+            for (let i = 0; i < NN; i++) {
+              const off = V(cur[i * 3] - rp.x, cur[i * 3 + 1] - rp.y, cur[i * 3 + 2] - rp.z);
+              if (off.length() < spacing * 0.9) g.push({ i, off });
+            }
+            grabs.set(tp.key, g);
+          }
+          for (const c of g) {
+            const i3 = c.i * 3;
+            const tx = rp.x + c.off.x, ty = rp.y + c.off.y, tz = rp.z + c.off.z;
+            cur[i3] += (tx - cur[i3]) * 0.5;
+            cur[i3 + 1] += (ty - cur[i3 + 1]) * 0.5;
+            cur[i3 + 2] += (tz - cur[i3 + 2]) * 0.5;
+            prev[i3] = cur[i3]; prev[i3 + 1] = cur[i3 + 1]; prev[i3 + 2] = cur[i3 + 2];
+          }
+        } else {
+          grabs.delete(tp.key);
+          const rv = V().copy(tp.vel).applyMatrix3(m3);
+          const R = spacing * 0.75;
+          for (let i = 0; i < NN; i++) {
+            const i3 = i * 3;
+            const dx = cur[i3] - rp.x, dy = cur[i3 + 1] - rp.y, dz = cur[i3 + 2] - rp.z;
+            const d = Math.hypot(dx, dy, dz);
+            if (d < R && d > 1e-5) {
+              const push = (R - d) * 0.9, f = 1 - d / R;
+              cur[i3] += (dx / d) * push + rv.x * 0.4 * f;
+              cur[i3 + 1] += (dy / d) * push + rv.y * 0.4 * f;
+              cur[i3 + 2] += (dz / d) * push + rv.z * 0.4 * f;
+            }
+          }
+        }
+      }
+
+      // Mouse drag on a grabbed node
+      if (sb.dragNode) {
+        const dn = sb.dragNode, i3 = dn.i * 3;
+        cur[i3] += (dn.target.x - cur[i3]) * 0.35;
+        cur[i3 + 1] += (dn.target.y - cur[i3 + 1]) * 0.35;
+        cur[i3 + 2] += (dn.target.z - cur[i3 + 2]) * 0.35;
+        prev[i3] = cur[i3]; prev[i3 + 1] = cur[i3 + 1]; prev[i3 + 2] = cur[i3 + 2];
+      }
+
+      // Verlet integration with gravity
+      const GRAV = 6.5 * h2;
+      for (let i = 0; i < NN; i++) {
+        const i3 = i * 3;
+        const vx = (cur[i3] - prev[i3]) * 0.985;
+        const vy = (cur[i3 + 1] - prev[i3 + 1]) * 0.985;
+        const vz = (cur[i3 + 2] - prev[i3 + 2]) * 0.985;
+        prev[i3] = cur[i3]; prev[i3 + 1] = cur[i3 + 1]; prev[i3 + 2] = cur[i3 + 2];
+        cur[i3] += vx + gRoot.x * GRAV;
+        cur[i3 + 1] += vy + gRoot.y * GRAV;
+        cur[i3 + 2] += vz + gRoot.z * GRAV;
+      }
+
+      // Spring constraints (with tearing) + floor collision
+      const tearPts = [];
+      let newTear = false;
+      for (let it = 0; it < 3; it++) {
+        for (const s of springs) {
+          if (s.broken) continue;
+          const a = s.a * 3, b = s.b * 3;
+          const dx = cur[b] - cur[a], dy = cur[b + 1] - cur[a + 1], dz = cur[b + 2] - cur[a + 2];
+          const d = Math.hypot(dx, dy, dz);
+          if (d < 1e-6) continue;
+          if (d > s.tear) {
+            s.broken = true;
+            torn[s.a] = 1; torn[s.b] = 1;
+            newTear = true;
+            tearPts.push(V((cur[a] + cur[b]) / 2, (cur[a + 1] + cur[b + 1]) / 2, (cur[a + 2] + cur[b + 2]) / 2));
+            continue;
+          }
+          const k = ((d - s.rest) / d) * s.k * 0.5;
+          cur[a] += dx * k; cur[a + 1] += dy * k; cur[a + 2] += dz * k;
+          cur[b] -= dx * k; cur[b + 1] -= dy * k; cur[b + 2] -= dz * k;
+        }
+        for (let i = 0; i < NN; i++) {
+          const i3 = i * 3;
+          const sd = (cur[i3] - floorRoot.x) * upRoot.x + (cur[i3 + 1] - floorRoot.y) * upRoot.y + (cur[i3 + 2] - floorRoot.z) * upRoot.z;
+          if (sd < 0) { cur[i3] -= upRoot.x * sd; cur[i3 + 1] -= upRoot.y * sd; cur[i3 + 2] -= upRoot.z * sd; }
+        }
+      }
+
+      if (newTear) {
+        for (const p of parts) rebuildIndex(p);
+        for (const tp of tearPts) spawnGranules(V().copy(tp).applyMatrix4(G), sampleCol, 20);
+        APP.ui?.toast?.('Softbody tore! Granular chunks flying.', 1600);
+      }
+      for (const p of parts) writeMesh(p);
+    };
+
+    for (const p of parts) {
+      const mats = Array.isArray(p.mesh.material) ? p.mesh.material : [p.mesh.material];
+      mats.forEach((mt) => { if (mt) mt.side = THREE.DoubleSide; });
+    }
+    target.userData = target.userData || {};
+    target.userData.isSoftbody = true;
+    target.grabbable = false;
+    if (target.physics) target.physics.enabled = false;
+    softbodies.add(sb);
+    APP.lastEntityId = target.id;
+    return { ok: true, id: target.id, message: `"${target.name}" is now a softbody. Poke, stretch, squeeze it; pull hard to tear.` };
   }
 
-  // ====================================================================
-  // 4. DENSE VISIBLE SMOKY HOLOGRAM CLOUD (Hand-Parting Vortex Mist)
-  // ====================================================================
-  function convertToSmokeHologram(targetArg) {
-    const target = resolveTargetEntity(targetArg);
-    if (!target) return { ok: false, error: 'No target object found for Smoky Hologram.' };
+  // ------------------------------------------------------------------
+  // 4. SMOKE CLOUD (volumetric particles that part around your hand)
+  // ------------------------------------------------------------------
+  function makeSmoke(targetArg) {
+    const target = resolveTarget(targetArg);
+    if (!target) return { ok: false, error: 'No target object found for Smoke Cloud.' };
+    const { tris, box } = worldTriangles(target, 14000);
+    if (!tris.length) return { ok: false, error: 'Could not sample target geometry.' };
 
-    target.group.updateMatrixWorld(true);
-    const tris = [], vertsFallback = [];
-    let totalArea = 0;
-    const v0 = new THREE.Vector3(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
-
-    target.group.traverse((c) => {
-      if (!c.isMesh || !c.geometry?.attributes?.position || c.userData?.nxrDecal) return;
-      const geo = c.geometry, pos = geo.attributes.position, idx = geo.index;
-      const mat = Array.isArray(c.material) ? c.material[0] : c.material;
-      const col = mat?.color ? mat.color.clone() : new THREE.Color(0x94a3b8);
-      for (let i = 0; i < pos.count; i += Math.max(1, Math.floor(pos.count / 600))) {
-        v0.fromBufferAttribute(pos, i).applyMatrix4(c.matrixWorld);
-        vertsFallback.push({ p: v0.clone(), col });
-      }
-      const tCnt = idx ? Math.floor(idx.count / 3) : Math.floor(pos.count / 3);
-      for (let t = 0; t < tCnt; t++) {
-        const i0 = idx ? idx.getX(t * 3) : t * 3, i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1, i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
-        v0.fromBufferAttribute(pos, i0).applyMatrix4(c.matrixWorld);
-        v1.fromBufferAttribute(pos, i1).applyMatrix4(c.matrixWorld);
-        v2.fromBufferAttribute(pos, i2).applyMatrix4(c.matrixWorld);
-        const area = e1.subVectors(v1, v0).cross(e2.subVectors(v2, v0)).length() * 0.5;
-        if (area > 1e-8) { totalArea += area; tris.push({ a: v0.clone(), b: v1.clone(), c: v2.clone(), cum: totalArea, col }); }
-      }
+    // Area-weighted cumulative distribution over triangles
+    const cum = new Float64Array(tris.length);
+    let total = 0;
+    tris.forEach((t, i) => {
+      total += V().subVectors(t[1], t[0]).cross(V().subVectors(t[2], t[0])).length() * 0.5;
+      cum[i] = total;
     });
 
-    if (!tris.length && !vertsFallback.length) return { ok: false, error: 'Could not sample target geometry.' };
+    const centroid = box.getCenter(V());
+    const base = firstMeshColor(target);
+    const N = CFG.smokeCount;
+    const rest = new Float32Array(N * 3), pos = new Float32Array(N * 3), vel = new Float32Array(N * 3);
+    const col = new Float32Array(N * 3), seed = new Float32Array(N), size = new Float32Array(N);
+    const cool = new THREE.Color(0xcfeaff), tc = new THREE.Color();
 
-    const P_COUNT = 4500;
-    const restPos = new Float32Array(P_COUNT * 3), posArr = new Float32Array(P_COUNT * 3), velArr = new Float32Array(P_COUNT * 3);
-    const colArr = new Float32Array(P_COUNT * 3), seedArr = new Float32Array(P_COUNT), sizeArr = new Float32Array(P_COUNT);
+    for (let i = 0; i < N; i++) {
+      // Pick a random surface point...
+      const r = Math.random() * total;
+      let lo = 0, hi = tris.length - 1;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < r) lo = mid + 1; else hi = mid; }
+      const [a, b, c] = tris[lo];
+      let u = Math.random(), v = Math.random();
+      if (u + v > 1) { u = 1 - u; v = 1 - v; }
+      const p = V().copy(a).addScaledVector(V().subVectors(b, a), u).addScaledVector(V().subVectors(c, a), v);
+      // ...then pull some inward so the cloud has volume, not just a shell
+      p.lerp(centroid, Math.pow(Math.random(), 1.5) * 0.55);
+      p.addScaledVector(randDir(), 0.012);
 
-    for (let i = 0; i < P_COUNT; i++) {
-      let px, py, pz, baseC;
-      if (tris.length) {
-        const r = Math.random() * totalArea;
-        let lo = 0, hi = tris.length - 1;
-        while (lo < hi) { const mid = (lo + hi) >> 1; if (tris[mid].cum < r) lo = mid + 1; else hi = mid; }
-        const tr = tris[lo];
-        let u = Math.random(), v = Math.random(); if (u + v > 1) { u = 1 - u; v = 1 - v; }
-        const w = 1 - u - v;
-        px = tr.a.x * w + tr.b.x * u + tr.c.x * v;
-        py = tr.a.y * w + tr.b.y * u + tr.c.y * v;
-        pz = tr.a.z * w + tr.b.z * u + tr.c.z * v;
-        baseC = tr.col;
-      } else {
-        const vf = vertsFallback[i % vertsFallback.length];
-        px = vf.p.x; py = vf.p.y; pz = vf.p.z; baseC = vf.col;
-      }
+      rest[i * 3] = pos[i * 3] = p.x;
+      rest[i * 3 + 1] = pos[i * 3 + 1] = p.y;
+      rest[i * 3 + 2] = pos[i * 3 + 2] = p.z;
 
-      px += (Math.random() - 0.5) * 0.014;
-      py += (Math.random() - 0.5) * 0.014;
-      pz += (Math.random() - 0.5) * 0.014;
-      restPos[i * 3] = px; restPos[i * 3 + 1] = py; restPos[i * 3 + 2] = pz;
-      posArr[i * 3] = px; posArr[i * 3 + 1] = py; posArr[i * 3 + 2] = pz;
-
-      // Dense luminous mist palette (keeps model color + cool silver-cyan mist rim)
-      const cMix = baseC.clone().lerp(new THREE.Color(0xdbeafe), 0.55);
-      colArr[i * 3] = cMix.r; colArr[i * 3 + 1] = cMix.g; colArr[i * 3 + 2] = cMix.b;
-      seedArr[i] = Math.random() * 100.0;
-      sizeArr[i] = 24.0 + Math.random() * 22.0;
+      tc.copy(base).lerp(cool, 0.45 + Math.random() * 0.3);
+      col[i * 3] = tc.r; col[i * 3 + 1] = tc.g; col[i * 3 + 2] = tc.b;
+      seed[i] = Math.random() * 100;
+      size[i] = 22 + Math.random() * 30;
     }
 
-    const smokeGeo = new THREE.BufferGeometry();
-    smokeGeo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-    smokeGeo.setAttribute('aCol', new THREE.BufferAttribute(colArr, 3));
-    smokeGeo.setAttribute('aSize', new THREE.BufferAttribute(sizeArr, 1));
-    smokeGeo.setAttribute('aSeed', new THREE.BufferAttribute(seedArr, 1));
-
-    const smokeMat = new THREE.ShaderMaterial({
+    const grp = new THREE.Group();
+    grp.name = `${target.name}_Smoky_Hologram`;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('aCol', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+    const mat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
-      uniforms: { uTime: { value: 0 }, uPx: { value: window.devicePixelRatio || 1 } },
+      uniforms: {
+        uTime: { value: 0 },
+        uPx: { value: window.devicePixelRatio || 1 },
+        uAlpha: { value: 0.9 }
+      },
       vertexShader: [
         'attribute vec3 aCol; attribute float aSize; attribute float aSeed; uniform float uPx;',
         'varying vec3 vCol; varying float vSeed;',
-        'void main(){ vCol=aCol; vSeed=aSeed; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=clamp((aSize*uPx)/max(0.25,-mv.z), 4.0, 46.0); gl_Position=projectionMatrix*mv; }'
+        'void main(){ vCol=aCol; vSeed=aSeed; vec4 mv=modelViewMatrix*vec4(position,1.0);',
+        '  gl_PointSize=clamp((aSize*uPx)/max(0.25,-mv.z), 3.0, 56.0);',
+        '  gl_Position=projectionMatrix*mv; }'
       ].join('\n'),
       fragmentShader: [
-        'uniform float uTime; varying vec3 vCol; varying float vSeed;',
-        'float sHash(vec2 p){ p=fract(p*vec2(127.1,311.7)); p+=dot(p,p+34.5); return fract(p.x*p.y); }',
-        'float sNoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); f=f*f*(3.0-2.0*f); return mix(mix(sHash(i),sHash(i+vec2(1,0)),f.x),mix(sHash(i+vec2(0,1)),sHash(i+vec2(1,1)),f.x),f.y); }',
-        'void main(){',
-        '  vec2 uv = gl_PointCoord - 0.5;',
-        '  float r = length(uv) * 2.0;',
-        '  if (r > 1.0) discard;',
-        '  float wisp = sNoise(uv * 4.2 + vec2(vSeed, uTime * 0.7));',
-        '  float core = pow(1.0 - r, 1.5);',
-        '  float alpha = core * (0.42 + 0.34 * wisp);',
-        '  gl_FragColor = vec4(vCol * (0.85 + 0.35 * core), clamp(alpha, 0.0, 0.85));',
-        '}'
+        'uniform float uTime; uniform float uAlpha; varying vec3 vCol; varying float vSeed;',
+        'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }',
+        'float noise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); f=f*f*(3.0-2.0*f);',
+        '  return mix(mix(hash(i),hash(i+vec2(1.0,0.0)),f.x), mix(hash(i+vec2(0.0,1.0)),hash(i+vec2(1.0,1.0)),f.x), f.y); }',
+        'void main(){ vec2 uv=gl_PointCoord-0.5; float r=length(uv)*2.0; if(r>1.0) discard;',
+        '  float wisp=noise(uv*3.0+vec2(vSeed, uTime*0.6));',
+        '  float core=pow(1.0-r,1.8);',
+        '  float a=core*(0.3+0.45*wisp)*uAlpha;',
+        '  gl_FragColor=vec4(vCol*(0.9+0.25*wisp), a); }'
       ].join('\n')
     });
-
-    const smokeGroup = new THREE.Group();
-    smokeGroup.name = `${target.name}_Smoky_Hologram`;
-    const pts = new THREE.Points(smokeGeo, smokeMat);
+    const pts = new THREE.Points(geo, mat);
     pts.frustumCulled = false;
-    smokeGroup.add(pts);
-    APP.scene.add(smokeGroup);
-
-    const origName = target.name;
-    APP.removeEntity?.(target, false);
-
-    const prevHands = new Map(), hVel = new THREE.Vector3(), tmpD = new THREE.Vector3(), swirl = new THREE.Vector3();
-
-    const sEnt = APP.registerEntity(smokeGroup, {
-      name: `${origName} (Smoke Cloud)`,
-      category: 'smoke_holo',
-      grabbable: false,
-      physics: { enabled: false },
-      onUpdate: (dt, elapsed) => {
-        const delta = Math.min(0.035, Math.max(0.004, dt || 0.016));
-        const now = elapsed || performance.now() * 0.001;
-        smokeMat.uniforms.uTime.value = now;
-
-        const disturbers = [];
-        for (const [hk, h] of Object.entries(APP.hands || {})) {
-          if (!h || !h.active) continue;
-          const hp = h.isHand ? h.fingerTips?.index : h.pos;
-          if (!hp) continue;
-          const last = prevHands.get(hk);
-          if (last) hVel.subVectors(hp, last).divideScalar(delta);
-          else hVel.set(0, 0, 0);
-          prevHands.set(hk, hp.clone());
-          disturbers.push({ pos: hp.clone(), vel: hVel.clone() });
-        }
-        if (lastMouseSmokePt && now - lastMouseSmokeTime < 0.25) {
-          disturbers.push({ pos: lastMouseSmokePt.clone(), vel: lastMouseSmokeVel.clone() });
-        }
-
-        const rSq = 0.30 * 0.30;
-        for (let i = 0; i < P_COUNT; i++) {
-          const i3 = i * 3;
-          const px = posArr[i3], py = posArr[i3 + 1], pz = posArr[i3 + 2];
-          const rx = restPos[i3], ry = restPos[i3 + 1], rz = restPos[i3 + 2];
-
-          const turbX = Math.sin(now * 1.6 + seedArr[i] + py * 5.0) * 0.015;
-          const turbY = Math.cos(now * 1.4 + seedArr[i] * 1.3 + px * 5.0) * 0.015;
-          const turbZ = Math.sin(now * 1.5 + seedArr[i] * 0.7 + pz * 5.0) * 0.015;
-
-          velArr[i3] += ((rx + turbX) - px) * 2.0 * delta;
-          velArr[i3 + 1] += ((ry + turbY) - py) * 2.0 * delta;
-          velArr[i3 + 2] += ((rz + turbZ) - pz) * 2.0 * delta;
-
-          for (let d = 0; d < disturbers.length; d++) {
-            const hb = disturbers[d];
-            const dx = px - hb.pos.x, dy = py - hb.pos.y, dz = pz - hb.pos.z;
-            const distSq = dx * dx + dy * dy + dz * dz;
-            if (distSq < rSq && distSq > 1e-6) {
-              const dist = Math.sqrt(distSq);
-              const f = Math.pow(1.0 - dist / 0.30, 1.4);
-              tmpD.set(dx / dist, dy / dist, dz / dist);
-              swirl.crossVectors(tmpD, hb.vel);
-              const pushStr = 4.6 + hb.vel.length() * 2.6;
-              velArr[i3] += (tmpD.x * pushStr + hb.vel.x * 1.4 + swirl.x * 3.0) * f * delta * 8.0;
-              velArr[i3 + 1] += (tmpD.y * pushStr + hb.vel.y * 1.4 + swirl.y * 3.0 + 0.6) * f * delta * 8.0;
-              velArr[i3 + 2] += (tmpD.z * pushStr + hb.vel.z * 1.4 + swirl.z * 3.0) * f * delta * 8.0;
-            }
-          }
-
-          velArr[i3] *= 0.92; velArr[i3 + 1] *= 0.92; velArr[i3 + 2] *= 0.92;
-          posArr[i3] += velArr[i3] * delta;
-          posArr[i3 + 1] = Math.max(0.02, posArr[i3 + 1] + velArr[i3 + 1] * delta);
-          posArr[i3 + 2] += velArr[i3 + 2] * delta;
-        }
-        smokeGeo.attributes.position.needsUpdate = true;
-      }
-    });
-
-    APP.lastEntityId = sEnt.id;
-    return { ok: true, id: sEnt.id, message: `Transformed "${origName}" into a Smoky Hologram! Pass your hand through it.` };
-  }
-
-  // ====================================================================
-  // 5. MAGIC-MERGE ("VENOM" SURFACE FUSION — NO SHRINKING, NO SNAKES!)
-  // ====================================================================
-  const activeMerges = new Map();
-  let magicMergeEnabled = false;
-
-  function sampleClosestSurfacePairs(entA, entB, count = 10) {
-    const ptsA = [], ptsB = [];
-    const vTmp = new THREE.Vector3();
-    entA.group.traverse((c) => {
-      if (!c.isMesh || !c.geometry?.attributes?.position) return;
-      const p = c.geometry.attributes.position, step = Math.max(1, Math.floor(p.count / 90));
-      for (let i = 0; i < p.count; i += step) ptsA.push(vTmp.fromBufferAttribute(p, i).applyMatrix4(c.matrixWorld).clone());
-    });
-    entB.group.traverse((c) => {
-      if (!c.isMesh || !c.geometry?.attributes?.position) return;
-      const p = c.geometry.attributes.position, step = Math.max(1, Math.floor(p.count / 90));
-      for (let i = 0; i < p.count; i += step) ptsB.push(vTmp.fromBufferAttribute(p, i).applyMatrix4(c.matrixWorld).clone());
-    });
-    if (!ptsA.length || !ptsB.length) return [];
-
-    // Find closest pairs across the facing surfaces
-    const pairs = [];
-    for (let i = 0; i < ptsA.length; i++) {
-      let bestJ = 0, bestD = Infinity;
-      for (let j = 0; j < ptsB.length; j++) {
-        const d = ptsA[i].distanceToSquared(ptsB[j]);
-        if (d < bestD) { bestD = d; bestJ = j; }
-      }
-      pairs.push({ a: ptsA[i], b: ptsB[bestJ], d: bestD });
-    }
-    pairs.sort((x, y) => x.d - y.d);
-    return pairs.slice(0, count);
-  }
-
-  function createSymbioteBridgeRig(pairKey, colA, colB) {
-    const grp = new THREE.Group();
-    grp.name = 'Venom_Symbiote_Bridge_' + pairKey;
-    const mat = new THREE.MeshPhysicalMaterial({
-      color: colA.clone().lerp(colB, 0.5).multiplyScalar(0.22),
-      roughness: 0.06,
-      metalness: 0.35,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.04
-    });
-
-    // Organic metaball-like liquid junction blobs + surface-hugging webbing strands (NOT snakes!)
-    const blobs = [];
-    for (let i = 0; i < 14; i++) {
-      const m = new THREE.Mesh(new THREE.SphereGeometry(0.032, 16, 12), mat);
-      m.castShadow = true;
-      grp.add(m);
-      blobs.push({ mesh: m, seed: Math.random() * 6.28, t: i / 13 });
-    }
+    grp.add(pts);
     APP.scene.add(grp);
-    return { grp, mat, blobs };
-  }
 
-  function stepMagicMerge(dt, now) {
-    if (!magicMergeEnabled) return;
-    const list = (APP.entities || []).filter(isManipulableEntity);
-    const boxA = new THREE.Box3(), boxB = new THREE.Box3(), cA = new THREE.Vector3(), cB = new THREE.Vector3(), szA = new THREE.Vector3(), szB = new THREE.Vector3();
-    const closestA = new THREE.Vector3(), closestB = new THREE.Vector3();
-
-    for (let i = 0; i < list.length; i++) {
-      const eA = list[i];
-      eA.group.updateMatrixWorld(true);
-      boxA.setFromObject(eA.group);
-      if (boxA.isEmpty()) continue;
-      boxA.getCenter(cA); boxA.getSize(szA);
-
-      for (let j = i + 1; j < list.length; j++) {
-        const eB = list[j];
-        const key = `${eA.id}_${eB.id}`;
-        if (activeMerges.has(key)) continue;
-
-        eB.group.updateMatrixWorld(true);
-        boxB.setFromObject(eB.group);
-        if (boxB.isEmpty()) continue;
-        boxB.getCenter(cB); boxB.getSize(szB);
-
-        boxA.clampPoint(cB, closestA);
-        boxB.clampPoint(cA, closestB);
-        if (closestA.distanceTo(closestB) < 0.14) {
-          const volA = szA.x * szA.y * szA.z, volB = szB.x * szB.y * szB.z;
-          const host = (eB.isHeld || volA >= volB) ? eA : eB;
-          const guest = host === eA ? eB : eA;
-          const colA = new THREE.Color(0x111827), colB = new THREE.Color(0x1f2937);
-          host.group.traverse((m) => { if (m.isMesh && m.material?.color) colA.copy(m.material.color); });
-          guest.group.traverse((m) => { if (m.isMesh && m.material?.color) colB.copy(m.material.color); });
-          activeMerges.set(key, {
-            host, guest, progress: 0.0,
-            rig: createSymbioteBridgeRig(key, colA, colB)
-          });
-        }
-      }
-    }
-
-    for (const [key, m] of activeMerges.entries()) {
-      if (!m.host.group?.parent || !m.guest.group?.parent) {
-        if (m.rig.grp.parent) m.rig.grp.parent.remove(m.rig.grp);
-        activeMerges.delete(key);
-        continue;
-      }
-
-      m.host.group.updateMatrixWorld(true);
-      m.guest.group.updateMatrixWorld(true);
-      boxA.setFromObject(m.host.group); boxB.setFromObject(m.guest.group);
-      boxA.getCenter(cA); boxB.getCenter(cB);
-      boxA.clampPoint(cB, closestA); boxB.clampPoint(cA, closestB);
-
-      const gap = closestA.distanceTo(closestB);
-      if (gap > 0.34 && m.progress < 0.25) {
-        if (m.rig.grp.parent) m.rig.grp.parent.remove(m.rig.grp);
-        activeMerges.delete(key);
-        continue;
-      }
-
-      m.progress = Math.min(1.0, m.progress + dt * 0.42);
-
-      // Move guest smoothly into overlapping contact with host (WITHOUT shrinking either model!)
-      if (!m.guest.isHeld) {
-        const contactTarget = cA.clone().lerp(cB, 0.38);
-        m.guest.group.position.lerp(contactTarget, dt * (1.5 + m.progress * 2.5));
-      }
-
-      // Sample real closest surface pairs & swell liquid symbiote bridge across the seam!
-      const pairs = sampleClosestSurfacePairs(m.host, m.guest, m.rig.blobs.length);
-      const seamMid = closestA.clone().lerp(closestB, 0.5);
-      for (let bi = 0; bi < m.rig.blobs.length; bi++) {
-        const b = m.rig.blobs[bi];
-        const pair = pairs[bi % Math.max(1, pairs.length)];
-        if (pair) {
-          const blendT = 0.2 + 0.6 * ((bi % 3) / 2);
-          b.mesh.position.lerpVectors(pair.a, pair.b, blendT);
-        } else {
-          b.mesh.position.copy(seamMid);
-        }
-        const swell = (0.7 + m.progress * 1.6) * (0.85 + 0.25 * Math.sin(now * 6.0 + b.seed));
-        b.mesh.scale.set(swell * 1.2, swell * 0.9, swell * 1.2);
-      }
-
-      // Local seam vertex welding (ONLY vertices right at the contact seam gently bridge outward!)
-      const seamRadius = 0.14;
-      const tmpW = new THREE.Vector3(), tmpL = new THREE.Vector3();
-      [m.host, m.guest].forEach((ent) => {
-        ent.group.traverse((mesh) => {
-          if (!mesh.isMesh || !mesh.geometry?.attributes?.position) return;
-          const pos = mesh.geometry.attributes.position;
-          let dirty = false;
-          for (let k = 0; k < pos.count; k++) {
-            tmpL.fromBufferAttribute(pos, k);
-            tmpW.copy(tmpL).applyMatrix4(mesh.matrixWorld);
-            const d = tmpW.distanceTo(seamMid);
-            if (d < seamRadius) {
-              const f = (1.0 - d / seamRadius) * 0.06 * dt * 8.0;
-              tmpW.lerp(seamMid, Math.min(0.12, f));
-              tmpL.copy(tmpW);
-              mesh.worldToLocal(tmpL);
-              pos.setXYZ(k, tmpL.x, tmpL.y, tmpL.z);
-              dirty = true;
-            }
-          }
-          if (dirty) { pos.needsUpdate = true; mesh.geometry.computeVertexNormals(); }
-        });
-      });
-
-      if (m.progress >= 1.0) {
-        const host = m.host, guest = m.guest;
-        for (const ch of [...guest.group.children]) host.group.attach(ch);
-        for (const ch of [...m.rig.grp.children]) host.group.attach(ch);
-        if (m.rig.grp.parent) m.rig.grp.parent.remove(m.rig.grp);
-        APP.removeEntity?.(guest, false);
-        host.name = `${host.name} + ${guest.name}`;
-        APP.lastEntityId = host.id;
-        activeMerges.delete(key);
-        APP.ui?.toast?.(`Magic-Merged into "${host.name}"!`, 2600);
-      }
-    }
-  }
-
-  function triggerPairMerge(targetA, targetB) {
-    magicMergeEnabled = true;
-    const eA = resolveTargetEntity(targetA);
-    const eB = targetB ? resolveTargetEntity(targetB) : null;
-    if (eA && eB && eA !== eB) {
-      const key = `${eA.id}_${eB.id}`;
-      if (!activeMerges.has(key)) {
-        activeMerges.set(key, { host: eA, guest: eB, progress: 0.05, rig: createSymbioteBridgeRig(key, new THREE.Color(0x111827), new THREE.Color(0x1e293b)) });
-      }
-    }
-    syncUI();
-    return { ok: true, message: 'Magic-Merge ON! Move any two objects together to fuse them.' };
-  }
-
-  // ====================================================================
-  // 6. VR + 2D MANIPULATION MINI-TOOLBAR & TOUCH TRIGGERS
-  // ====================================================================
-  let lastMouseSmokePt = null, lastMouseSmokeTime = 0;
-  const lastMouseSmokeVel = new THREE.Vector3();
-
-  const vrPanel = (function buildVRManipPanel() {
-    const root = new THREE.Group();
-    root.name = 'NXR_VR_MANIP_TOOLBAR';
-    root.position.set(0.38, 1.30, -0.82);
-    root.visible = false;
-    APP.scene.add(root);
-
-    const PW = 0.56, PH = 0.44;
-    const back = new THREE.Mesh(
-      new THREE.BoxGeometry(PW + 0.02, PH + 0.02, 0.012),
-      new THREE.MeshStandardMaterial({ color: 0x0b121e, roughness: 0.45, metalness: 0.35 })
-    );
-    back.position.z = -0.008; root.add(back);
-
-    const canvas = document.createElement('canvas'); canvas.width = 768; canvas.height = 600;
-    const ctx = canvas.getContext('2d');
-    const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace;
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(PW, PH), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
-    root.add(screen);
-
-    const dragBar = new THREE.Mesh(
-      new THREE.BoxGeometry(0.24, 0.026, 0.018),
-      new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x00f0b4, emissiveIntensity: 0.55 })
-    );
-    dragBar.position.set(0, PH * 0.5 + 0.028, 0); root.add(dragBar);
-
-    const cursorDot = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 10), new THREE.MeshBasicMaterial({ color: 0x7ef7d4, depthTest: false }));
-    cursorDot.renderOrder = 999; cursorDot.visible = false; root.add(cursorDot);
-
-    let hitZones = [], hoveredId = null, lastClick = 0, dragHandKey = null, dragDist = 0.8;
-    const dragOffset = new THREE.Vector3(), prevRaw = new Map(), raycaster = new THREE.Raycaster();
-    const tmpDir = new THREE.Vector3(), tmpVec = new THREE.Vector3(), tmpLocal = new THREE.Vector3();
-
-    function rRect(x, y, w, h, r, fill, stroke, lw = 2.5) {
-      ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r);
-      ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
-      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
-    }
-
-    function drawBtn(id, x, y, w, h, label, active, fn, warn = false) {
-      const hov = hoveredId === id;
-      rRect(x, y, w, h, 12, active ? '#0f766e' : (warn ? '#5b1e2a' : (hov ? '#244675' : '#162338')), active ? '#5eead4' : (hov ? '#7dd3fc' : '#334e75'), hov ? 4 : 2.5);
-      ctx.fillStyle = '#f1f5f9'; ctx.font = 'bold 21px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(label, x + w / 2, y + h / 2);
-      hitZones.push({ id, u0: x / canvas.width, u1: (x + w) / canvas.width, v0: 1 - (y + h) / canvas.height, v1: 1 - y / canvas.height, action: fn });
-    }
-
-    function redraw() {
-      hitZones = [];
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      rRect(6, 6, canvas.width - 12, canvas.height - 12, 22, '#0b121e', '#38bdf8', 3.5);
-      ctx.fillStyle = '#7dd3fc'; ctx.font = 'bold 24px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.fillText('Model & GLB Manipulation Lab', 26, 40);
-      drawBtn('v_hide', canvas.width - 104, 18, 82, 44, 'Hide', false, () => { root.visible = false; }, true);
-
-      drawBtn('m_voronoi', 24, 96, 350, 80, 'Voronoi Break (Touch)', manipCfg.mode === 'voronoi', () => { setMode('voronoi'); });
-      drawBtn('m_melt', 394, 96, 350, 80, 'Melt Sphere: ' + (meltSphereActive ? 'ON' : 'OFF'), meltSphereActive, () => { setMode(meltSphereActive ? 'off' : 'melt'); });
-      drawBtn('m_soft', 24, 198, 350, 80, 'Softbody (Touch/Latest)', manipCfg.mode === 'softbody', () => { setMode('softbody'); convertToSoftbody('latest'); });
-      drawBtn('m_smoke', 394, 198, 350, 80, 'Smoke Cloud (Latest)', manipCfg.mode === 'smoke', () => { setMode('smoke'); convertToSmokeHologram('latest'); });
-      drawBtn('m_merge', 24, 300, 350, 80, 'Magic Merge: ' + (magicMergeEnabled ? 'ON' : 'OFF'), magicMergeEnabled, () => { magicMergeEnabled = !magicMergeEnabled; if (magicMergeEnabled) manipCfg.mode = 'merge'; });
-      drawBtn('m_off', 394, 300, 350, 80, 'Normal Mode (Disable)', manipCfg.mode === 'off', () => { setMode('off'); });
-
-      ctx.fillStyle = '#94a3b8'; ctx.font = '20px system-ui, sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('Mode: ' + manipCfg.mode.toUpperCase() + ' • Touch/hit the exact part you want to break!', canvas.width / 2, 470);
-      tex.needsUpdate = true;
-    }
-
-    function placeNearUser() {
-      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0), hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
-      const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize(); if (flat.lengthSq() < 0.01) flat.set(0, 0, -1);
-      const right = new THREE.Vector3().crossVectors(flat, new THREE.Vector3(0, 1, 0)).normalize();
-      root.position.copy(hp).addScaledVector(flat, 0.80).addScaledVector(right, 0.34);
-      root.position.y = Math.max(0.88, hp.y - 0.12); root.lookAt(hp.x, root.position.y, hp.z);
-    }
-
-    function triggerZone(z, hand) {
-      const now = performance.now(); if (now - lastClick < 240) return; lastClick = now;
-      try { hand?.gamepad?.hapticActuators?.[0]?.pulse(0.35, 25); } catch (_) {}
-      z.action(); redraw(); syncUI();
-    }
-
-    screen.userData.onPoke = (hit) => {
-      if (!root.visible || !hit?.uv) return;
-      for (const z of hitZones) if (hit.uv.x >= z.u0 && hit.uv.x <= z.u1 && hit.uv.y >= z.v0 && hit.uv.y <= z.v1) { triggerZone(z, null); break; }
-    };
-    APP.pokeTargets?.add(screen); APP.pokeTargets?.add(dragBar);
-
-    function getRawBtn(k, hand) {
-      const p = prevRaw.get(k) || { trig: false, grip: false, pinch: false };
-      let trig = !!hand.trigger, grip = !!hand.gripping, pinch = !!hand.pinching;
-      const btns = hand.gamepad?.buttons;
-      if (btns?.length) { trig = !!(btns[0] && (btns[0].pressed || btns[0].value > 0.35)); grip = !!(btns[1] && (btns[1].pressed || btns[1].value > 0.35)); }
-      if (hand.isHand && hand.fingerTips?.index && hand.fingerTips?.thumb) {
-        const d = hand.fingerTips.index.distanceTo(hand.fingerTips.thumb);
-        if (d > 0.036) pinch = false; else if (d < 0.021) pinch = true;
-      }
-      const res = { trig, grip, pinch, justTrig: trig && !p.trig, justGrip: grip && !p.grip, justPinch: pinch && !p.pinch };
-      prevRaw.set(k, { trig, grip, pinch }); return res;
-    }
-
-    function update() {
-      if (!root.visible) return;
-      const hands = APP.hands || {};
-      if (dragHandKey) {
-        const dh = hands[dragHandKey], rawD = dh ? getRawBtn(dragHandKey, dh) : null;
-        if (dh && dh.active && rawD && (rawD.trig || rawD.grip || rawD.pinch)) {
-          if (dh.isHand && dh.fingerTips?.index) root.position.lerp(tmpVec.copy(dh.fingerTips.index).add(dragOffset), 0.55);
-          else if (dh.rayOrigin && dh.rayDir) {
-            tmpDir.copy(dh.rayDir).normalize();
-            root.position.lerp(tmpVec.copy(dh.rayOrigin).addScaledVector(tmpDir, dragDist).add(dragOffset), 0.55);
-          }
-          if (APP.headPos) root.lookAt(APP.headPos.x, root.position.y, APP.headPos.z);
-        } else dragHandKey = null;
-      }
-
-      let newHov = null, showCur = false;
-      if (!dragHandKey) {
-        for (const [k, hand] of Object.entries(hands)) {
-          if (!hand || !hand.active) continue;
-          const raw = getRawBtn(k, hand);
-          if (hand.rayOrigin && hand.rayDir) {
-            tmpDir.copy(hand.rayDir).normalize(); raycaster.set(hand.rayOrigin, tmpDir);
-            const dh = raycaster.intersectObject(dragBar, false);
-            if (dh.length) {
-              showCur = true; cursorDot.position.copy(dh[0].point); root.worldToLocal(cursorDot.position);
-              if (raw.justTrig || raw.justGrip || raw.justPinch) { dragHandKey = k; dragDist = dh[0].distance; dragOffset.copy(root.position).sub(dh[0].point); break; }
-            }
-            const sh = raycaster.intersectObject(screen, false);
-            if (sh.length && sh[0].uv) {
-              showCur = true; cursorDot.position.copy(sh[0].point); root.worldToLocal(cursorDot.position);
-              for (const z of hitZones) if (sh[0].uv.x >= z.u0 && sh[0].uv.x <= z.u1 && sh[0].uv.y >= z.v0 && sh[0].uv.y <= z.v1) {
-                newHov = z.id; if (raw.justTrig || raw.justPinch) triggerZone(z, hand); break;
-              }
-            }
-          }
-          const tip = hand.isHand ? hand.fingerTips?.index : null;
-          if (tip) {
-            dragBar.getWorldPosition(tmpVec);
-            if (tip.distanceTo(tmpVec) < 0.07 && raw.justPinch) { dragHandKey = k; dragOffset.copy(root.position).sub(tip); break; }
-            tmpLocal.copy(tip); screen.worldToLocal(tmpLocal);
-            if (Math.abs(tmpLocal.z) < 0.04) {
-              const u = tmpLocal.x / PW + 0.5, v = tmpLocal.y / PH + 0.5;
-              if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
-                for (const z of hitZones) if (u >= z.u0 && u <= z.u1 && v >= z.v0 && v <= z.v1) { newHov = z.id; if (raw.justPinch) triggerZone(z, hand); break; }
-              }
-            }
-          }
-        }
-      }
-      cursorDot.visible = showCur && !dragHandKey;
-      if (newHov !== hoveredId) { hoveredId = newHov; redraw(); }
-    }
-
-    return { root, screen, dragBar, redraw, update, show: (val) => { root.visible = !!val; if (root.visible) { placeNearUser(); redraw(); } } };
-  })();
-
-  // 2D DOM Toolbar
-  let domToolbar = null;
-  function ensureDomToolbar() {
-    if (domToolbar && document.body.contains(domToolbar)) return domToolbar;
-    const old = document.getElementById('nxr-manip-toolbar'); if (old) old.remove();
-    const el = document.createElement('div');
-    el.id = 'nxr-manip-toolbar';
-    el.style.cssText = 'position:fixed;right:16px;bottom:76px;z-index:9998;width:270px;padding:10px 12px;border-radius:14px;background:rgba(11,18,30,0.90);backdrop-filter:blur(12px);border:1px solid rgba(56,189,248,0.34);color:#e2e8f0;font-family:system-ui,sans-serif;font-size:11px;display:none;box-shadow:0 12px 32px rgba(0,0,0,0.45);';
-    ['pointerdown', 'mousedown', 'click'].forEach((ev) => el.addEventListener(ev, (e) => e.stopPropagation()));
-    el.innerHTML = [
-      '<div style="display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:12px;color:#7dd3fc;margin-bottom:6px;">',
-      '  <span>Model &amp; GLB FX Lab</span>',
-      '  <button data-act="close" class="btn" style="padding:2px 6px;font-size:10px;">✕</button>',
-      '</div>',
-      '<div style="display:flex;flex-wrap:wrap;gap:5px;">',
-      '  <button class="btn" data-m="voronoi">Voronoi Break</button>',
-      '  <button class="btn" data-m="melt">Melt Sphere</button>',
-      '  <button class="btn" data-m="softbody">Softbody</button>',
-      '  <button class="btn" data-m="smoke">Smoke Cloud</button>',
-      '  <button class="btn" data-m="merge">Magic Merge</button>',
-      '  <button class="btn" data-m="off">Normal</button>',
-      '</div>',
-      '<div id="nxr-m-hint" style="margin-top:6px;color:#94a3b8;font-size:10.5px;">Pick a mode, then touch or click any model.</div>'
-    ].join('');
-    el.addEventListener('click', (e) => {
-      const b = e.target.closest('button'); if (!b) return;
-      if (b.dataset.act === 'close') { el.style.display = 'none'; vrPanel.show(false); return; }
-      const m = b.dataset.m;
-      if (m) {
-        setMode(m);
-        if (m === 'softbody') convertToSoftbody('latest');
-        if (m === 'smoke') convertToSmokeHologram('latest');
-      }
+    const name = target.name;
+    const center = centroid.clone();
+    APP.removeEntity?.(target, false);
+    const ent = APP.registerEntity(grp, {
+      name: `${name} (Smoke Cloud)`, category: 'smoke_holo', grabbable: false, physics: { enabled: false }
     });
-    document.body.appendChild(el);
-    domToolbar = el;
-    return el;
+    smokes.add({ ent, geo, mat, pos, rest, vel, seed, N, center });
+    APP.lastEntityId = ent.id;
+    return { ok: true, id: ent.id, message: `"${name}" is now a smoke cloud. Pass your hand through it.` };
   }
 
-  function syncUI() {
-    if (vrPanel.root.visible) vrPanel.redraw();
-    if (!domToolbar) return;
-    domToolbar.querySelectorAll('[data-m]').forEach((b) => {
-      const m = b.dataset.m;
-      const on = (m === 'melt' && meltSphereActive) || (m === 'merge' && magicMergeEnabled) || (m === manipCfg.mode);
-      b.classList.toggle('active', on);
-    });
-    const hint = domToolbar.querySelector('#nxr-m-hint');
-    if (hint) {
-      hint.textContent = manipCfg.mode === 'voronoi' ? 'Touch or click the exact part you want to Voronoi break!'
-        : meltSphereActive ? 'Move Thermal Sphere near a part (or drag on model) to melt!'
-        : manipCfg.mode === 'softbody' ? 'Drag/stretch Softbody in VR or mouse until it tears!'
-        : manipCfg.mode === 'smoke' ? 'Pass your hand or cursor through Smoke Cloud!'
-        : magicMergeEnabled ? 'Bring two objects together for Venom Magic-Merge!'
-        : 'Pick a mode above to manipulate any model or GLB.';
-    }
-  }
+  // dist = [{ p: Vector3 (world), v: Vector3 (world velocity, m/s) }]
+  function stepSmoke(st, dt, dist) {
+    const { pos, rest, vel, seed, N } = st;
+    const R = 0.28, R2 = R * R;
+    st.mat.uniforms.uTime.value = clockT;
+    const k = Math.min(dt, 0.03) * 2.5;
+    for (let i = 0; i < N; i++) {
+      const i3 = i * 3, sd = seed[i];
+      // Gentle breathing around the rest pose
+      const bx = rest[i3] + Math.sin(clockT * 0.8 + sd) * 0.006;
+      const by = rest[i3 + 1] + Math.sin(clockT * 0.6 + sd * 1.3) * 0.008 + 0.004 * Math.sin(clockT * 0.3 + sd);
+      const bz = rest[i3 + 2] + Math.cos(clockT * 0.7 + sd) * 0.006;
+      vel[i3] += (bx - pos[i3]) * 1.4 * dt;
+      vel[i3 + 1] += (by - pos[i3 + 1]) * 1.4 * dt;
+      vel[i3 + 2] += (bz - pos[i3 + 2]) * 1.4 * dt;
 
-  function setMode(m) {
-    manipCfg.mode = String(m || 'off').toLowerCase();
-    if (manipCfg.mode === 'melt') toggleMeltSphere(true);
-    else if (manipCfg.mode === 'off') { toggleMeltSphere(false); magicMergeEnabled = false; }
-    if (manipCfg.mode === 'merge') magicMergeEnabled = true;
-    syncUI();
-  }
-
-  function showToolbar(show = true) {
-    const el = ensureDomToolbar();
-    el.style.display = show ? 'block' : 'none';
-    vrPanel.show(show);
-    syncUI();
-  }
-
-  // Desktop Mouse Raycast Interaction
-  const dRay = new THREE.Raycaster(), dNdc = new THREE.Vector2();
-  let dDown = false, dLastPt = null, dSoftTarget = null, dSoftPlane = new THREE.Plane();
-
-  function getPointerHits(e) {
-    if (!APP.camera) return [];
-    const el = APP.renderer?.domElement;
-    const rect = el ? el.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-    dNdc.x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
-    dNdc.y = -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
-    dRay.setFromCamera(dNdc, APP.camera);
-    const meshes = [];
-    for (const ent of APP.entities || []) {
-      if (isManipulableEntity(ent)) ent.group.traverse((c) => { if (c.isMesh) meshes.push({ mesh: c, ent }); });
-    }
-    const hits = dRay.intersectObjects(meshes.map((x) => x.mesh), false);
-    if (!hits.length) return [];
-    const match = meshes.find((x) => x.mesh === hits[0].object);
-    return match ? [{ point: hits[0].point, ent: match.ent }] : [];
-  }
-
-  function onPtrDown(e) {
-    if (e.button !== 0) return;
-    dDown = true;
-    const hits = getPointerHits(e);
-    if (!hits.length) return;
-    const { point, ent } = hits[0];
-    dLastPt = point.clone();
-    if (manipCfg.mode === 'voronoi') {
-      fractureEntity(ent, point);
-    } else if (manipCfg.mode === 'melt' || meltSphereActive) {
-      applyMeltAtWorldPoint(point, manipCfg.meltRadius, 0.08);
-    } else if (ent.userData?.isSoftbody) {
-      for (const sb of activeSoftbodies) if (sb.entity === ent) {
-        dSoftTarget = sb;
-        dSoftPlane.setFromNormalAndCoplanarPoint(APP.camera.getWorldDirection(new THREE.Vector3()).negate(), point);
-      }
-    }
-  }
-
-  function onPtrMove(e) {
-    const t = performance.now() * 0.001;
-    if (APP.camera) {
-      const el = APP.renderer?.domElement;
-      const rect = el ? el.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-      dNdc.x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
-      dNdc.y = -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
-      dRay.setFromCamera(dNdc, APP.camera);
-
-      const smokeEnts = (APP.entities || []).filter((en) => en && en.category === 'smoke_holo' && en.group?.parent);
-      if (smokeEnts.length) {
-        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(APP.camera.getWorldDirection(new THREE.Vector3()).negate(), smokeEnts[0].group.position);
-        const pt = new THREE.Vector3();
-        if (dRay.ray.intersectPlane(plane, pt)) {
-          if (lastMouseSmokePt) lastMouseSmokeVel.copy(pt).sub(lastMouseSmokePt).multiplyScalar(30.0);
-          lastMouseSmokePt = pt.clone(); lastMouseSmokeTime = t;
+      // Hands / pointer push the mist outward, swirl it, and lift it slightly
+      for (const hd of dist) {
+        const dx = pos[i3] - hd.p.x, dy = pos[i3 + 1] - hd.p.y, dz = pos[i3 + 2] - hd.p.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < R2 && d2 > 1e-6) {
+          const d = Math.sqrt(d2), f = Math.pow(1 - d / R, 1.6);
+          const nx = dx / d, ny = dy / d, nz = dz / d;
+          const vx = hd.v.x, vy = hd.v.y, vz = hd.v.z;
+          const sp = 1.6 + Math.min(4, Math.hypot(vx, vy, vz)) * 1.2;
+          const sx = ny * vz - nz * vy, sy = nz * vx - nx * vz, sz = nx * vy - ny * vx;
+          vel[i3] += (nx * sp + vx * 0.8 + sx * 1.5) * f * k;
+          vel[i3 + 1] += (ny * sp + vy * 0.8 + sy * 1.5 + 0.35) * f * k;
+          vel[i3 + 2] += (nz * sp + vz * 0.8 + sz * 1.5) * f * k;
         }
       }
-    }
 
-    if (!dDown) return;
-    if (dSoftTarget && APP.camera) {
-      const pt = new THREE.Vector3();
-      if (dRay.ray.intersectPlane(dSoftPlane, pt)) {
-        const vel = dLastPt ? pt.clone().sub(dLastPt) : new THREE.Vector3();
-        dLastPt = pt.clone();
-        dSoftTarget.applyPointerPull(pt, vel, true);
-      }
-      return;
+      const damp = Math.exp(-2.4 * dt);
+      vel[i3] *= damp; vel[i3 + 1] *= damp; vel[i3 + 2] *= damp;
+      pos[i3] += vel[i3] * dt;
+      pos[i3 + 1] += vel[i3 + 1] * dt;
+      pos[i3 + 2] += vel[i3 + 2] * dt;
     }
-    if (manipCfg.mode === 'melt' || meltSphereActive) {
-      const hits = getPointerHits(e);
-      if (hits.length) applyMeltAtWorldPoint(hits[0].point, manipCfg.meltRadius, 0.045);
-    }
+    st.geo.attributes.position.needsUpdate = true;
   }
-
-  function onPtrUp() { dDown = false; dSoftTarget = null; dLastPt = null; }
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('pointerdown', onPtrDown, { passive: true });
-    window.addEventListener('pointermove', onPtrMove, { passive: true });
-    window.addEventListener('pointerup', onPtrUp, { passive: true });
-  }
-
-  const prevVRHands = new Map(), tmpHVel = new THREE.Vector3(), tmpBoxCheck = new THREE.Box3();
-  let voronoiCooldown = 0;
-
-  function update(dt, elapsed) {
-    const delta = Math.min(0.04, Math.max(0.004, dt || 0.016));
-    const now = elapsed || performance.now() * 0.001;
-    voronoiCooldown = Math.max(0, voronoiCooldown - delta);
-
-    vrPanel.update();
-
-    for (const sb of activeSoftbodies) sb.step(delta);
-    stepMagicMerge(delta, now);
-
-    // Step falling molten droplets
-    for (let i = moltenDrops.length - 1; i >= 0; i--) {
-      const dr = moltenDrops[i];
-      dr.life -= delta;
-      dr.vy -= 7.5 * delta;
-      dr.mesh.position.y += dr.vy * delta;
-      if (dr.mesh.position.y <= 0.008) { dr.mesh.position.y = 0.008; dr.mesh.scale.set(1.8, 0.25, 1.8); dr.vy = 0; }
-      if (dr.life <= 0) {
-        APP.scene.remove(dr.mesh);
-        dr.mesh.geometry.dispose(); dr.mesh.material.dispose();
-        moltenDrops.splice(i, 1);
-      }
-    }
-
-    // VR Hand Touch-to-Break ONLY when actually touching/striking the mesh!
-    if (manipCfg.mode === 'voronoi' && voronoiCooldown <= 0) {
-      for (const [hk, h] of Object.entries(APP.hands || {})) {
-        if (!h || !h.active) continue;
-        const hp = h.isHand ? h.fingerTips?.index : h.pos;
-        if (!hp) continue;
-        const last = prevVRHands.get(hk);
-        const spd = last ? tmpHVel.subVectors(hp, last).length() / delta : 0;
-        prevVRHands.set(hk, hp.clone());
-        if (spd > 0.45) {
-          for (const ent of [...(APP.entities || [])]) {
-            if (!isManipulableEntity(ent)) continue;
-            tmpBoxCheck.setFromObject(ent.group).expandByScalar(0.02);
-            if (tmpBoxCheck.containsPoint(hp)) {
-              voronoiCooldown = 0.75;
-              fractureEntity(ent, hp);
-              break;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  const unsubFrame = APP.onUpdate ? APP.onUpdate(update) : null;
-  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(update);
-
-  APP._inst4Cleanup = function () {
-    if (typeof unsubFrame === 'function') unsubFrame();
-    else APP.frameHooks?.delete(update);
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('pointerdown', onPtrDown);
-      window.removeEventListener('pointermove', onPtrMove);
-      window.removeEventListener('pointerup', onPtrUp);
-    }
-    APP.pokeTargets?.delete(vrPanel.screen); APP.pokeTargets?.delete(vrPanel.dragBar);
-    if (vrPanel.root.parent) vrPanel.root.parent.remove(vrPanel.root);
-    if (domToolbar && domToolbar.parentNode) domToolbar.parentNode.removeChild(domToolbar);
-    if (meltSphereEnt) APP.removeEntity?.(meltSphereEnt, false);
-  };
-
-  APP.manip = {
-    config: manipCfg, showToolbar, setMode,
-    fracture: fractureEntity, melt: toggleMeltSphere,
-    softbody: convertToSoftbody, smokeHologram: convertToSmokeHologram, magicMerge: triggerPairMerge
-  };
-
-  const MANIP_TOOL = {
-    name: 'manipulate_model',
-    description: 'Apply advanced model/GLB manipulation: "voronoi" (touch-localized watertight Voronoi break), "melt" (thermal melting sphere), "softbody" (stretch/poke/squeeze + granular tear), "smoke" (smoky hologram cloud), or "merge" (Venom liquid surface merge).',
-    parameters: {
-      type: 'object',
-      properties: {
-        mode: { type: 'string', description: 'voronoi | melt | softbody | smoke | merge | toolbar' },
-        target: { type: 'string', description: 'Entity ID, name, or "latest".' },
-        target_b: { type: 'string', description: 'Optional second entity for mode="merge".' }
-      },
-      required: ['mode']
-    }
-  };
-  APP.registerBotTool?.(MANIP_TOOL, (a = {}) => {
-    const m = String(a.mode || '').toLowerCase();
-    if (m === 'voronoi' || m === 'shatter' || m === 'break') return fractureEntity(a.target || 'latest');
-    if (m === 'melt') { setMode('melt'); return toggleMeltSphere(true); }
-    if (m === 'softbody') { setMode('softbody'); return convertToSoftbody(a.target || 'latest'); }
-    if (m === 'smoke' || m === 'hologram') { setMode('smoke'); return convertToSmokeHologram(a.target || 'latest'); }
-    if (m === 'merge' || m === 'venom') return triggerPairMerge(a.target || 'latest', a.target_b);
-    showToolbar(true);
-    return { ok: true, message: 'Opened Model Manipulation Lab.' };
-  });
-
-  APP.registerAbilityHandler?.('model_manipulation_engine', function (text) {
-    const low = String(text || '').toLowerCase();
-    if (low.includes('voronoi') || low.includes('shatter') || low.includes('break') || low.includes('تفتيت')) {
-      setMode('voronoi'); return { ok: true, message: 'Voronoi Break mode ON — touch/punch or click any part to shatter it!' };
-    }
-    if (low.includes('melt') || low.includes('ذوبان')) { setMode('melt'); return toggleMeltSphere(true); }
-    if (low.includes('softbody') || low.includes('soft')) { setMode('softbody'); return convertToSoftbody('latest'); }
-    if (low.includes('smoke') || low.includes('cloud')) { setMode('smoke'); return convertToSmokeHologram('latest'); }
-    if (low.includes('merge') || low.includes('venom') || low.includes('دمج')) return triggerPairMerge('latest');
-    showToolbar(!vrPanel.root.visible);
-    return { ok: true, message: 'Toggled Model Manipulation Studio.' };
-  });
-})();
-@end
-
-# ----------------------------------------------------------------------
-# Pinned Quick Triggers for Every Manipulation Mode
-# ----------------------------------------------------------------------
-@ability: voronoi_shatter_action
-@pin: Voronoi Break
-@desc: Enables Touch-to-Break Voronoi mode so touching or clicking any part shatters only that part into solid shards.
-@match: voronoi shatter | shatter model | break model | كسر
-@code:
-(function () {
-  if (!APP.manip?.setMode) return { ok: false, error: 'APP.manip not ready.' };
-  APP.manip.setMode('voronoi');
-  APP.ui?.toast?.('Voronoi Break ON: Touch/punch or click the exact part you want to break!');
-  return { ok: true, message: 'Voronoi Break mode ON.' };
-})();
-@end
-
-@ability: thermal_melt_action
-@pin: Melt Sphere
-@desc: Spawns the Thermal Melt Sphere so you can melt parts of any model realistically.
-@match: melt sphere | melt model | ذوبان
-@code:
-(function () {
-  if (!APP.manip?.melt) return { ok: false, error: 'APP.manip not ready.' };
-  APP.manip.setMode('melt');
-  const r = APP.manip.melt(true);
-  APP.ui?.toast?.(r.message);
-  return r;
-})();
-@end
-
-@ability: softbody_convert_action
-@pin: Softbody
-@desc: Turns the latest 3D or GLB model into a stretchable, pokeable, tearable softbody.
-@match: softbody | make soft | مطاطي
-@code:
-(function () {
-  if (!APP.manip?.softbody) return { ok: false, error: 'APP.manip not ready.' };
-  APP.manip.setMode('softbody');
-  const r = APP.manip.softbody('latest');
-  APP.ui?.toast?.(r.message || r.error);
-  return r;
-})();
-@end
-
-@ability: smoky_hologram_action
-@pin: Smoke Cloud
-@desc: Turns the latest 3D or GLB model into a dense volumetric smoke cloud that parts when your hand passes through.
-@match: smoky hologram | smoke cloud | دخان
-@code:
-(function () {
-  if (!APP.manip?.smokeHologram) return { ok: false, error: 'APP.manip not ready.' };
-  APP.manip.setMode('smoke');
-  const r = APP.manip.smokeHologram('latest');
-  APP.ui?.toast?.(r.message || r.error);
-  return r;
-})();
-@end
-
-@ability: magic_merge_action
-@pin: Magic Merge
-@desc: Activates Venom-style liquid surface merging when bringing any two objects together.
-@match: magic merge | venom merge | symbiote merge | دمج سحري
-@code:
-(function () {
-  if (!APP.manip?.magicMerge) return { ok: false, error: 'APP.manip not ready.' };
-  const r = APP.manip.magicMerge('latest');
-  APP.ui?.toast?.(r.message);
-  return r;
-})();
-@end
