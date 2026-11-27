@@ -19,7 +19,7 @@
     undo: [], active: null, busy: false, jobId: 0, keyG: false, mouse: { down: false, x: 0, y: 0, depth: 0.7 },
     minimized: false, hover: null, dirty: true, status: 'Ready', lastPressT: 0, drag: null,
     prevTrig: { L: false, R: false }, prevNear: { L: false, R: false }, reveals: [], cursors: new Map(),
-    viewFwd: null, lastXr: 'none', pokeKey: '', lastDraw: 0, disposed: false
+    viewFwd: null, lastXr: 'none', pokeKey: '', lastDraw: 0, disposed: false, nameMode: 'auto', hint: null
   };
   const disposers = [], listeners = [];
   const on = (t, ev, fn, o) => { t.addEventListener(ev, fn, o); listeners.push(() => t.removeEventListener(ev, fn, o)); };
@@ -38,9 +38,10 @@
     if (!o) return;
     try { APP.disposeObject3D?.(o); } catch (_) {}
     o.traverse && o.traverse((n) => {
-      if (n.geometry) n.geometry.dispose();
+      if (n.geometry && !(n.geometry.userData && n.geometry.userData.keep)) n.geometry.dispose();
       if (n.material) (Array.isArray(n.material) ? n.material : [n.material]).forEach((m) => {
-        for (const k in m) { const v = m[k]; if (v && v.isTexture) v.dispose(); }
+        if (m.userData && m.userData.shared) return;
+        for (const k in m) { const v = m[k]; if (v && v.isTexture && !(v.userData && v.userData.shared)) v.dispose(); }
         m.dispose && m.dispose();
       });
     });
@@ -393,10 +394,9 @@
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals(); return g;
   }
   function newRawGroup() {
-    const g = new THREE.Group(); g.name = 'sculpt_raw_strokes'; g.userData.grabbable = false; APP.scene.add(g);
-    let ent = null;
-    try { ent = APP.registerEntity(g, { name: 'sculpt_raw_strokes', category: 'sculpt_raw', grabbable: false, holdable: false, physics: { enabled: false, gravity: false } }); } catch (_) {}
-    S.rawGroup = g; S.rawEnt = ent || null; return g;
+    penMat.userData.shared = true;
+    const g = new THREE.Group(); g.name = 'sculpt_raw_strokes'; g.userData.grabbable = false; g.visible = true; APP.scene.add(g);
+    S.rawGroup = g; S.rawEnt = null; return g;
   }
   function strokeMesh(s) {
     if (s.pts.length < 2) return;
@@ -552,7 +552,7 @@
       sliceY_bottom_to_top: base.sliceY.map((s) => [+s.w.toFixed(2), +s.d.toFixed(2)]), sliceMajorAxis: base.sliceAxis.map((s) => [+s.w1.toFixed(2), +s.w2.toFixed(2)])
     };
   }
-  const SYS = 'You are a 3D shape-recognition and modeling assistant inside a mixed-reality sculpting tool. The image is a close-up of ONLY a hand-drawn 3D sketch (noisy, wobbly strokes merged into one volume) shown as three panels: FRONT (what the user saw), SIDE (seen from the user\'s right), 3/4 view. Recognise what the user intended to draw and respect their silhouette and proportions. Always answer by calling the provided tool.';
+  const SYS = 'You are a 3D shape-recognition and modeling assistant inside a mixed-reality sculpting tool. The image is a close-up of ONLY a hand-drawn 3D sketch (noisy, wobbly strokes merged into one volume) shown as three panels: FRONT (what the user saw), SIDE (seen from the user\'s right), 3/4 view. First decide the most likely SPECIFIC object (prefer concrete nouns such as banana, person, car, mug over shape or blob). Then describe its real parts (limbs, head, handle, wheels, leaves, rims, grooves) and where they sit in the drawing, so the model follows the drawn silhouette and proportions. Always answer by calling the provided tool.';
   function safeColor(c, d) { try { return new THREE.Color(c).getHexString(); } catch (_) { return d; } }
   function cleanSpec(raw, base) {
     raw = raw || {}; const mats = ['wood', 'metal', 'stone', 'ceramic', 'organic', 'glass', 'fabric'], num = (x, d) => (isFinite(+x) ? +x : d);
@@ -570,6 +570,103 @@
       facing: ['toward', 'away', 'left', 'right'].includes(raw.facing) ? raw.facing : 'none', lying: !!raw.lying
     };
   }
+  // ---- v3 helpers: solid 3D textures painted into vertex colours (no UVs, never blank), hints, analysis
+  const h3 = (x, y, z) => { const h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return h - Math.floor(h); };
+  function vn3(x, y, z) {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), xf = x - xi, yf = y - yi, zf = z - zi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+    const c = (a, b, d) => h3(xi + a, yi + b, zi + d);
+    const x00 = c(0, 0, 0) + (c(1, 0, 0) - c(0, 0, 0)) * u, x10 = c(0, 1, 0) + (c(1, 1, 0) - c(0, 1, 0)) * u;
+    const x01 = c(0, 0, 1) + (c(1, 0, 1) - c(0, 0, 1)) * u, x11 = c(0, 1, 1) + (c(1, 1, 1) - c(0, 1, 1)) * u;
+    const y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
+    return y0 + (y1 - y0) * w;
+  }
+  function fbm3(x, y, z, o) { let s = 0, a = 0.5; for (let i = 0; i < o; i++) { s += a * vn3(x, y, z); x *= 2.03; y *= 2.03; z *= 2.03; a *= 0.5; } return s; }
+  function solidPattern(kind, x, y, z, out) {
+    let m = 0, s = 0.5;
+    switch (kind) {
+      case 'wood': { const r = Math.sqrt(x * x + z * z); m = 0.5 + 0.5 * Math.sin(r * 46 + fbm3(x * 3, y * 0.5, z * 3, 3) * 7); s = fbm3(x * 36, y * 2, z * 36, 3); break; }
+      case 'metal': { const n = fbm3(x * 2, y * 26, z * 2, 3); m = n; s = 0.5 + 0.5 * Math.sin(y * 60 + n * 6); break; }
+      case 'stone': { const n = fbm3(x * 5, y * 5, z * 5, 5); m = n; s = n; break; }
+      case 'ceramic': { m = 0.1 * fbm3(x * 3, y * 3, z * 3, 3); s = 0.85; break; }
+      case 'organic': { const n = fbm3(x * 4, y * 4, z * 4, 4), v = Math.abs(Math.sin(n * 12)); m = n * 0.6 + v * 0.2; s = n; break; }
+      case 'glass': { m = 0; s = 0.6; break; }
+      case 'fabric': { const w = 0.5 + 0.5 * Math.sin(x * 210) * Math.sin(z * 210); m = w * 0.35 + fbm3(x * 8, y * 8, z * 8, 2) * 0.3; s = w; break; }
+      default: { m = fbm3(x * 4, y * 4, z * 4, 3); s = m; }
+    }
+    out[0] = m; out[1] = s;
+  }
+  const BUMP_KINDS = { wood: 0.5, stone: 0.9, organic: 0.6, ceramic: 0.2, fabric: 0.4, metal: 0.15, glass: 0 };
+  const ROUGH = { wood: 0.72, metal: 0.32, stone: 0.92, ceramic: 0.28, organic: 0.62, glass: 0.08, fabric: 1 };
+  function paintedMaterial(spec, geo, opts) {
+    opts = opts || {};
+    const pos = geo.attributes.position, n = pos.count, nrm = geo.attributes.normal, M = opts.M || null, tv = new V3();
+    let cen, sc;
+    if (opts.cen) { cen = opts.cen; sc = opts.sc; }
+    else { geo.computeBoundingBox(); const bb = geo.boundingBox; cen = bb.getCenter(new V3()); const sz = bb.getSize(new V3()); sc = 1 / Math.max(sz.x, sz.y, sz.z, 1e-4); }
+    const kind = spec.material, c1 = spec.c1, c2 = spec.c2, col = new Float32Array(n * 3), tmp = [0, 0];
+    const bump = (opts.bump !== false) && (BUMP_KINDS[kind] || 0) > 0 && !!nrm && !M;
+    for (let i = 0; i < n; i++) {
+      tv.fromBufferAttribute(pos, i); if (M) tv.applyMatrix4(M);
+      const x = (tv.x - cen.x) * sc, y = (tv.y - cen.y) * sc, z = (tv.z - cen.z) * sc;
+      solidPattern(kind, x, y, z, tmp);
+      const m = clamp(tmp[0], 0, 1), sh = 0.78 + 0.22 * clamp(tmp[1], 0, 1);
+      col[i * 3] = (c1.r + (c2.r - c1.r) * m) * sh; col[i * 3 + 1] = (c1.g + (c2.g - c1.g) * m) * sh; col[i * 3 + 2] = (c1.b + (c2.b - c1.b) * m) * sh;
+      if (bump) {
+        const e = 0.012;
+        solidPattern(kind, x + e, y, z, tmp); const hx = tmp[0];
+        solidPattern(kind, x, y + e, z, tmp); const hy = tmp[0];
+        solidPattern(kind, x, y, z + e, tmp); const hz = tmp[0];
+        solidPattern(kind, x, y, z, tmp); const h0 = tmp[0];
+        const k = BUMP_KINDS[kind] * 0.08, gx = (hx - h0) / e, gy = (hy - h0) / e, gz = (hz - h0) / e;
+        const nx = nrm.getX(i) - k * gx, ny = nrm.getY(i) - k * gy, nz = nrm.getZ(i) - k * gz, l = Math.hypot(nx, ny, nz) || 1;
+        nrm.setXYZ(i, nx / l, ny / l, nz / l);
+      }
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    if (nrm) nrm.needsUpdate = true;
+    const r = ROUGH[kind] || 0.6;
+    if (kind === 'glass') return new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: r, metalness: 0, transparent: true, opacity: 0.5, clearcoat: 1, side: THREE.DoubleSide });
+    if (kind === 'ceramic') return new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: r, metalness: 0, clearcoat: 0.8, clearcoatRoughness: 0.15 });
+    return new THREE.MeshStandardMaterial({ vertexColors: true, roughness: r, metalness: kind === 'metal' ? 0.85 : 0.02 });
+  }
+
+  // ---- name hints ("I am drawing a banana") — used instead of recognition when NAME mode is "said"
+  const SYN = { person: ['human', 'man', 'woman', 'character', 'figure'], man: ['person', 'human'], woman: ['person', 'human'], human: ['person'], banana: ['fruit'], apple: ['fruit'], car: ['vehicle', 'sedan', 'automobile'], chair: ['seat'], table: ['desk'], cup: ['mug'], mug: ['cup'], sword: ['blade'], tree: ['plant'], house: ['building'], fish: ['animal'], dog: ['animal'], cat: ['animal'], bottle: ['flask'], guitar: ['instrument'], rocket: ['spaceship'], plane: ['airplane', 'aircraft'], phone: ['mobile', 'smartphone'] };
+  const MAT_GUESS = { wood: ['chair', 'table', 'desk', 'bench', 'wood', 'stick', 'bat'], metal: ['sword', 'knife', 'car', 'phone', 'rocket', 'plane', 'robot', 'gun', 'wrench', 'key', 'bike', 'bicycle', 'spaceship'], stone: ['rock', 'stone', 'statue'], ceramic: ['cup', 'mug', 'bottle', 'vase', 'bowl', 'plate', 'pot'], glass: ['glass', 'window'], fabric: ['shirt', 'hat', 'bag', 'pillow'], organic: ['person', 'man', 'woman', 'human', 'banana', 'fruit', 'tree', 'plant', 'fish', 'dog', 'cat', 'animal', 'leaf', 'flower', 'apple'] };
+  const COL_GUESS = { banana: '#f2d13b', apple: '#c62828', person: '#e0b08c', man: '#e0b08c', woman: '#e0b08c', tree: '#3d8b37', plant: '#3d8b37', car: '#c62828', fish: '#4aa3c7', cup: '#f5f5f5', mug: '#f5f5f5', sword: '#c9ced6', cat: '#d89a4a', dog: '#b07a48' };
+  const shade = (hex, f) => '#' + [1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * f).toString(16).padStart(2, '0')).join('');
+  function parseHint(text) {
+    let s = String(text || '').toLowerCase().replace(/[\u2019]/g, "'").replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const pre = [/^i'?m going to (draw|sketch|make|create)\s+/, /^i'?m (drawing|sketching|making|creating)\s+/, /^i (am|will|want to|wanna|gonna|'ll)( be)?( going to | gonna )?(draw|sketch|make|create|drawing|sketching)\s+/, /^(let's draw|lets draw|draw|sketch|make|create|sculpt)\s+/, /^(it is|it's|this is|that is|that's|a sculpture of)\s+/, /^(a|an|the|some)\s+/];
+    let changed = true;
+    while (changed) { changed = false; for (const re of pre) { const n = s.replace(re, ''); if (n !== s) { s = n; changed = true; } } }
+    s = s.replace(/\s+(please|now|thanks)$/, '').trim();
+    const words = s.split(' ').filter(Boolean).slice(0, 3);
+    if (!words.length) return null;
+    const label = words.join(' '), head = words[words.length - 1];
+    const sing = head.length > 3 && head.endsWith('s') && !head.endsWith('ss') ? head.slice(0, -1) : head;
+    const keywords = [...new Set([label, head, sing].concat(SYN[head] || [], SYN[sing] || []))];
+    return { label, keywords, text: String(text) };
+  }
+  function setHint(text) {
+    const h = parseHint(text);
+    if (!h) { toast('Say what you are drawing, e.g. "I am drawing a banana"', 3000); return; }
+    S.hint = h; S.dirty = true; setStatus('Named: ' + h.label + ' — draw now', 'ok');
+    toast('Named: ' + h.label + ' — draw to match its model', 2600);
+  }
+  function setNameMode(m) {
+    S.nameMode = m === 'said' ? 'said' : 'auto'; S.dirty = true;
+    toast(S.nameMode === 'said' ? 'Say it first: the named model is matched directly' : 'Auto: the drawing is recognised first', 2600);
+  }
+  function specFromHint(h, base) {
+    const mat = Object.keys(MAT_GUESS).find((k) => MAT_GUESS[k].some((x) => h.keywords.includes(x))) || 'ceramic';
+    const hex = h.keywords.map((x) => COL_GUESS[x]).find(Boolean) || '#b8c0c8';
+    return cleanSpec({ label: h.label, material: mat, primaryColor: hex, secondaryColor: shade(hex, 0.6), sharpenEdges: 0.2, organizedSubParts: [], matchedKeywords: h.keywords, facing: 'none', lying: false }, base);
+  }
+  const A_TASK = 'Task: name the object precisely, then list 4-10 organizedSubParts for its real features (limbs, head, handle, wheels, leaves, rims, grooves) placed where they appear in the drawing. Keep sub-parts inside the drawn silhouette.';
+  const B_TASK = 'Task: name the object precisely, and ALSO give matchedKeywords (ranked single-word nouns and synonyms, e.g. car, sedan, vehicle) plus facing and lying.';
+  const C_TASK = 'Task: name the object precisely, its material and colours; a realistic model will be generated from your answer.';
   async function analyze(snap, base, extra) {
     let raw = null;
     try { raw = await callAI({ systemPrompt: SYS, imageB64: snap, tool: SPEC_TOOL, maxSteps: 1, prompt: 'Identify the drawing and fill the refinement plan.\nGeometry descriptors (meters, frame F):\n' + JSON.stringify(describe(base)) + '\n' + (extra || '') }); }
@@ -608,7 +705,7 @@
   function bakePBR(kind, c1, c2) {
     const key = kind + ':' + c1.getHex() + ':' + c2.getHex();
     if (pbrCache.has(key)) return pbrCache.get(key);
-    const out = bakePBRRaw(kind, c1, c2); pbrCache.set(key, out); return out;
+    const out = bakePBRRaw(kind, c1, c2); Object.values(out).forEach((t) => { t.userData = t.userData || {}; t.userData.shared = true; }); pbrCache.set(key, out); return out;
   }
   function bakePBRRaw(kind, c1, c2) {
     const N = 256, mk = () => { const c = document.createElement('canvas'); c.width = c.height = N; return c; };
@@ -711,26 +808,27 @@
   }
 
   // ------------------------------------------------------------------ manifestation pipeline
-  function startReveal(rec, root, planeBelow) {
+  function startReveal(rec, root, planeBelow, dur) {
     const b = new THREE.Box3().setFromObject(root);
-    S.reveals.push({ rec, t: 0, dur: 1.8, y0: b.min.y - 0.03, y1: b.max.y + 0.06, planeBelow, root });
+    S.reveals.push({ rec, t: 0, dur: dur || 1.8, y0: b.min.y - 0.03, y1: b.max.y + 0.06, planeBelow, root });
   }
-  function finalize(rec, obj, label, centerF) {
+  function finalize(rec, obj, label, centerF, dur) {
     const root = new THREE.Group(); root.name = 'sculpt_' + label; root.add(obj);
     root.quaternion.copy(rec.yawQ); root.position.set(centerF[0], centerF[1], centerF[2]).applyQuaternion(rec.yawQ); APP.scene.add(root);
     const plane = new THREE.Plane(new V3(0, -1, 0), -1e4);
     root.traverse((o) => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { m.clippingPlanes = [plane]; m.needsUpdate = true; }); });
     let ent = null;
     try { ent = APP.registerEntity(root, { name: label, category: 'sculpture', grabbable: true, holdable: true, physics: { enabled: false, gravity: false }, onUpdate() {} }); } catch (_) {}
-    rec.root = root; rec.entity = ent; rec.label = label; rec.planeBelow = plane; startReveal(rec, root, plane);
+    rec.root = root; rec.entity = ent; rec.label = label; rec.planeBelow = plane; startReveal(rec, root, plane, dur);
   }
   async function modeA(rec, spec, base, alive) {
-    setStatus('Refining volume (' + spec.label + ')…', 'busy');
+    setStatus('Shaping ' + spec.label + '…', 'busy');
     const avgR = rec.avgR, sharp = spec.sharpen;
-    const out = await runWorker({ strokes: rec.payload, ops: partsToOps(spec.parts, base, avgR), res: 72, smoothK: avgR * (sharp > 0.6 ? 0.35 : 1.0), iter: sharp > 0.6 ? 2 : 8, sharpen: sharp, creaseDeg: 38, symmetry: spec.symmetry, center: base.bbox.center });
+    const out = await runWorker({ strokes: rec.payload, ops: partsToOps(spec.parts, base, avgR), res: 72, smoothK: avgR * (sharp > 0.6 ? 0.3 : 0.6), iter: sharp > 0.6 ? 2 : 5, sharpen: sharp, creaseDeg: 38, symmetry: spec.symmetry, center: base.bbox.center });
     if (!alive()) return;
-    const mat = pbrMaterial(spec), mesh = new THREE.Mesh(geoFromOut(out), mat); mesh.frustumCulled = false;
-    mat.map.repeat.set(1, 1); finalize(rec, mesh, spec.label, out.bbox.center);
+    setStatus('Painting ' + spec.material + ' surface…', 'busy');
+    const geo = geoFromOut(out), mesh = new THREE.Mesh(geo, paintedMaterial(spec, geo)); mesh.frustumCulled = false;
+    finalize(rec, mesh, spec.label, out.bbox.center, 1.2);
   }
   async function modeB(rec, spec, base, alive) {
     setStatus('Searching GLB assets for "' + spec.label + '"…', 'busy');
@@ -741,37 +839,87 @@
     if (!alive()) { disposeDeep(model); return; }
     toast('Morphing into ' + hit.name, 2200); await morphInto(rec, fitGLB(model, spec, base), base, spec.label, alive);
   }
-  // Mode B morph: each GLB vertex starts on its nearest sample of the drawn volume and eases into its own position.
-  // The morph runs as a hologram over the drawing, the drawing fades out, then the real materials reveal bottom-up.
+  // ---- Mode B morph (v3): each GLB vertex starts on the nearest drawn sample and eases into place, bottom-up,
+  // with a little overshoot, a pulsing hologram wire and sparks shed from the moving surface. Then real materials reveal.
+  function buildNN(src) {
+    const n = src.length / 3, mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < n; i++) for (let a = 0; a < 3; a++) { const v = src[i * 3 + a]; if (v < mn[a]) mn[a] = v; if (v > mx[a]) mx[a] = v; }
+    const span = Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 1e-4), G = Math.max(4, Math.min(24, Math.round(Math.cbrt(n) * 1.5))), cs = span / G * 1.0001;
+    const cell = (x, a) => clamp(Math.floor((x - mn[a]) / cs), 0, G - 1), cells = new Map();
+    for (let i = 0; i < n; i++) { const k = cell(src[i * 3], 0) + G * (cell(src[i * 3 + 1], 1) + G * cell(src[i * 3 + 2], 2)); let L = cells.get(k); if (!L) cells.set(k, L = []); L.push(i); }
+    return { src, G, cells, cell, cs };
+  }
+  function nnQuery(nn, x, y, z) {
+    const { src, G, cells, cell, cs } = nn, cx = cell(x, 0), cy = cell(y, 1), cz = cell(z, 2);
+    let best = Infinity, bi = 0;
+    for (let r = 0; r <= G; r++) {
+      for (let dz = -r; dz <= r; dz++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== r) continue;
+        const ix = cx + dx, iy = cy + dy, iz = cz + dz;
+        if (ix < 0 || iy < 0 || iz < 0 || ix >= G || iy >= G || iz >= G) continue;
+        const L = cells.get(ix + G * (iy + G * iz)); if (!L) continue;
+        for (const i of L) { const ex = src[i * 3] - x, ey = src[i * 3 + 1] - y, ez = src[i * 3 + 2] - z, d = ex * ex + ey * ey + ez * ez; if (d < best) { best = d; bi = i; } }
+      }
+      if (best < Infinity && best <= (r * cs) * (r * cs)) break;
+    }
+    return bi;
+  }
+  const easeOutBack = (k) => { const c1 = 1.2, c3 = c1 + 1; return 1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2); };
   function morphInto(rec, holder, base, label, alive) {
     return new Promise((resolve) => {
       holder.updateMatrixWorld(true);
-      const P0 = base.positions, nP = P0.length / 3, stp = Math.max(1, Math.floor(nP / 1500)), src = [];
+      const P0 = base.positions, nP = P0.length / 3, stp = Math.max(1, Math.floor(nP / 2000)), src = [];
       for (let i = 0; i < nP; i += stp) src.push(P0[i * 3], P0[i * 3 + 1], P0[i * 3 + 2]);
-      const parts = [];
+      if (!src.length) { finalize(rec, holder, label, base.bbox.center, 0.9); return resolve(); }
+      const nn = buildNN(src), parts = [];
+      let yMin = Infinity, yMax = -Infinity;
       holder.traverse((m) => {
         if (!m.isMesh || !m.geometry || !m.geometry.attributes.position) return;
         const g = m.geometry.clone(); g.applyMatrix4(m.matrixWorld);
-        const rest = Float32Array.from(g.attributes.position.array), n = rest.length / 3, start = new Float32Array(rest.length);
+        const rest = Float32Array.from(g.attributes.position.array), n = rest.length / 3, start = new Float32Array(rest.length), delay = new Float32Array(n);
         for (let i = 0; i < n; i++) {
-          const x = rest[i * 3], y = rest[i * 3 + 1], z = rest[i * 3 + 2]; let best = Infinity, bi = 0;
-          for (let j = 0; j < src.length; j += 3) { const dx = src[j] - x, dy = src[j + 1] - y, dz = src[j + 2] - z, d = dx * dx + dy * dy + dz * dz; if (d < best) { best = d; bi = j; } }
-          start[i * 3] = src[bi]; start[i * 3 + 1] = src[bi + 1]; start[i * 3 + 2] = src[bi + 2];
+          const x = rest[i * 3], y = rest[i * 3 + 1], z = rest[i * 3 + 2], j = nnQuery(nn, x, y, z);
+          start[i * 3] = src[j * 3]; start[i * 3 + 1] = src[j * 3 + 1]; start[i * 3 + 2] = src[j * 3 + 2];
+          if (y < yMin) yMin = y; if (y > yMax) yMax = y;
         }
-        g.attributes.position.array.set(start); g.attributes.position.needsUpdate = true;
-        const mesh = new THREE.Mesh(g, rec.holoMat), wire = new THREE.Mesh(g, rec.wireMat);
-        mesh.frustumCulled = false; wire.frustumCulled = false; mesh.add(wire);
-        parts.push({ mesh, wire, g, rest, start, orig: m.material });
+        parts.push({ g, rest, start, delay, n, orig: m.material });
       });
-      if (!parts.length || !src.length) { finalize(rec, holder, label, base.bbox.center); return resolve(); }
-
-      const morphRoot = new THREE.Group(); parts.forEach((p) => morphRoot.add(p.mesh));
-      const bootTemps = rec.temps.slice(), DUR = 2.4;
+      if (!parts.length) { finalize(rec, holder, label, base.bbox.center, 0.9); return resolve(); }
+      const H = Math.max(yMax - yMin, 1e-4);
+      parts.forEach((p) => { for (let i = 0; i < p.n; i++) { const yn = (p.rest[i * 3 + 1] - yMin) / H; p.delay[i] = 0.55 * yn + Math.random() * 0.05; } });
+      const morphRoot = new THREE.Group();
+      parts.forEach((p) => {
+        p.g.attributes.position.array.set(p.start); p.g.attributes.position.needsUpdate = true;
+        const mesh = new THREE.Mesh(p.g, rec.holoMat), wire = new THREE.Mesh(p.g, rec.wireMat);
+        mesh.frustumCulled = false; wire.frustumCulled = false; mesh.add(wire); p.mesh = mesh; p.wire = wire; morphRoot.add(mesh);
+      });
+      const bootTemps = rec.temps.slice(), D = 0.9, TOT = 0.55 + D;
       holoBoundsUpdate(rec, morphRoot);
       APP.scene.add(morphRoot);
-      let t = 0, unsub = null, settled = false;
-      const ease = (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
-      const stop = () => { if (settled) return false; settled = true; try { unsub && unsub(); } catch (_) {} unsub = null; APP.scene.remove(morphRoot); return true; };
+      const SP = 240, spPos = new Float32Array(SP * 3).fill(-1000), spVel = new Float32Array(SP * 3), spLife = new Float32Array(SP);
+      const spGeo = new THREE.BufferGeometry(); spGeo.setAttribute('position', new THREE.BufferAttribute(spPos, 3));
+      const spMat = new THREE.PointsMaterial({ color: 0xa6f7ff, size: 0.014, transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending });
+      const sparks = new THREE.Points(spGeo, spMat); sparks.frustumCulled = false; APP.scene.add(sparks);
+      let spHead = 0;
+      const spawnAt = (x, y, z, speed) => {
+        const s = spHead; spHead = (spHead + 1) % SP;
+        spPos[s * 3] = x; spPos[s * 3 + 1] = y; spPos[s * 3 + 2] = z;
+        const a = Math.random() * Math.PI * 2, b = (Math.random() - 0.3) * Math.PI * 0.9;
+        spVel[s * 3] = Math.cos(a) * Math.cos(b) * speed; spVel[s * 3 + 1] = Math.sin(b) * speed + 0.05; spVel[s * 3 + 2] = Math.sin(a) * Math.cos(b) * speed;
+        spLife[s] = 0.5 + Math.random() * 0.5;
+      };
+      const stepSparks = (dt) => {
+        for (let s = 0; s < SP; s++) {
+          if (spLife[s] <= 0) continue;
+          spLife[s] -= dt;
+          spPos[s * 3] += spVel[s * 3] * dt; spPos[s * 3 + 1] += spVel[s * 3 + 1] * dt; spPos[s * 3 + 2] += spVel[s * 3 + 2] * dt;
+          const damp = Math.max(0, 1 - 2.5 * dt); spVel[s * 3] *= damp; spVel[s * 3 + 1] *= damp; spVel[s * 3 + 2] *= damp;
+          if (spLife[s] <= 0) spPos[s * 3 + 1] = -1000;
+        }
+        spGeo.attributes.position.needsUpdate = true;
+      };
+      let t = 0, settled = false, unsub = null;
+      const stop = () => { if (settled) return false; settled = true; try { unsub && unsub(); } catch (_) {} unsub = null; APP.scene.remove(morphRoot); APP.scene.remove(sparks); spGeo.dispose(); spMat.dispose(); return true; };
       const cancel = () => { if (stop()) parts.forEach((p) => p.g.dispose()); resolve(); };
       const done = () => {
         if (!stop()) return;
@@ -782,20 +930,30 @@
           p.mesh.material = Array.isArray(om) ? om.map((x) => x.clone()) : (om ? om.clone() : new THREE.MeshStandardMaterial({ color: 0xcfd8dc }));
         });
         bootTemps.forEach((o) => { o.visible = false; });
-        if (alive()) finalize(rec, morphRoot, label, base.bbox.center);
+        if (alive()) finalize(rec, morphRoot, label, base.bbox.center, 0.9);
         resolve();
       };
       unsub = APP.onUpdate((dt) => {
         if (settled) return;
         if (!alive()) return cancel();
-        t += dt; const k = Math.min(1, t / DUR), e = ease(k);
+        const step = Math.min(dt, 0.05); t += step;
         for (const p of parts) {
-          const a = p.g.attributes.position.array, s = p.start, r = p.rest;
-          for (let i = 0; i < a.length; i++) a[i] = s[i] + (r[i] - s[i]) * e;
+          const a = p.g.attributes.position.array, s = p.start, r = p.rest, dl = p.delay;
+          for (let i = 0; i < p.n; i++) {
+            const e = easeOutBack(clamp((t - dl[i]) / D, 0, 1)), o = i * 3;
+            a[o] = s[o] + (r[o] - s[o]) * e; a[o + 1] = s[o + 1] + (r[o + 1] - s[o + 1]) * e; a[o + 2] = s[o + 2] + (r[o + 2] - s[o + 2]) * e;
+          }
           p.g.attributes.position.needsUpdate = true;
         }
-        bootTemps.forEach((o) => { o.visible = e < 0.5; });
-        if (k >= 1) done();
+        const k = clamp(t / TOT, 0, 1);
+        rec.wireMat.opacity = 0.2 + 0.5 * (1 - k) * (0.5 + 0.5 * Math.sin(t * 16));
+        bootTemps.forEach((o) => { o.visible = k < 0.45; });
+        if (t < TOT) for (let q = 0; q < 6; q++) {
+          const p = parts[(Math.random() * parts.length) | 0], i = (Math.random() * p.n) | 0, o = i * 3, a = p.g.attributes.position.array;
+          spawnAt(a[o], a[o + 1], a[o + 2], 0.6);
+        }
+        stepSparks(step);
+        if (t >= TOT) done();
       });
     });
   }
@@ -804,47 +962,57 @@
     const ctx = { size: r3(base.bbox.size), pca: base.pca.axes.map(r3), extents: r3(base.pca.extents), slicesY: base.sliceY, slicesMajorAxis: base.sliceAxis, label: spec.label, material: spec.material, colors: ['#' + spec.c1.getHexString(), '#' + spec.c2.getHexString()] };
     const prompt = 'Reconstruct this drawing as a realistic multi-material PBR model by returning the tool call reconstruct_realistic_mesh.\n' +
       'Write the BODY of a synchronous JavaScript function with parameters (THREE, ctx, helpers) that RETURNS a THREE.Group.\n' +
-      'Frame: origin at the drawing bbox center, X right, Y up, Z toward the viewer (FRONT panel). Overall extents must be ≈ ctx.size = ' + JSON.stringify(ctx.size) + ' meters; follow ctx.slicesY ([width,depth] per height slice, bottom→top, fractions of bbox) and ctx.slicesMajorAxis for curvature/proportions, and keep part placement identical to the drawn silhouette.\n' +
-      'Use several realistic sub-components with MeshStandardMaterial / MeshPhysicalMaterial (different materials per part), LatheGeometry, ExtrudeGeometry, TubeGeometry, helpers.roundedBox(w,h,d,r,segs), helpers.lathe(pts2D,segs), helpers.tube(pts3D,r,tubSegs,radSegs,closed), helpers.mat(color,opts), helpers.noiseTex(hexA,hexB), helpers.bumpTex(kind) for bump/roughness (assign as bumpMap/normalMap/roughnessMap/map).\n' +
-      'Rules: no async, no network, no DOM besides helpers, < 25k triangles, no scene.add, do not reference globals other than THREE/ctx/helpers. Object identified so far: ' + spec.label + '. Geometry descriptors: ' + JSON.stringify(describe(base));
+      'Frame: origin at the drawing bbox center, X right, Y up, Z toward the viewer (FRONT panel). Overall extents must be approximately ctx.size = ' + JSON.stringify(ctx.size) + ' meters; follow ctx.slicesY ([width,depth] per height slice, bottom to top, fractions of bbox) and ctx.slicesMajorAxis for curvature, and keep part placement identical to the drawn silhouette.\n' +
+      'Use several realistic sub-components with MeshStandardMaterial / MeshPhysicalMaterial, LatheGeometry, ExtrudeGeometry, TubeGeometry, helpers.roundedBox(w,h,d,r,segs), helpers.lathe(pts2D,segs), helpers.tube(pts3D,r,tubSegs,radSegs,closed), helpers.mat(color,opts).\n' +
+      'Add believable details (bevels, panel lines, rims, grooves, small parts). Rules: no async, no network, no DOM besides helpers, under 25k triangles, no scene.add, do not reference globals other than THREE/ctx/helpers. Object identified so far: ' + spec.label + '. Geometry descriptors: ' + JSON.stringify(describe(base));
     let raw = null;
     try { raw = await callAI({ systemPrompt: SYS, imageB64: snap, tool: RECON_TOOL, prompt, maxSteps: 2 }); } catch (e) { console.warn('[inst4] recon AI failed', e); }
     if (!alive()) return;
     let obj = null;
     try { if (raw && raw.code) { obj = new Function('THREE', 'ctx', 'helpers', '"use strict";\n' + raw.code)(THREE, ctx, reconHelpers()); } } catch (e) { console.warn('[inst4] recon code error', e); obj = null; }
-    if (!obj || !obj.isObject3D) { toast('Generative build failed — falling back to Mode A', 3500); return modeA(rec, spec, base, alive); }
-    finalize(rec, fitCentered(obj, base.bbox.size, 0.85, 1.18), (raw.label || spec.label), base.bbox.center);
+    if (!obj || !obj.isObject3D) { toast('Generative build failed — using Mode A', 3500); return modeA(rec, spec, base, alive); }
+    setStatus('Painting ' + spec.material + ' surface…', 'busy');
+    obj.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(obj), cen = box.getCenter(new V3()), sz = box.getSize(new V3()), sc = 1 / Math.max(sz.x, sz.y, sz.z, 1e-4);
+    obj.traverse((m) => {
+      if (!m.isMesh || !m.geometry || !m.geometry.attributes.position) return;
+      const g = m.geometry.clone(); if (!g.attributes.normal) g.computeVertexNormals();
+      m.geometry = g; m.material = paintedMaterial(spec, g, { cen, sc, M: m.matrixWorld.clone(), bump: false });
+    });
+    finalize(rec, fitCentered(obj, base.bbox.size, 0.85, 1.18), (raw.label || spec.label), base.bbox.center, 1.2);
   }
   async function manifest() {
     const strokes = S.strokes.slice(), group = S.rawGroup;
     let total = 0; strokes.forEach((s) => { total += strokeLen(s); });
     if (!strokes.length || total < MIN_LENGTH) { discardStrokes(); S.state = 0; if (strokes.length) toast('Drawing too small — cancelled'); return; }
     S.state = 2;
+    const hint = S.nameMode === 'said' ? S.hint : null; S.hint = null; S.dirty = true;
+    if (S.nameMode === 'said' && !hint) toast('No name said — recognising the drawing', 2400);
     const fwd = S.viewFwd || flatFwd(), yawQ = yawQuatFor(fwd), inv = yawQ.clone().invert(), tmp = new V3();
-    const rec = { id: ++S.jobId, strokes, group, rawEnt: S.rawEnt, temps: [], wired: [], yawQ, viewFwd: fwd, cancelled: false, mode: S.mode, root: null, entity: null };
+    const rec = { id: ++S.jobId, strokes, group, rawEnt: null, temps: [], wired: [], yawQ, viewFwd: fwd, cancelled: false, mode: S.mode, root: null, entity: null, hinted: !!hint };
     rec.payload = strokes.map((s) => { const p = new Float32Array(s.pts.length * 3), r = new Float32Array(s.pts.length); s.pts.forEach((v, i) => { tmp.copy(v).applyQuaternion(inv); p[i * 3] = tmp.x; p[i * 3 + 1] = tmp.y; p[i * 3 + 2] = tmp.z; r[i] = s.radii[i]; }); return { p, r }; });
     let rs = 0, rn = 0; strokes.forEach((s) => s.radii.forEach((r) => { rs += r; rn++; })); rec.avgR = rs / Math.max(rn, 1);
     S.undo.push(rec); if (S.undo.length > 8) { const old = S.undo.shift(); if (old.group && old.group !== S.rawGroup) { old.rawEnt ? (() => { try { APP.removeEntity(old.rawEnt, false); } catch (_) { disposeDeep(old.group); } })() : disposeDeep(old.group); } }
     S.active = rec; S.busy = true; S.strokes = []; S.viewFwd = null; newRawGroup(); group.userData.locked = true;
     const alive = () => S.active === rec && !rec.cancelled;
     try {
-      // 1) holographic transition directly on the drawn strokes
       const wb = new THREE.Box3().setFromObject(group); makeHolo(rec, wb); strokes.forEach((s) => s.mesh && holoize(rec, s.mesh));
-      setStatus('Merging strokes into one volume…', 'busy');
-      // 2) unified volume in the worker (off main thread)
+      setStatus(hint ? 'Merging ' + hint.label + '…' : 'Merging strokes into one volume…', 'busy');
       const base = await runWorker({ strokes: rec.payload, ops: [], res: 56, smoothK: rec.avgR, iter: 8, sharpen: 0, symmetry: 'none', center: [0, 0, 0] });
       if (!alive()) return;
       const bGeo = geoFromOut(base), hm = new THREE.Mesh(bGeo, rec.holoMat); hm.frustumCulled = false; hm.userData.own = true;
       hm.quaternion.copy(yawQ); hm.position.set(base.bbox.center[0], base.bbox.center[1], base.bbox.center[2]).applyQuaternion(yawQ); APP.scene.add(hm); rec.temps.push(hm);
       const wm = new THREE.Mesh(bGeo, rec.wireMat); wm.frustumCulled = false; hm.add(wm); rec.temps.push(wm);
       group.visible = false; hm.updateMatrixWorld(true); holoBoundsUpdate(rec, hm);
-      // 3) accurate close-up snapshot of ONLY the drawing
-      setStatus('Capturing close-up views…', 'busy'); const snap = renderViews(base);
-      // 4) strategy by mode
+      const needSnap = S.mode === 'C' || !hint;
+      const snap = needSnap ? renderViews(base) : null;
       let spec;
-      if (S.mode === 'A') { spec = await analyze(snap, base, 'Task: recognise the object; plan symmetry, edge sharpness, material colors and clean sub-part details (wheels, grooves, rims…).'); if (!alive()) return; await modeA(rec, spec, base, alive); }
-      else if (S.mode === 'B') { spec = await analyze(snap, base, 'Task: ALSO give matchedKeywords (ranked single-word nouns and synonyms, e.g. car, sedan, vehicle) plus facing and lying.'); if (!alive()) return; await modeB(rec, spec, base, alive); }
-      else { spec = await analyze(snap, base, 'Task: identify the object and its material/colors; a realistic model will be generated from your answer.'); if (!alive()) return; await modeC(rec, spec, base, snap, alive); }
+      if (hint) spec = specFromHint(hint, base);
+      else spec = await analyze(snap, base, S.mode === 'A' ? A_TASK : S.mode === 'B' ? B_TASK : C_TASK);
+      if (!alive()) return;
+      if (S.mode === 'A') await modeA(rec, spec, base, alive);
+      else if (S.mode === 'B') await modeB(rec, spec, base, alive);
+      else await modeC(rec, spec, base, snap || renderViews(base), alive);
       if (alive() && !rec.root) throw new Error('no output');
     } catch (e) {
       if (!rec.cancelled) { console.error('[inst4] manifest failed', e); toast('Manifest failed (' + (e && e.message || e) + ') — raw strokes restored', 4200); undoLast(); }
@@ -902,6 +1070,7 @@
 
   // ------------------------------------------------------------------ two-stage input state machine
   function tickSculpt() {
+    if (S.rawGroup && !S.rawGroup.visible && !S.busy) S.rawGroup.visible = true;
     const ins = [readHand(APP.hands?.left, 'L'), readHand(APP.hands?.right, 'R')].filter(Boolean);
     if (!S.sculptOn || S.busy) { endAllStrokes(); S.cursors.forEach((c) => (c.visible = false)); if (!S.busy) S.state = 0; return; }
     const grip = ins.some((i) => i.grip) || S.keyG;
@@ -933,9 +1102,10 @@
   function setMinimized(b) { S.minimized = b; if (P.board) { P.board.visible = !b; P.orb.visible = b; } S.dirty = true; syncPokes(); }
 
   const BTN = [
-    { id: 'sculpt', row: 1, rect: [24, 120, 500, 130], label: () => (S.sculptOn ? 'SCULPT: ON' : 'SCULPT: OFF'), active: () => S.sculptOn, act: () => toggleSculpt() },
-    { id: 'undo', row: 1, rect: [540, 120, 220, 130], label: () => '↶ Undo', act: () => undoLast() },
-    { id: 'clear', row: 1, rect: [780, 120, 220, 130], label: () => '✕ Clear', act: () => clearAll() }
+    { id: 'sculpt', row: 1, rect: [24, 120, 360, 130], label: () => (S.sculptOn ? 'SCULPT: ON' : 'SCULPT: OFF'), active: () => S.sculptOn, act: () => toggleSculpt() },
+    { id: 'name', row: 1, rect: [400, 120, 240, 130], label: () => (S.nameMode === 'said' ? 'I SAY IT\n' + (S.hint ? S.hint.label.slice(0, 12) : '…') : 'AUTO\nrecognise'), active: () => S.nameMode === 'said', act: () => setNameMode(S.nameMode === 'said' ? 'auto' : 'said') },
+    { id: 'undo', row: 1, rect: [656, 120, 170, 130], label: () => '↶ Undo', act: () => undoLast() },
+    { id: 'clear', row: 1, rect: [842, 120, 158, 130], label: () => '✕ Clear', act: () => clearAll() }
   ].concat(MODES.map((m, i) => ({ id: 'm' + m.id, row: 2, rect: [24 + i * 333, 275, 310, 130], label: () => m.name + '\n' + m.sub, active: () => S.mode === m.id, act: () => setMode(m.id) })))
     .concat(BRUSHES.map((b, i) => ({ id: 'b' + i, row: 3, rect: [24 + i * 250, 430, 225, 130], label: () => b.n + '\n' + b.r.toFixed(3) + 'm', active: () => S.brush === i, act: () => setBrush(i) })))
     .concat([{ id: 'min', row: 0, rect: [880, 14, 120, 68], label: () => '—', act: () => setMinimized(true), hud: false }]);
@@ -1029,6 +1199,10 @@
   });
   const hudStatus = document.createElement('div'); hudStatus.style.cssText = 'margin-top:4px;color:#9fd7e8'; hud.appendChild(hudStatus);
   const hudHint = document.createElement('div'); hudHint.style.cssText = 'color:#6d8fa0;font-size:11px;margin-top:2px'; hudHint.textContent = 'Hold G + drag mouse to draw (wheel = depth) · release G to manifest'; hud.appendChild(hudHint);
+  const hudIn = document.createElement('input'); hudIn.placeholder = 'I am drawing a… (Enter)';
+  hudIn.style.cssText = 'margin-top:4px;width:100%;box-sizing:border-box;padding:6px 8px;border-radius:8px;border:1px solid #2f5a70;background:#0c1820;color:#d6f4ff;font:inherit';
+  hudIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { setHint(hudIn.value); hudIn.value = ''; } });
+  hud.appendChild(hudIn);
   document.body.appendChild(hud);
   function refreshHud() {
     hudBtns.forEach(({ b, el }) => { const a = b.active && b.active(); el.textContent = b.label().replace('\n', ' · '); el.style.background = a ? '#14a8c9' : '#162a38'; el.style.color = a ? '#04141b' : '#d6f4ff'; });
@@ -1067,55 +1241,8 @@
     hud.style.display = (APP.xrMode === 'none') ? 'block' : 'none';
   });
 
-  APP._inst4 = { toggle: toggleSculpt, undo: undoLast, clear: clearAll, setMode, cycleMode, state: S };
+  APP._inst4 = { toggle: toggleSculpt, undo: undoLast, clear: clearAll, setMode, cycleMode, setHint, setNameMode, state: S };
   APP._inst4Cleanup = () => {
     S.disposed = true; try { unsub && unsub(); } catch (_) {}
     listeners.forEach((fn) => { try { fn(); } catch (_) {} });
-    try { if (worker) worker.terminate(); } catch (_) {} pend.forEach((p) => p.rej(new Error('disposed'))); pend.clear(); worker = null;
-    S.reveals.forEach((rv) => { rv.root && rv.root.traverse((o) => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { m.clippingPlanes = null; m.needsUpdate = true; }); }); }); S.reveals = [];
-    endAllStrokes(); S.cursors.forEach((c) => APP.scene.remove(c)); S.cursors.clear();
-    S.undo.forEach((r) => { cleanHolo(r); if (r.group) { r.rawEnt ? (() => { try { APP.removeEntity(r.rawEnt, false); } catch (_) { disposeDeep(r.group); } })() : disposeDeep(r.group); } });
-    if (S.rawGroup) { S.rawEnt ? (() => { try { APP.removeEntity(S.rawEnt, false); } catch (_) { disposeDeep(S.rawGroup); } })() : disposeDeep(S.rawGroup); }
-    try { [P.screen, P.bar, P.orb].forEach((m) => APP.pokeTargets && APP.pokeTargets.delete(m)); } catch (_) {}
-    try { APP.scene.remove(P.root); P.tex.dispose(); disposeDeep(P.root); } catch (_) {}
-    try { hud.remove(); } catch (_) {}
-    disposers.forEach((fn) => { try { fn(); } catch (_) {} });
-    try { APP.renderer.localClippingEnabled = !!S.prevLocal; } catch (_) {}
-    if (APP._inst4 && APP._inst4.state === S) APP._inst4 = null;
-  };
-  toast('Sculpt module ready — press the Sculpt toggle, hold Grip (G) + Trigger to draw', 3200);
-})();
-@end
-
-@ability: sculpt_toggle
-@pin: Sculpt ON/OFF
-@desc: Toggle 3D air-drawing (sculpt) mode on or off
-@match: sculpt on | sculpt off | toggle sculpt | start sculpting | stop sculpting
-@code:
-(async function () {
-  if (!APP._inst4) { APP.ui?.toast?.('Sculpt module not loaded yet', 2500); return; }
-  APP._inst4.toggle();
-})();
-@end
-
-@ability: sculpt_undo
-@pin: Sculpt Undo
-@desc: Remove the last manifested sculpture and restore its raw strokes for editing
-@match: undo sculpt | undo drawing | restore strokes
-@code:
-(async function () {
-  if (!APP._inst4) { APP.ui?.toast?.('Sculpt module not loaded yet', 2500); return; }
-  APP._inst4.undo();
-})();
-@end
-
-@ability: sculpt_mode_cycle
-@pin: Sculpt Mode
-@desc: Cycle output mode A (AI refine) / B (GLB match) / C (generative 3D)
-@match: sculpt mode | change sculpt mode | output mode
-@code:
-(async function () {
-  if (!APP._inst4) { APP.ui?.toast?.('Sculpt module not loaded yet', 2500); return; }
-  APP._inst4.cycleMode();
-})();
-@end
+    try { if (worker) worker.terminate(); } catch (_) {} pend.forEach((p) => p.re
