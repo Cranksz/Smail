@@ -1,0 +1,64 @@
+
+
+# ======================================================================
+# detection.txt — Forensic Investigation, Sherlock Holmes Deduction &
+#   FBI Educational Knowledge Base (Freely Editable on GitHub / Sandbox)
+# ======================================================================
+
+[SHERLOCK_METHODOLOGY]
+- Rule 1 (Observe Before Theorizing): Separate raw physical observations from assumptions. List timestamped, measurable anomalies first.
+- Rule 2 (Cluster Validation): Never convict or conclude from a single cue; require 3+ converging indicators across posture, environment, object wear, and context.
+- Rule 3 (Locard's Exchange Principle): Every contact leaves a trace—fibers, ink bleed, dust disturbance, reflection angles, oil smudges, or micro-scratches.
+- Rule 4 (Baseline vs Deviation): Compare subject behavior or object state against its natural resting baseline. Sharp deviations mark psychological friction or tampering.
+- Rule 5 (Negative Evidence): Notice what SHOULD be present but is missing (e.g., missing dust on a table, absent shadow consistency, wiped handle, missing defensive marks).
+
+[BODY_LANGUAGE_KINESICS]
+- Stress & Pacifying Adaptors: Neck/suprasternal notch touching, collar pulling, lip compression, eye-rubbing, or wrist/knuckle gripping signal autonomic arousal or concealment.
+- Posture & Torso Vector: Torso blading (45-deg angle away) + feet pointed toward exit = desire to disengage/escape. Asymmetric shoulder elevation = suppressed tension.
+- Hand & Arm Leakage: Concealed palms/pockets reduce perceived openness; sudden self-hugging or rigid forearm lock indicates defensive bracing; stiff frozen hands during emotional speech signal cognitive rehearsal.
+- Gaze & Proxemics: Sustained freeze before answering + micro-blink burst after critical keyword = high cognitive load; lateral glance toward exit or an accomplice/object reveals true priority.
+- Micro-Posture Balance: Weight shifted onto back foot = hesitation/retreat; forward lean + steeple fingers = high confidence/control.
+
+[GRAPHOLOGY_DOCUMENT_FORENSICS]
+- Baseline Trajectory: Steadily ascending lines = ambition, adrenaline, or urgency; sharply descending tail = exhaustion, resignation, or depression; wavy baseline = emotional instability or writing without surface support.
+- Pen Pressure & Ink Pooling: Heavy indented strokes + dark ink pooling = high tension, anger, or slow deliberate tracing (common in forgery!). Light erratic pressure = haste or timidity.
+- Tremor & Hesitation Markers (Forgery Indicators): Blunt stroke starts/stops (pen lifts/pauses), unnatural micro-tremors in curved loops, and patched/retouched letter junctions strongly indicate simulation/forgery rather than natural speed.
+- Slant & Spacing: Rightward slant = expressive/impulsive; vertical = controlled/analytical; leftward slant = guarded/repressed; inconsistent slant within one sentence = internal conflict or disguised hand.
+- Signature vs Body Divergence: Large ornate signature vs cramped body text = ego projection/facade; cramped signature = secrecy or reluctance to commit.
+
+[PHYSIOGNOMY_AND_FACIAL_ANALYSIS]
+- Educational Structural Proportions: Upper third (brow-hairline: analytical focus), middle third (brow-nose: drive/assertiveness), lower third (nose-chin: determination/jaw tension). Always pair structural geometry with dynamic muscular expression (FACS Action Units).
+- Facial Action Units (FACS Leakage):
+  * AU1+AU2+AU4 (Inner+outer brow raise with knit glabella) = genuine fear/distress (hard to fake).
+  * AU4 (Brow lowerer) + AU23/AU24 (Lip tightener) = suppressed anger or focused hostility.
+  * AU14 (Unilateral dimpler / one-sided lip raise) = contempt, superiority, or knowing secret.
+  * AU6+AU12 (Crow's feet + zygomatic smile) = genuine Duchenne smile vs AU12 alone = social mask.
+- Facial Hair & Eyewear Disguise Profile: Thick mustaches mask AU10/AU12/AU23 upper-lip micro-tension; tinted/thick glasses conceal pupil dilation, blink rate, and AU6 orbicularis activation. Removing them reveals true emotional baseline and lower-face asymmetry.
+
+[CRIME_SCENE_FORENSICS]
+- Entry / Exit & Fracture Mechanics: Radial & concentric glass cracks reveal impact side (concentric flakes exit opposite impact). Dust trails or disturbed cobwebs date passage.
+- Lighting & Reflection Forensics: Check specular highlights in glass, eyes, metallic objects, and shadow lengths to detect time-of-day contradictions or image tampering.
+- Staged vs Genuine Scene Indicators: Overly neat "robbery" where high-value small items remain untouched, or forced locks damaged from the inside, indicate staging.
+- Object Position & Use Wear: Dominant-hand placement (cup handles, weapon angle, drawer pull smudges) reveals handedness and sequence of events.
+- Fluid & Residue Patterns: Gravity drips vs directional cast-off arcs distinguish stationary bleeding/spills from motion trajectories.
+
+[FINGERPRINT_BIOMETRICS]
+- Level-1 Patterns (Henry System):
+  * Arch (Plain / Tented): Ridges enter one side and exit the other (~5% population).
+  * Loop (Radial / Ulnar): Ridges enter, curve around a core with one delta, and exit same side (~60-65% population).
+  * Whorl (Plain / Central Pocket / Double Loop / Accidental): Circular/spiral core bounded by two or more deltas (~30-35% population).
+- Level-2 Minutiae (Galton Points): Ridge Endings, Bifurcations (forks), Lakes/Enclosures, Islands/Dots, Spurs, and Crossovers.
+- Forensic Identification Standard: Compare pattern class first (exclusion check), then align core/delta axis and verify relative spacing/angles of 8-12+ matching minutiae with zero unexplainable discrepancies.
+
+[DEDUCTION_LINK_RULES]
+- Connect physical anomalies (e.g. torn cuff, watch stopped at 11:42, heavy ink pressure on final word) to behavioral cues (e.g. left-shoulder guard, exit-oriented stance) to form testable hypotheses ranked by probability %.
+- Always state: (1) Primary Secret / Finding, (2) Supporting Clues with coordinates, (3) Alternative Hypothesis, (4) Recommended Next Forensic Tool (Enhance Blur / Track / Fingerprint / Face Reveal).
+
+@ability: detection_kb_sync
+@desc: Hot-reloads detection.txt forensic knowledge base live in Sandbox.
+@code:
+if (APP.detection?.setKnowledgeText) {
+  APP.detection.setKnowledgeText(APP.modules?.['detection.txt'] || '');
+}
+@end
+
