@@ -1,0 +1,2005 @@
+# ======================================================================
+# instruction5.txt — Lag-Free Sci-Fi FBI & Sherlock Holmes Workstation
+#   • Zero-Lag GPU Shader 3D Depth Mesh + Background Web Worker AI Depth
+#   • GPU GLSL Line-Pattern Radar & Holographic Scanbeams (60fps)
+#   • Freehand Lasso Outline Drawing & Selective Target Highlighting
+#   • 6 Independently Draggable 3D Mini Windows + Live Neural Connectors
+#   • Real 128-D Face Recognition & Watchlist (@vladmandic/face-api)
+#   • MediaPipe Video Tracking + Galton Fingerprint Matcher + Undo/Reset
+#   • Connected to Free APP.ai.editImage() & Self-Improving Brain
+# ======================================================================
+
+@ability: fbi_forensic_suite
+@autorun
+@pin: FBI Studio
+@desc: Lag-free 3D Sci-Fi FBI & Sherlock Holmes forensic workstation with GPU depth 3D scanning, Web Worker AI depth, freehand outline drawing & highlighting, 128-D face recognition, video tracking, fingerprint minutiae matching, draggable mini windows, Undo & Reset.
+@match: fbi | forensic | forensics | detective | sherlock | crime scene | body language | graphology | physiognomy | solve mystery | connect clues | open lab | investigation | تحقيق | تحليل جنائي | شيرلوك | لغة الجسد | خط اليد | مسرح الجريمة | فراسة
+@code:
+(function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return { ok: false, error: 'Scene not ready.' };
+
+  if (typeof APP._inst5Cleanup === 'function') {
+    try { APP._inst5Cleanup(); } catch (_) {}
+  }
+
+  // ====================================================================
+  // 0. TACTILE AUDIO + WATCHLIST + KNOWLEDGE BASE (detection.txt)
+  // ====================================================================
+  let uiAudioCtx = null;
+  function playUiBeep(freq = 840, dur = 0.04, type = 'sine') {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!uiAudioCtx) uiAudioCtx = new AC();
+      if (uiAudioCtx.state === 'suspended') uiAudioCtx.resume().catch(() => {});
+      const osc = uiAudioCtx.createOscillator(), gain = uiAudioCtx.createGain();
+      osc.type = type; osc.frequency.setValueAtTime(freq, uiAudioCtx.currentTime);
+      gain.gain.setValueAtTime(0.045, uiAudioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, uiAudioCtx.currentTime + dur);
+      osc.connect(gain); gain.connect(uiAudioCtx.destination);
+      osc.start(); osc.stop(uiAudioCtx.currentTime + dur);
+    } catch (_) {}
+  }
+
+  const LS_FACE_DB = 'nxr_fbi_facedb_v2';
+  let faceWatchlist = [];
+  try { faceWatchlist = JSON.parse(localStorage.getItem(LS_FACE_DB) || '[]'); } catch (_) { faceWatchlist = []; }
+  function saveFaceWatchlist() {
+    try { localStorage.setItem(LS_FACE_DB, JSON.stringify(faceWatchlist.slice(0, 24))); } catch (_) {}
+  }
+
+  const DEFAULT_KB = `[SHERLOCK_METHODOLOGY]
+- Observe raw anomalies first; require 3+ converging clues across posture, lighting, wear & text.
+[BODY_LANGUAGE_KINESICS]
+- Pacifying adaptors, asymmetric shoulder tension, torso blading toward exit.
+[GRAPHOLOGY_DOCUMENT_FORENSICS]
+- Baseline slant, ink pressure pooling, tremor/hesitation at junctions (forgery).
+[PHYSIOGNOMY_AND_FACIAL_ANALYSIS]
+- Structural proportions + FACS Action Units (AU1+2+4 fear, AU14 contempt, AU6+12 genuine smile).
+[CRIME_SCENE_FORENSICS]
+- Locard traces, glass fracture vectors, shadow contradictions, staged vs chaotic indicators.
+[FINGERPRINT_BIOMETRICS]
+- Henry Pattern (Arch/Loop/Whorl) + Galton Level-2 minutiae.`;
+
+  const kbState = { raw: DEFAULT_KB, sections: {} };
+  function parseKnowledgeBase(raw) {
+    kbState.raw = String(raw || '').trim() || DEFAULT_KB;
+    kbState.sections = {};
+    let cur = 'GENERAL';
+    for (const line of kbState.raw.split('\n')) {
+      const tr = line.trim();
+      if (!tr || tr.startsWith('#') || tr.startsWith('@')) continue;
+      const m = tr.match(/^\[([A-Z0-9_]+)\]$/);
+      if (m) { cur = m[1]; kbState.sections[cur] = kbState.sections[cur] || []; }
+      else (kbState.sections[cur] = kbState.sections[cur] || []).push(tr);
+    }
+  }
+  parseKnowledgeBase(APP.modules?.['detection.txt'] || DEFAULT_KB);
+
+  async function loadDetectionTxt() {
+    let txt = null;
+    try { if (typeof APP.fetchModuleText === 'function') txt = await APP.fetchModuleText('detection.txt'); } catch (_) {}
+    if (!txt) {
+      try { const res = await fetch('./detection.txt?t=' + Date.now(), { cache: 'no-store' }); if (res.ok) txt = await res.text(); } catch (_) {}
+    }
+    if (txt) {
+      if (APP.modules) APP.modules['detection.txt'] = txt;
+      parseKnowledgeBase(txt);
+      pushLog('Synced detection.txt (' + Object.keys(kbState.sections).length + ' domains).');
+    } else if (APP.modules && !APP.modules['detection.txt']) {
+      APP.modules['detection.txt'] = DEFAULT_KB;
+    }
+  }
+
+  function getRelevantKB(domainHint) {
+    const low = String(domainHint || '').toLowerCase();
+    const keys = Object.keys(kbState.sections);
+    if (!keys.length) return kbState.raw.slice(0, 2800);
+    const chosen = new Set(['SHERLOCK_METHODOLOGY', 'DEDUCTION_LINK_RULES']);
+    if (/body|posture|kinesic|gesture|لغة الجسد/.test(low)) chosen.add('BODY_LANGUAGE_KINESICS');
+    if (/handwriting|graphology|write|letter|sign|خط/.test(low)) chosen.add('GRAPHOLOGY_DOCUMENT_FORENSICS');
+    if (/face|physiognomy|mustache|glasses|فراسة|وجه/.test(low)) chosen.add('PHYSIOGNOMY_AND_FACIAL_ANALYSIS');
+    if (/crime|scene|room|blood|weapon|glass|مسرح/.test(low)) chosen.add('CRIME_SCENE_FORENSICS');
+    if (/finger|print|ridge|بصمة/.test(low)) chosen.add('FINGERPRINT_BIOMETRICS');
+    if (chosen.size <= 2) keys.forEach((k) => chosen.add(k));
+    return Array.from(chosen).filter((k) => kbState.sections[k]?.length).map((k) => `[${k}]\n` + kbState.sections[k].join('\n')).join('\n\n').slice(0, 4200);
+  }
+
+  // ====================================================================
+  // 1. STATE & UNDO / RESET STACK
+  // ====================================================================
+  const fbiState = {
+    open: false,
+    busy: false,
+    pickerOpen: true,
+    drawOutlineMode: true,
+    statusText: 'READY // SELECT EVIDENCE OR CASE',
+    mode: 'auto',
+    evidenceType: 'none',
+    evidenceTitle: 'EVIDENCE BAY',
+    sourceImg: null,
+    sourceVideo: null,
+    secondaryPrintImg: null,
+    enhancedCanvas: null,
+    showEnhanced: false,
+    outlines: [],
+    activeStroke: null,
+    depthSource: 'None',
+    clues: [],
+    activeClueIdx: 0,
+    clueCycleTimer: 0,
+    cvDetections: [],
+    cvPoses: [],
+    faceResults: [],
+    tracks: [],
+    nextTrackId: 1,
+    trackSearchQuery: '',
+    trackingActive: false,
+    lastVideoDetectTs: 0,
+    lastVideoDrawTs: 0,
+    fingerprintReport: null,
+    deductionSummary: 'Load an Image/Video or Case below. Drag freely over any object to draw a highlight outline, then click ANALYSE, ENHANCE ROI, DEPTH 3D (AI), or FACE RECOG.',
+    hypothesisLinks: [],
+    logs: [],
+    lastScanSubject: 'Awaiting Subject',
+    flashBtnId: null,
+    flashUntil: 0
+  };
+
+  const undoStack = [];
+  function pushUndoSnapshot(tag) {
+    undoStack.push({
+      tag,
+      outlines: JSON.parse(JSON.stringify(fbiState.outlines)),
+      clues: JSON.parse(JSON.stringify(fbiState.clues)),
+      showEnhanced: fbiState.showEnhanced,
+      enhancedCanvas: fbiState.enhancedCanvas,
+      deductionSummary: fbiState.deductionSummary,
+      hypothesisLinks: JSON.parse(JSON.stringify(fbiState.hypothesisLinks)),
+      faceResults: JSON.parse(JSON.stringify(fbiState.faceResults)),
+      fingerprintReport: fbiState.fingerprintReport ? JSON.parse(JSON.stringify(fbiState.fingerprintReport)) : null
+    });
+    if (undoStack.length > 25) undoStack.shift();
+  }
+
+  function performUndo() {
+    playUiBeep(540, 0.05);
+    if (fbiState.activeStroke) { fbiState.activeStroke = null; redrawMainViewport(); return { ok: true }; }
+    if (!undoStack.length) { APP.ui?.toast?.('Nothing to undo.', 1500); return { ok: false }; }
+    const snap = undoStack.pop();
+    fbiState.outlines = snap.outlines;
+    fbiState.clues = snap.clues;
+    fbiState.showEnhanced = snap.showEnhanced;
+    fbiState.enhancedCanvas = snap.enhancedCanvas;
+    fbiState.deductionSummary = snap.deductionSummary;
+    fbiState.hypothesisLinks = snap.hypothesisLinks;
+    fbiState.faceResults = snap.faceResults;
+    fbiState.fingerprintReport = snap.fingerprintReport;
+    fbiState.activeClueIdx = 0;
+    pushLog(`UNDO (${snap.tag}).`);
+    APP.ui?.toast?.(`Undid: ${snap.tag}`, 1600);
+    updateDepthShaderMaskAndTexture();
+    refreshAllWindows();
+    return { ok: true };
+  }
+
+  function performReset() {
+    playUiBeep(420, 0.07, 'triangle');
+    pushUndoSnapshot('before_reset');
+    fbiState.outlines = [];
+    fbiState.activeStroke = null;
+    fbiState.clues = [];
+    fbiState.tracks = [];
+    fbiState.faceResults = [];
+    fbiState.fingerprintReport = null;
+    fbiState.enhancedCanvas = null;
+    fbiState.showEnhanced = false;
+    fbiState.trackingActive = false;
+    fbiState.activeClueIdx = 0;
+    fbiState.statusText = fbiState.evidenceType === 'none' ? 'READY // EVIDENCE BAY' : 'RESET COMPLETE // READY';
+    fbiState.deductionSummary = fbiState.evidenceType === 'none'
+      ? 'Workstation reset. Pick an Evidence item or Training Case.'
+      : `Cleared outlines & overlays on "${fbiState.evidenceTitle}". Draw new outlines or run a tool.`;
+    resetWindowLayout();
+    updateDepthShaderMaskAndTexture();
+    pushLog('RESET: Cleared overlays & snapped 6 mini-windows.');
+    APP.ui?.toast?.('Reset outlines, overlays & window layout!', 1800);
+    refreshAllWindows();
+    return { ok: true };
+  }
+
+  function pushLog(msg) {
+    const ts = new Date().toTimeString().slice(0, 8);
+    fbiState.logs.unshift(`[${ts}] ${msg}`);
+    if (fbiState.logs.length > 22) fbiState.logs.length = 22;
+    redrawRadarText();
+  }
+
+  const workCanvas = document.createElement('canvas');
+  workCanvas.width = 960; workCanvas.height = 600;
+  const workCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+  let lastImgRect = { x: 14, y: 44, w: 996, h: 554 };
+
+  function syncWorkCanvasFromSource(rawOnly = false) {
+    if (!rawOnly && fbiState.showEnhanced && fbiState.enhancedCanvas) {
+      workCanvas.width = fbiState.enhancedCanvas.width;
+      workCanvas.height = fbiState.enhancedCanvas.height;
+      workCtx.drawImage(fbiState.enhancedCanvas, 0, 0);
+      return true;
+    }
+    if (fbiState.evidenceType === 'video' && fbiState.sourceVideo && fbiState.sourceVideo.readyState >= 2) {
+      const vw = fbiState.sourceVideo.videoWidth || 960, vh = fbiState.sourceVideo.videoHeight || 540;
+      const scale = Math.min(1, 960 / vw);
+      workCanvas.width = Math.round(vw * scale); workCanvas.height = Math.round(vh * scale);
+      workCtx.drawImage(fbiState.sourceVideo, 0, 0, workCanvas.width, workCanvas.height);
+      return true;
+    }
+    if (fbiState.sourceImg && fbiState.sourceImg.complete && (fbiState.sourceImg.naturalWidth > 0 || fbiState.sourceImg.width > 0)) {
+      const iw = fbiState.sourceImg.naturalWidth || fbiState.sourceImg.width;
+      const ih = fbiState.sourceImg.naturalHeight || fbiState.sourceImg.height;
+      const scale = Math.min(1, 960 / iw);
+      workCanvas.width = Math.round(iw * scale); workCanvas.height = Math.round(ih * scale);
+      workCtx.drawImage(fbiState.sourceImg, 0, 0, workCanvas.width, workCanvas.height);
+      return true;
+    }
+    return false;
+  }
+
+  function getOutlineBBox(poly) {
+    if (!poly || poly.length < 2) return null;
+    let minX = 1, minY = 1, maxX = 0, maxY = 0;
+    for (const p of poly) {
+      if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
+    }
+    return { x: Math.max(0, minX), y: Math.max(0, minY), w: Math.max(0.03, Math.min(1, maxX) - minX), h: Math.max(0.03, Math.min(1, maxY) - minY) };
+  }
+
+  function pointInPolygon(x, y, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-6) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+
+  function getCroppedOutlineBase64(poly) {
+    syncWorkCanvasFromSource();
+    if (!poly || poly.length < 3) return workCanvas.toDataURL('image/jpeg', 0.88).split(',')[1];
+    const bb = getOutlineBBox(poly);
+    const sx = Math.floor(bb.x * workCanvas.width), sy = Math.floor(bb.y * workCanvas.height);
+    const sw = Math.max(32, Math.floor(bb.w * workCanvas.width)), sh = Math.max(32, Math.floor(bb.h * workCanvas.height));
+    const c = document.createElement('canvas'); c.width = sw; c.height = sh;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#040a14'; ctx.fillRect(0, 0, sw, sh);
+    ctx.save(); ctx.beginPath();
+    poly.forEach((p, idx) => { const px = p.x * workCanvas.width - sx, py = p.y * workCanvas.height - sy; if (idx === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); });
+    ctx.closePath(); ctx.clip(); ctx.drawImage(workCanvas, sx, sy, sw, sh, 0, 0, sw, sh); ctx.restore();
+    return c.toDataURL('image/jpeg', 0.90).split(',')[1];
+  }
+
+  // ====================================================================
+  // 2. NON-BLOCKING BACKGROUND WEB WORKER AI DEPTH (ZERO FREEZING!)
+  // ====================================================================
+  let depthWorker = null;
+  let depthWorkerBusy = false;
+
+  function computeInstantReliefDepthTexture() {
+    if (!syncWorkCanvasFromSource(true)) return null;
+    const S = 96;
+    const sc = document.createElement('canvas'); sc.width = S; sc.height = S;
+    const sCtx = sc.getContext('2d', { willReadFrequently: true });
+    sCtx.drawImage(workCanvas, 0, 0, S, S);
+    const px = sCtx.getImageData(0, 0, S, S).data;
+    const out = new Uint8Array(S * S * 4);
+
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x;
+        const lum = (0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]) / 255;
+        const ir = y * S + Math.min(S - 1, x + 1);
+        const id = Math.min(S - 1, y + 1) * S + x;
+        const lumR = (0.299 * px[ir * 4] + 0.587 * px[ir * 4 + 1] + 0.114 * px[ir * 4 + 2]) / 255;
+        const lumD = (0.299 * px[id * 4] + 0.587 * px[id * 4 + 1] + 0.114 * px[id * 4 + 2]) / 255;
+        const edge = Math.min(1, (Math.abs(lum - lumR) + Math.abs(lum - lumD)) * 2.6);
+        const radial = Math.max(0, 1.0 - Math.hypot(x / S - 0.5, y / S - 0.5) * 1.45);
+        const v = Math.min(255, Math.max(0, Math.round((lum * 0.48 + edge * 0.62 + radial * 0.32) * 255)));
+        out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255;
+      }
+    }
+    const tex = new THREE.DataTexture(out, S, S, THREE.RGBAFormat);
+    tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    fbiState.depthSource = 'FastRelief';
+    return tex;
+  }
+
+  function getOrCreateDepthWorker() {
+    if (depthWorker) return depthWorker;
+    const workerCode = `
+      let pipe = null;
+      self.onmessage = async (ev) => {
+        const { id, dataUrl } = ev.data || {};
+        try {
+          if (!pipe) {
+            self.postMessage({ id, status: 'progress', msg: 'Downloading Depth-Anything-V2...' });
+            const tfm = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/+esm');
+            if (tfm.env) tfm.env.allowLocalModels = false;
+            pipe = await tfm.pipeline('depth-estimation', 'onnx-community/depth-anything-v2-small', {
+              device: 'wasm',
+              progress_callback: (p) => {
+                if (p && typeof p.progress === 'number') {
+                  self.postMessage({ id, status: 'progress', msg: 'Depth Model ' + Math.round(p.progress) + '%' });
+                }
+              }
+            });
+          }
+          self.postMessage({ id, status: 'progress', msg: 'Inferring Neural Depth...' });
+          const out = await pipe(dataUrl);
+          const d = out && out.depth;
+          if (!d || !d.data) throw new Error('Empty depth tensor');
+          const w = d.width, h = d.height, raw = d.data;
+          let mn = Infinity, mx = -Infinity;
+          for (let i = 0; i < raw.length; i++) { if (raw[i] < mn) mn = raw[i]; if (raw[i] > mx) mx = raw[i]; }
+          const sp = Math.max(1e-5, mx - mn);
+          const rgba = new Uint8Array(w * h * 4);
+          for (let i = 0; i < w * h; i++) {
+            const v = Math.round(((raw[i] - mn) / sp) * 255);
+            rgba[i * 4] = v; rgba[i * 4 + 1] = v; rgba[i * 4 + 2] = v; rgba[i * 4 + 3] = 255;
+          }
+          self.postMessage({ id, status: 'done', width: w, height: h, rgba }, [rgba.buffer]);
+        } catch (err) {
+          self.postMessage({ id, status: 'error', error: err.message || String(err) });
+        }
+      };
+    `;
+    const blobUrl = URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }));
+    depthWorker = new Worker(blobUrl, { type: 'module' });
+    URL.revokeObjectURL(blobUrl);
+    return depthWorker;
+  }
+
+  function runAIDepthInWorker() {
+    if (!requireEvidenceOrPick('Load an image first for Neural 3D Depth!')) return { ok: false };
+    if (depthWorkerBusy) { APP.ui?.toast?.('Background AI Depth already running...', 1600); return { ok: false }; }
+    syncWorkCanvasFromSource(true);
+    // Downscale input for fast background inference (max 384px)
+    const sc = Math.min(1, 384 / Math.max(workCanvas.width, workCanvas.height));
+    const tmp = document.createElement('canvas');
+    tmp.width = Math.max(64, Math.round(workCanvas.width * sc));
+    tmp.height = Math.max(64, Math.round(workCanvas.height * sc));
+    tmp.getContext('2d').drawImage(workCanvas, 0, 0, tmp.width, tmp.height);
+
+    depthWorkerBusy = true;
+    fbiState.statusText = 'AI DEPTH WORKER RUNNING (60FPS)...';
+    pushLog('Started background Web Worker Depth-Anything-V2...');
+    refreshAllWindows();
+
+    const wk = getOrCreateDepthWorker();
+    const jobId = Date.now();
+    wk.onmessage = (ev) => {
+      const m = ev.data || {};
+      if (m.id !== jobId) return;
+      if (m.status === 'progress') {
+        fbiState.statusText = m.msg.toUpperCase();
+        redrawMainViewport();
+        return;
+      }
+      depthWorkerBusy = false;
+      if (m.status === 'done' && m.rgba) {
+        const tex = new THREE.DataTexture(new Uint8Array(m.rgba), m.width, m.height, THREE.RGBAFormat);
+        tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+        tex.flipY = true;
+        tex.needsUpdate = true;
+        if (depthTexRef) depthTexRef.dispose();
+        depthTexRef = tex;
+        scanShaderUniforms.uDepthTex.value = tex;
+        fbiState.depthSource = 'DepthAnythingV2 (Neural)';
+        fbiState.statusText = 'NEURAL 3D DEPTH COMPLETE';
+        pushLog(`Neural Depth Map applied (${m.width}x${m.height}).`);
+        APP.ui?.toast?.('True Neural 3D Depth Scan Complete!', 2400);
+        playUiBeep(1020, 0.05);
+      } else {
+        fbiState.statusText = 'FAST RELIEF DEPTH ACTIVE';
+        pushLog('Worker AI Depth skipped: ' + (m.error || 'offline'));
+      }
+      redrawScanBackdrop();
+      redrawMainViewport();
+    };
+    wk.postMessage({ id: jobId, dataUrl: tmp.toDataURL('image/jpeg', 0.85) });
+    return { ok: true };
+  }
+
+  // ====================================================================
+  // 3. REAL 128-D FACE RECOGNITION (@vladmandic/face-api)
+  // ====================================================================
+  const faceEngine = { api: null, loaded: false, loading: false };
+  const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
+
+  async function ensureFaceApi() {
+    if (faceEngine.loaded && faceEngine.api) return faceEngine.api;
+    if (faceEngine.loading) { while (faceEngine.loading) await new Promise((r) => setTimeout(r, 120)); return faceEngine.api; }
+    faceEngine.loading = true;
+    try {
+      fbiState.statusText = 'LOADING 128-D FACE NEURAL NET...';
+      pushLog('Loading @vladmandic/face-api...');
+      redrawMainViewport();
+      const faceapi = await import('https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.esm.js');
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL),
+        faceapi.nets.faceExpressionNet.loadFromUri(FACE_MODEL_URL),
+        faceapi.nets.ageGenderNet.loadFromUri(FACE_MODEL_URL)
+      ]);
+      faceEngine.api = faceapi; faceEngine.loaded = true;
+      pushLog('Face-API 128-D + Age/Gender/Expressions ready.');
+      return faceapi;
+    } catch (e) {
+      pushLog('Face-API error: ' + e.message);
+      return null;
+    } finally { faceEngine.loading = false; }
+  }
+
+  async function runRealFaceRecognition(enrollName = null) {
+    if (!requireEvidenceOrPick('Load a photo/video with faces first!')) return { ok: false };
+    fbiState.pickerOpen = false; fbiState.busy = true; fbiState.mode = 'physiognomy';
+    refreshAllWindows();
+    try {
+      const faceapi = await ensureFaceApi();
+      if (!faceapi) throw new Error('Face-API failed to load.');
+      syncWorkCanvasFromSource(true);
+      const W = workCanvas.width, H = workCanvas.height;
+
+      const dets = await faceapi
+        .detectAllFaces(workCanvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.35 }))
+        .withFaceLandmarks()
+        .withFaceExpressions()
+        .withAgeAndGender()
+        .withFaceDescriptors();
+
+      if (!dets || !dets.length) {
+        fbiState.faceResults = []; fbiState.statusText = 'NO FACES DETECTED';
+        APP.ui?.toast?.('No faces detected in frame.', 2400);
+        return { ok: false, error: 'No faces detected.' };
+      }
+
+      if (enrollName) {
+        let tgt = dets[0];
+        if (fbiState.outlines.length) {
+          const hit = dets.find((d) => { const b = d.detection.box; return fbiState.outlines.some((p) => pointInPolygon((b.x + b.width * 0.5) / W, (b.y + b.height * 0.5) / H, p)); });
+          if (hit) tgt = hit;
+        }
+        const b = tgt.detection.box;
+        const thumbC = document.createElement('canvas'); thumbC.width = 96; thumbC.height = 96;
+        thumbC.getContext('2d').drawImage(workCanvas, Math.max(0, b.x), Math.max(0, b.y), b.width, b.height, 0, 0, 96, 96);
+        const rec = { id: 'SUBJ-' + String(faceWatchlist.length + 1).padStart(3, '0'), name: enrollName, descriptor: Array.from(tgt.descriptor), age: Math.round(tgt.age || 30), gender: tgt.gender || 'unknown', thumbDataUrl: thumbC.toDataURL('image/jpeg', 0.8) };
+        faceWatchlist.unshift(rec); saveFaceWatchlist();
+        pushLog(`Enrolled "${rec.name}" (${rec.id}, 128-D).`);
+        APP.ui?.toast?.(`Enrolled ${rec.name} into Watchlist!`, 2600);
+      }
+
+      fbiState.faceResults = dets.map((d, idx) => {
+        const b = d.detection.box;
+        let bestMatch = 'UNKNOWN SUBJECT', bestDist = 999, matchPct = 0;
+        for (const entry of faceWatchlist) {
+          const dist = faceapi.euclideanDistance(d.descriptor, new Float32Array(entry.descriptor));
+          if (dist < bestDist) { bestDist = dist; if (dist < 0.58) { bestMatch = entry.name; matchPct = Math.max(55, Math.min(99, Math.round((1 - dist / 0.85) * 100))); } }
+        }
+        const exps = d.expressions ? Object.entries(d.expressions).sort((a, b) => b[1] - a[1]) : [];
+        return {
+          idx, box: { x: b.x / W, y: b.y / H, w: b.width / W, h: b.height / H },
+          matchName: bestMatch, matchScore: matchPct,
+          distance: bestDist < 10 ? Number(bestDist.toFixed(3)) : null,
+          age: Math.round(d.age || 0),
+          gender: `${d.gender || ''} (${Math.round((d.genderProbability || 0) * 100)}%)`,
+          expression: exps[0] ? `${exps[0][0]} (${Math.round(exps[0][1] * 100)}%)` : 'neutral'
+        };
+      });
+
+      fbiState.clues = fbiState.faceResults.map((fr, i) => ({
+        id: `FACE-0${i + 1}`,
+        label: fr.matchScore > 0 ? `${fr.matchName} ${fr.matchScore}%` : `UNKNOWN ~${fr.age}y ${fr.expression.split(' ')[0]}`,
+        detail: `${fr.matchName} | Age~${fr.age} | ${fr.gender} | FACS: ${fr.expression}` + (fr.distance !== null ? ` | L2=${fr.distance}` : ''),
+        confidence: fr.matchScore || 86,
+        severity: fr.matchScore > 0 ? 'high' : 'med',
+        bbox: [fr.box.x, fr.box.y, fr.box.w, fr.box.h]
+      }));
+      fbiState.activeClueIdx = 0;
+      fbiState.deductionSummary = fbiState.clues.map((c) => c.detail).join(' // ');
+      fbiState.statusText = `FACE RECOG: ${fbiState.faceResults.length} SUBJECT(S)`;
+      playUiBeep(980, 0.06);
+      return { ok: true, faces: fbiState.faceResults };
+    } catch (e) {
+      fbiState.statusText = 'FACE RECOG ERROR'; APP.ui?.toast?.(e.message, 4000);
+      return { ok: false, error: e.message };
+    } finally { fbiState.busy = false; refreshAllWindows(); }
+  }
+
+  // ====================================================================
+  // 4. MEDIAPIPE OBJECT & POSE TRACKING + FINGERPRINT + UNBLUR
+  // ====================================================================
+  const mpEngine = { mod: null, vision: null, objDet: null, poseDet: null, objMode: 'IMAGE', poseMode: 'IMAGE', loading: null };
+
+  async function ensureMediaPipe() {
+    if (mpEngine.mod && mpEngine.vision) return true;
+    if (mpEngine.loading) return mpEngine.loading;
+    mpEngine.loading = (async () => {
+      try {
+        const mp = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/+esm');
+        const vision = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm');
+        mpEngine.mod = mp; mpEngine.vision = vision; return true;
+      } catch (_) { return false; }
+    })();
+    return mpEngine.loading;
+  }
+
+  async function createMPTask(TaskCls, url, opts) {
+    for (const delegate of ['GPU', 'CPU']) {
+      try { return await TaskCls.createFromOptions(mpEngine.vision, Object.assign({ baseOptions: { modelAssetPath: url, delegate } }, opts)); } catch (_) {}
+    }
+    return null;
+  }
+
+  async function runMediaPipeOnFrame(isVideo = false) {
+    if (!syncWorkCanvasFromSource(true) || !(await ensureMediaPipe())) return;
+    const mode = isVideo ? 'VIDEO' : 'IMAGE', ts = Math.max(1, Math.round(performance.now()));
+    try {
+      if (!mpEngine.objDet) {
+        mpEngine.objDet = await createMPTask(mpEngine.mod.ObjectDetector, 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite', { runningMode: mode, scoreThreshold: 0.32, maxResults: 10 });
+        mpEngine.objMode = mode;
+      } else if (mpEngine.objMode !== mode) { await mpEngine.objDet.setOptions({ runningMode: mode }); mpEngine.objMode = mode; }
+      if (mpEngine.objDet) {
+        const res = isVideo ? mpEngine.objDet.detectForVideo(workCanvas, ts) : mpEngine.objDet.detect(workCanvas);
+        fbiState.cvDetections = res?.detections || [];
+        updateTracks(fbiState.cvDetections, ts);
+      }
+    } catch (_) {}
+    try {
+      if (!mpEngine.poseDet) {
+        mpEngine.poseDet = await createMPTask(mpEngine.mod.PoseLandmarker, 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', { runningMode: mode, numPoses: 4 });
+        mpEngine.poseMode = mode;
+      } else if (mpEngine.poseMode !== mode) { await mpEngine.poseDet.setOptions({ runningMode: mode }); mpEngine.poseMode = mode; }
+      if (mpEngine.poseDet) {
+        const res = isVideo ? mpEngine.poseDet.detectForVideo(workCanvas, ts) : mpEngine.poseDet.detect(workCanvas);
+        fbiState.cvPoses = (res?.landmarks || []).map((lm, i) => ({ landmarks: lm, worldLandmarks: res.worldLandmarks?.[i] || null }));
+      }
+    } catch (_) {}
+  }
+
+  function updateTracks(detections, nowMs) {
+    const W = Math.max(1, workCanvas.width), H = Math.max(1, workCanvas.height);
+    const COLS = ['#00f0b4', '#38bdf8', '#fbbf24', '#f472b6', '#a78bfa'];
+    const items = (detections || []).map((d) => {
+      const bx = d.boundingBox || {}, cat = d.categories?.[0] || {};
+      const norm = { x: Math.max(0, (bx.originX || 0) / W), y: Math.max(0, (bx.originY || 0) / H), w: Math.min(1, (bx.width || 40) / W), h: Math.min(1, (bx.height || 40) / H) };
+      let tag = 'neutral';
+      try {
+        const px = workCtx.getImageData(Math.floor(norm.x * W + norm.w * W * 0.25), Math.floor(norm.y * H + norm.h * H * 0.25), Math.max(4, Math.floor(norm.w * W * 0.5)), Math.max(4, Math.floor(norm.h * H * 0.5))).data;
+        let r = 0, g = 0, b = 0, c = 0; for (let i = 0; i < px.length; i += 16) { r += px[i]; g += px[i + 1]; b += px[i + 2]; c++; }
+        if (c) { r /= c; g /= c; b /= c; if (r > g + 30 && r > b + 30) tag = 'red'; else if (b > r + 30) tag = 'blue'; else if (g > r + 25) tag = 'green'; else if (r < 65 && g < 65 && b < 65) tag = 'dark'; else if (r > 190 && g > 190 && b > 190) tag = 'white'; }
+      } catch (_) {}
+      return { label: cat.categoryName || 'object', score: Number(cat.score || 0.5), bbox: norm, cx: norm.x + norm.w * 0.5, cy: norm.y + norm.h * 0.5, tag };
+    });
+    const used = new Set();
+    for (const it of items) {
+      let best = null, bd = 999;
+      for (const t of fbiState.tracks) {
+        if (used.has(t.id) || t.label !== it.label) continue;
+        const d = Math.hypot(t.cx - it.cx, t.cy - it.cy);
+        if (d < 0.22 && d < bd) { bd = d; best = t; }
+      }
+      if (best) {
+        used.add(best.id); best.cx = it.cx; best.cy = it.cy; best.bbox = it.bbox; best.score = it.score; best.tag = it.tag; best.lastSeen = nowMs;
+        best.trail.push({ x: it.cx, y: it.cy }); if (best.trail.length > 26) best.trail.shift();
+      } else {
+        const idNum = fbiState.nextTrackId++;
+        const trk = { id: 'TRK-' + String(idNum).padStart(2, '0'), label: it.label, score: it.score, color: COLS[(idNum - 1) % COLS.length], bbox: it.bbox, cx: it.cx, cy: it.cy, tag: it.tag, trail: [{ x: it.cx, y: it.cy }], lastSeen: nowMs };
+        used.add(trk.id); fbiState.tracks.push(trk);
+      }
+    }
+    fbiState.tracks = fbiState.tracks.filter((t) => nowMs - t.lastSeen < 1600);
+  }
+
+  function runLocalSelectiveEnhance() {
+    if (!syncWorkCanvasFromSource(true)) return null;
+    const W = workCanvas.width, H = workCanvas.height;
+    const activePoly = fbiState.outlines[fbiState.outlines.length - 1] || null;
+    const bb = activePoly ? getOutlineBBox(activePoly) : { x: 0, y: 0, w: 1, h: 1 };
+    const rx = Math.floor(bb.x * W), ry = Math.floor(bb.y * H);
+    const rw = Math.max(32, Math.floor(bb.w * W)), rh = Math.max(32, Math.floor(bb.h * H));
+    const up = activePoly ? Math.min(2.6, Math.max(1.4, 540 / Math.max(rw, rh))) : 1.0;
+    const outW = Math.round(rw * up), outH = Math.round(rh * up);
+    const outC = document.createElement('canvas'); outC.width = outW; outC.height = outH;
+    const oCtx = outC.getContext('2d', { willReadFrequently: true });
+    oCtx.imageSmoothingEnabled = true; oCtx.imageSmoothingQuality = 'high';
+    oCtx.drawImage(workCanvas, rx, ry, rw, rh, 0, 0, outW, outH);
+    const img = oCtx.getImageData(0, 0, outW, outH), src = new Uint8ClampedArray(img.data), dst = img.data;
+    let minL = 255, maxL = 0;
+    for (let i = 0; i < src.length; i += 16) { const l = 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2]; if (l < minL) minL = l; if (l > maxL) maxL = l; }
+    const span = Math.max(24, maxL - minL);
+    for (let y = 1; y < outH - 1; y++) {
+      for (let x = 1; x < outW - 1; x++) {
+        const idx = (y * outW + x) * 4;
+        for (let c = 0; c < 3; c++) {
+          const cen = src[idx + c];
+          const blur = (src[((y - 1) * outW + (x - 1)) * 4 + c] + src[((y - 1) * outW + x) * 4 + c] * 2 + src[((y - 1) * outW + (x + 1)) * 4 + c] + src[(y * outW + (x - 1)) * 4 + c] * 2 + cen * 4 + src[(y * outW + (x + 1)) * 4 + c] * 2 + src[((y + 1) * outW + (x - 1)) * 4 + c] + src[((y + 1) * outW + x) * 4 + c] * 2 + src[((y + 1) * outW + (x + 1)) * 4 + c]) / 16;
+          const sh = cen + (cen - blur) * 1.75;
+          dst[idx + c] = Math.max(0, Math.min(255, Math.round(((sh - minL) / span) * 255 * 0.52 + sh * 0.48)));
+        }
+      }
+    }
+    oCtx.putImageData(img, 0, 0);
+    return outC;
+  }
+
+  function analyzeFingerprintImage(imgOrCanvas) {
+    const N = 160, fc = document.createElement('canvas'); fc.width = N; fc.height = N;
+    const fCtx = fc.getContext('2d', { willReadFrequently: true }); fCtx.drawImage(imgOrCanvas, 0, 0, N, N);
+    const d = fCtx.getImageData(0, 0, N, N).data, gray = new Float32Array(N * N);
+    for (let i = 0; i < N * N; i++) gray[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+    const bin = new Uint8Array(N * N);
+    for (let y = 3; y < N - 3; y++) for (let x = 3; x < N - 3; x++) {
+      let sum = 0; for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) sum += gray[(y + dy) * N + (x + dx)];
+      bin[y * N + x] = gray[y * N + x] < (sum / 49) - 4 ? 1 : 0;
+    }
+    const minutiae = []; let archC = 0, whorlC = 0;
+    for (let y = 14; y < N - 14; y += 2) for (let x = 14; x < N - 14; x += 2) {
+      if (!bin[y * N + x]) continue;
+      const p = [bin[(y - 1) * N + x], bin[(y - 1) * N + (x + 1)], bin[y * N + (x + 1)], bin[(y + 1) * N + (x + 1)], bin[(y + 1) * N + x], bin[(y + 1) * N + (x - 1)], bin[y * N + (x - 1)], bin[(y - 1) * N + (x - 1)]];
+      let cn = 0, nb = 0; for (let k = 0; k < 8; k++) { nb += p[k]; cn += Math.abs(p[k] - p[(k + 1) % 8]); }
+      if (nb >= 1 && nb <= 5 && (cn * 0.5 === 1 || cn * 0.5 === 3) && !minutiae.some((m) => Math.hypot(m.x - x / N, m.y - y / N) < 0.055)) {
+        minutiae.push({ x: x / N, y: y / N, type: cn * 0.5 === 1 ? 'ending' : 'bifurcation' });
+      }
+      if (Math.abs(gray[y * N + (x + 1)] - gray[y * N + (x - 1)]) > 18 && Math.abs(gray[(y + 1) * N + x] - gray[(y - 1) * N + x]) > 18) whorlC++; else archC++;
+    }
+    const endings = minutiae.filter((m) => m.type === 'ending').length, bifs = minutiae.filter((m) => m.type === 'bifurcation').length;
+    const ratio = whorlC / Math.max(1, archC + whorlC);
+    return { pattern: ratio > 0.34 ? 'Whorl (Spiral Core)' : ratio > 0.18 ? 'Ulnar/Radial Loop' : 'Plain/Tented Arch', minutiae: minutiae.slice(0, 44), endings, bifurcations: bifs, ridgeScore: ratio };
+  }
+
+  function createSyntheticDbPrint(seed, style) {
+    const c = document.createElement('canvas'); c.width = 160; c.height = 160;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, 160, 160);
+    ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2.2;
+    for (let r = 8; r < 76; r += 6) {
+      ctx.beginPath();
+      for (let a = 0; a <= Math.PI * 2; a += 0.15) {
+        const w = Math.sin(a * 3 + seed + r * 0.1) * 3;
+        const rx = style === 'arch' ? 80 + (a - Math.PI) * 24 : 80 + Math.cos(a) * (r + w) * (style === 'loop' ? 0.85 : 1.0);
+        const ry = style === 'arch' ? 130 - r - Math.cos(a * 0.5) * 18 : 84 + Math.sin(a) * (r + w) * 1.12;
+        if (a === 0) ctx.moveTo(rx, ry); else ctx.lineTo(rx, ry);
+      }
+      ctx.stroke();
+    }
+    return c;
+  }
+
+  // ====================================================================
+  // 5. 6 DRAGGABLE 3D MINI WINDOWS + GPU GLSL RADAR & DEPTH STAGE
+  // ====================================================================
+  const wsRoot = new THREE.Group();
+  wsRoot.name = 'FBI_HOLO_WORKSTATION';
+  wsRoot.visible = false;
+  APP.scene.add(wsRoot);
+
+  const miniWindows = [];
+  const linkGroup = new THREE.Group();
+  wsRoot.add(linkGroup);
+
+  const cursorDot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.0085, 10, 10),
+    new THREE.MeshBasicMaterial({ color: 0x00f0b4, depthTest: false })
+  );
+  cursorDot.renderOrder = 999; cursorDot.visible = false;
+  wsRoot.add(cursorDot);
+
+  function createMiniWindow({ id, title, w, h, cw, ch, pos, rot, borderHex = 0x00f0b4 }) {
+    const grp = new THREE.Group();
+    grp.name = 'FBI_WIN_' + id;
+    grp.position.copy(pos);
+    grp.rotation.set(rot.x, rot.y, rot.z);
+    wsRoot.add(grp);
+
+    const back = new THREE.Mesh(
+      new THREE.PlaneGeometry(w + 0.022, h + 0.022),
+      new THREE.MeshBasicMaterial({ color: 0x020914, transparent: true, opacity: 0.78, side: THREE.DoubleSide })
+    );
+    back.position.z = -0.004;
+    const edge = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 0.024, h + 0.024, 0.008)),
+      new THREE.LineBasicMaterial({ color: borderHex, transparent: true, opacity: 0.85 })
+    );
+    grp.add(back, edge);
+
+    const canvas = document.createElement('canvas'); canvas.width = cw; canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace;
+    const screen = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.98, side: THREE.DoubleSide })
+    );
+    grp.add(screen);
+
+    const gripBar = new THREE.Mesh(
+      new THREE.BoxGeometry(Math.min(0.42, w * 0.65), 0.026, 0.016),
+      new THREE.MeshStandardMaterial({ color: borderHex, emissive: borderHex, emissiveIntensity: 0.65, metalness: 0.7, roughness: 0.2 })
+    );
+    gripBar.position.set(0, h * 0.5 + 0.024, 0.008);
+    grp.add(gripBar);
+
+    const winRec = { id, title, group: grp, screen, dragBar: gripBar, w, h, canvas, ctx, tex, defaultPos: pos.clone(), defaultRot: rot.clone() };
+    miniWindows.push(winRec);
+    APP.pokeTargets?.add(screen);
+    APP.pokeTargets?.add(gripBar);
+    return winRec;
+  }
+
+  const winMain = createMiniWindow({ id: 'main', title: 'EVIDENCE', w: 0.88, h: 0.54, cw: 1024, ch: 628, pos: new THREE.Vector3(0, 0.08, 0), rot: new THREE.Euler(0, 0, 0), borderHex: 0x00f0b4 });
+  const winRadar = createMiniWindow({ id: 'radar', title: 'LINE RADAR', w: 0.46, h: 0.50, cw: 512, ch: 556, pos: new THREE.Vector3(-0.74, 0.10, 0.14), rot: new THREE.Euler(0, 0.38, 0), borderHex: 0x38bdf8 });
+  const winScan = createMiniWindow({ id: 'scan', title: '3D DEPTH SCAN', w: 0.50, h: 0.50, cw: 512, ch: 512, pos: new THREE.Vector3(0.76, 0.10, 0.14), rot: new THREE.Euler(0, -0.38, 0), borderHex: 0x00f0b4 });
+  const winDed = createMiniWindow({ id: 'ded', title: 'SHERLOCK GRAPH', w: 0.78, h: 0.26, cw: 1024, ch: 340, pos: new THREE.Vector3(0, 0.52, 0.08), rot: new THREE.Euler(0.16, 0, 0), borderHex: 0x38bdf8 });
+  const winComp = createMiniWindow({ id: 'comp', title: 'BIOMETRICS / ENH', w: 0.42, h: 0.28, cw: 512, ch: 340, pos: new THREE.Vector3(0.72, 0.52, 0.18), rot: new THREE.Euler(0.14, -0.34, 0), borderHex: 0xf472b6 });
+  const winCmd = createMiniWindow({ id: 'cmd', title: 'COMMAND DECK', w: 0.96, h: 0.24, cw: 1024, ch: 256, pos: new THREE.Vector3(0, -0.34, 0.20), rot: new THREE.Euler(-0.48, 0, 0), borderHex: 0x00f0b4 });
+
+  // GPU GLSL Line-Pattern & Laser Scan Overlay on Main Evidence Window (0% CPU!)
+  const mainLineUniforms = { uTime: { value: 0 }, uBusy: { value: 0 } };
+  const mainLineOverlay = new THREE.Mesh(
+    new THREE.PlaneGeometry(winMain.w, winMain.h),
+    new THREE.ShaderMaterial({
+      uniforms: mainLineUniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+      fragmentShader: [
+        'uniform float uTime; uniform float uBusy; varying vec2 vUv;',
+        'void main(){',
+        '  float sweep = fract(uTime * mix(0.18, 0.65, uBusy));',
+        '  float laser = exp(-pow((vUv.y - sweep) * 52.0, 2.0));',
+        '  float diag = step(0.94, fract((vUv.x + vUv.y) * 28.0 - uTime * 0.35));',
+        '  float hline = step(0.96, fract(vUv.y * 44.0));',
+        '  vec3 col = mix(vec3(0.0, 0.94, 0.72), vec3(0.22, 0.74, 0.98), 0.5 + 0.5 * sin(uTime * 3.0 + vUv.x * 10.0));',
+        '  gl_FragColor = vec4(col, laser * mix(0.22, 0.58, uBusy) + diag * 0.04 + hline * 0.03);',
+        '}'
+      ].join('\n')
+    })
+  );
+  mainLineOverlay.position.z = 0.004;
+  winMain.group.add(mainLineOverlay);
+
+  // GPU GLSL Polar Line-Pattern Radar Overlay on Window 2 (0% CPU!)
+  const radarShaderUniforms = { uTime: { value: 0 }, uBusy: { value: 0 } };
+  const radarShaderPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(winRadar.w, winRadar.h * 0.42),
+    new THREE.ShaderMaterial({
+      uniforms: radarShaderUniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+      fragmentShader: [
+        'uniform float uTime; uniform float uBusy; varying vec2 vUv;',
+        'void main(){',
+        '  vec3 col = vec3(0.0); float a = 0.0;',
+        '  vec2 p = (vUv - vec2(0.24, 0.50)) * vec2(2.1, 1.8);',
+        '  float r = length(p);',
+        '  if (r < 0.78) {',
+        '    float rings = step(0.92, fract(r * 5.2));',
+        '    float ang = atan(p.y, p.x);',
+        '    float sweep = mod(ang - uTime * mix(1.8, 4.5, uBusy), 6.28318);',
+        '    float beam = exp(-sweep * 2.2) * (1.0 - step(0.76, r));',
+        '    col = mix(vec3(0.22, 0.74, 0.98), vec3(0.0, 0.96, 0.72), beam);',
+        '    a = rings * 0.32 + beam * 0.65;',
+        '  }',
+        '  if (vUv.x > 0.48) {',
+        '    float row = floor(vUv.y * 6.0);',
+        '    float ry = fract(vUv.y * 6.0) - 0.5;',
+        '    float wave = sin(vUv.x * 36.0 + uTime * (3.0 + row) + row) * mix(0.16, 0.34, uBusy);',
+        '    float line = exp(-pow((ry - wave) * 18.0, 2.0));',
+        '    col = mix(vec3(0.0, 0.94, 0.72), vec3(0.22, 0.74, 0.98), mod(row, 2.0));',
+        '    a = max(a, line * 0.85);',
+        '  }',
+        '  gl_FragColor = vec4(col, a);',
+        '}'
+      ].join('\n')
+    })
+  );
+  radarShaderPlane.position.set(0, winRadar.h * 0.21, 0.005);
+  winRadar.group.add(radarShaderPlane);
+
+  // GPU GLSL 3D Depth Scan Stage inside Window 3 (Zero JS Loop Vertex Displacement!)
+  const scanStage = new THREE.Group();
+  scanStage.position.set(0, -0.02, 0.16);
+  winScan.group.add(scanStage);
+
+  const holoRingA = new THREE.Mesh(new THREE.TorusGeometry(0.165, 0.004, 10, 48), new THREE.MeshBasicMaterial({ color: 0x00f0b4, transparent: true, opacity: 0.85 }));
+  holoRingA.rotation.x = Math.PI / 2; holoRingA.position.y = -0.15;
+  const holoSlice = new THREE.Mesh(new THREE.RingGeometry(0.14, 0.156, 36), new THREE.MeshBasicMaterial({ color: 0x5efce8, side: THREE.DoubleSide, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending }));
+  holoSlice.rotation.x = Math.PI / 2;
+  scanStage.add(holoRingA, holoSlice);
+
+  const fallbackTex = new THREE.DataTexture(new Uint8Array([40, 40, 40, 255]), 1, 1, THREE.RGBAFormat);
+  fallbackTex.needsUpdate = true;
+  let colorTexRef = null, depthTexRef = null, maskTexRef = null;
+
+  const scanShaderUniforms = {
+    uColorTex: { value: fallbackTex },
+    uDepthTex: { value: fallbackTex },
+    uMaskTex: { value: fallbackTex },
+    uUseMask: { value: 0.0 },
+    uDepthScale: { value: 0.125 },
+    uTime: { value: 0.0 },
+    uCropRect: { value: new THREE.Vector4(0, 0, 1, 1) } // [x, y, w, h]
+  };
+
+  const scanGridGeo = new THREE.PlaneGeometry(0.26, 0.22, 88, 88);
+  const scanSolidMat = new THREE.ShaderMaterial({
+    uniforms: scanShaderUniforms,
+    transparent: true,
+    side: THREE.DoubleSide,
+    vertexShader: [
+      'uniform sampler2D uDepthTex; uniform sampler2D uMaskTex; uniform float uUseMask; uniform float uDepthScale; uniform vec4 uCropRect;',
+      'varying vec2 vImgUv; varying float vDepth; varying float vMask;',
+      'void main(){',
+      '  vec2 imgUv = vec2(uCropRect.x + uv.x * uCropRect.z, uCropRect.y + uv.y * uCropRect.w);',
+      '  vImgUv = imgUv;',
+      '  float d = texture2D(uDepthTex, imgUv).r;',
+      '  float m = uUseMask > 0.5 ? texture2D(uMaskTex, imgUv).r : 1.0;',
+      '  vDepth = d; vMask = m;',
+      '  vec3 p = position;',
+      '  p.z += d * uDepthScale * mix(0.08, 1.0, m);',
+      '  gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'uniform sampler2D uColorTex; uniform float uTime; varying vec2 vImgUv; varying float vDepth; varying float vMask;',
+      'void main(){',
+      '  vec3 imgCol = texture2D(uColorTex, vImgUv).rgb;',
+      '  float iso = step(0.88, fract(vDepth * 18.0 - uTime * 0.45));',
+      '  float grid = max(step(0.94, fract(vImgUv.x * 42.0)), step(0.94, fract(vImgUv.y * 42.0)));',
+      '  vec3 holo = mix(vec3(0.0, 0.94, 0.72), vec3(0.22, 0.74, 0.98), vDepth);',
+      '  vec3 col = mix(imgCol, holo, 0.28) + holo * (iso * 0.85 + grid * 0.18);',
+      '  gl_FragColor = vec4(col, mix(0.12, 0.98, vMask));',
+      '}'
+    ].join('\n')
+  });
+
+  const scanWireMat = new THREE.ShaderMaterial({
+    uniforms: scanShaderUniforms,
+    wireframe: true, transparent: true,
+    vertexShader: scanSolidMat.vertexShader,
+    fragmentShader: 'varying float vMask; void main(){ gl_FragColor = vec4(0.22, 0.74, 0.98, 0.16 * vMask); }'
+  });
+
+  const scanModelSpinGroup = new THREE.Group();
+  const scanSolidMesh = new THREE.Mesh(scanGridGeo, scanSolidMat);
+  const scanWireMesh = new THREE.Mesh(scanGridGeo, scanWireMat);
+  scanWireMesh.position.z = 0.002;
+  scanModelSpinGroup.add(scanSolidMesh, scanWireMesh);
+  scanModelSpinGroup.visible = false;
+  scanStage.add(scanModelSpinGroup);
+
+  let pose3DLineGroup = new THREE.Group();
+  scanModelSpinGroup.add(pose3DLineGroup);
+
+  function updateDepthShaderMaskAndTexture() {
+    if (fbiState.evidenceType === 'none' || !syncWorkCanvasFromSource(true)) {
+      scanModelSpinGroup.visible = false;
+      redrawScanBackdrop();
+      return;
+    }
+    scanModelSpinGroup.visible = true;
+
+    // Upload color texture once per image/change
+    const c2 = document.createElement('canvas'); c2.width = 512; c2.height = 512;
+    c2.getContext('2d').drawImage(workCanvas, 0, 0, 512, 512);
+    if (colorTexRef) colorTexRef.dispose();
+    colorTexRef = new THREE.CanvasTexture(c2);
+    colorTexRef.colorSpace = THREE.SRGBColorSpace;
+    scanShaderUniforms.uColorTex.value = colorTexRef;
+
+    if (!depthTexRef || fbiState.depthSource === 'None') {
+      depthTexRef = computeInstantReliefDepthTexture();
+      if (depthTexRef) scanShaderUniforms.uDepthTex.value = depthTexRef;
+    }
+
+    // Build mask texture & crop rect if user drew freehand outlines!
+    const activePoly = fbiState.outlines[fbiState.outlines.length - 1] || null;
+    if (activePoly && activePoly.length >= 3) {
+      const bb = getOutlineBBox(activePoly);
+      // Note: Canvas y=0 is top, WebGL UV y=0 is bottom (flipY=true on CanvasTexture handles it!)
+      scanShaderUniforms.uCropRect.value.set(bb.x, 1 - (bb.y + bb.h), bb.w, bb.h);
+      const mc = document.createElement('canvas'); mc.width = 128; mc.height = 128;
+      const mCtx = mc.getContext('2d');
+      mCtx.fillStyle = '#000000'; mCtx.fillRect(0, 0, 128, 128);
+      mCtx.fillStyle = '#ffffff';
+      mCtx.beginPath();
+      activePoly.forEach((p, idx) => { if (idx === 0) mCtx.moveTo(p.x * 128, p.y * 128); else mCtx.lineTo(p.x * 128, p.y * 128); });
+      mCtx.closePath(); mCtx.fill();
+      if (maskTexRef) maskTexRef.dispose();
+      maskTexRef = new THREE.CanvasTexture(mc);
+      scanShaderUniforms.uMaskTex.value = maskTexRef;
+      scanShaderUniforms.uUseMask.value = 1.0;
+    } else {
+      scanShaderUniforms.uCropRect.value.set(0, 0, 1, 1);
+      scanShaderUniforms.uUseMask.value = 0.0;
+    }
+
+    // Update 3D Pose overlay if available
+    while (pose3DLineGroup.children.length) { const ch = pose3DLineGroup.children.pop(); APP.disposeObject3D?.(ch); }
+    if (fbiState.cvPoses[0]?.worldLandmarks) {
+      const wlm = fbiState.cvPoses[0].worldLandmarks, pts = [];
+      for (const [a, b] of [[11, 12], [11, 23], [12, 24], [23, 24], [11, 13], [13, 15], [12, 14], [14, 16], [23, 25], [25, 27], [24, 26], [26, 28]]) {
+        if (wlm[a] && wlm[b]) pts.push(new THREE.Vector3(wlm[a].x * 0.16, -wlm[a].y * 0.16, wlm[a].z * 0.16 + 0.09), new THREE.Vector3(wlm[b].x * 0.16, -wlm[b].y * 0.16, wlm[b].z * 0.16 + 0.09));
+      }
+      if (pts.length) pose3DLineGroup.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xfbbf24 })));
+    }
+    redrawScanBackdrop();
+  }
+
+  // Dynamic glowing neural lines connecting all 6 mini-windows
+  const linkPairs = [[winMain, winRadar], [winMain, winScan], [winMain, winDed], [winMain, winCmd], [winDed, winComp], [winScan, winComp]];
+  const linkLines = linkPairs.map(() => {
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0x00f0b4, transparent: true, opacity: 0.45 }));
+    linkGroup.add(line);
+    return line;
+  });
+
+  function updateDynamicConnectors() {
+    linkPairs.forEach(([a, b], i) => {
+      const pos = linkLines[i].geometry.attributes.position;
+      pos.setXYZ(0, a.group.position.x, a.group.position.y, a.group.position.z);
+      pos.setXYZ(1, b.group.position.x, b.group.position.y, b.group.position.z);
+      pos.needsUpdate = true;
+    });
+  }
+  updateDynamicConnectors();
+
+  function resetWindowLayout() {
+    for (const w of miniWindows) { w.group.position.copy(w.defaultPos); w.group.rotation.copy(w.defaultRot); }
+    updateDynamicConnectors();
+  }
+
+  // ====================================================================
+  // 6. RENDERING WINDOWS (Event-Driven, Zero Redundant Uploads!)
+  // ====================================================================
+  let pickerButtons = [], hoveredPickerId = null, cmdButtons = [], hoveredCmdId = null;
+
+  function drawMiniTape(ctx, x1, y1, tx, ty, idStr, textStr, accentCol, isActive) {
+    const label = `${idStr} // ${String(textStr || '').toUpperCase().slice(0, 32)}`;
+    ctx.save(); ctx.font = 'bold 14px monospace';
+    const tw = Math.min(320, Math.max(130, ctx.measureText(label).width + 24)), th = 26;
+    const rx = Math.max(8, Math.min(1024 - tw - 8, tx)), ry = Math.max(46, Math.min(628 - th - 12, ty));
+    ctx.strokeStyle = accentCol; ctx.lineWidth = isActive ? 2.5 : 1.5;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo((x1 + rx) * 0.5, ry + th * 0.5); ctx.lineTo(rx, ry + th * 0.5); ctx.stroke();
+    ctx.fillStyle = accentCol; ctx.beginPath(); ctx.arc(x1, y1, isActive ? 5 : 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = isActive ? 'rgba(6, 30, 36, 0.94)' : 'rgba(6, 16, 28, 0.86)';
+    ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(rx + tw - 10, ry); ctx.lineTo(rx + tw, ry + 10); ctx.lineTo(rx + tw, ry + th); ctx.lineTo(rx, ry + th); ctx.closePath();
+    ctx.fill(); ctx.strokeStyle = accentCol; ctx.lineWidth = isActive ? 2.2 : 1.2; ctx.stroke();
+    ctx.fillStyle = accentCol; ctx.fillRect(rx, ry, 5, th);
+    ctx.fillStyle = isActive ? '#ffffff' : '#bae6fd'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, rx + 11, ry + th * 0.5);
+    ctx.restore();
+  }
+
+  function redrawMainViewport() {
+    pickerButtons = [];
+    const ctx = winMain.ctx, W = winMain.canvas.width, H = winMain.canvas.height;
+    ctx.clearRect(0, 0, W, H); ctx.fillStyle = '#030914'; ctx.fillRect(0, 0, W, H);
+    const padT = 44, padB = 34, viewH = H - padT - padB;
+
+    if (fbiState.pickerOpen || fbiState.evidenceType === 'none') {
+      ctx.fillStyle = '#061224'; ctx.fillRect(14, padT + 4, W - 28, viewH - 8);
+      ctx.strokeStyle = 'rgba(0, 240, 180, 0.35)'; ctx.strokeRect(14, padT + 4, W - 28, viewH - 8);
+      ctx.fillStyle = '#00f0b4'; ctx.font = 'bold 21px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('EVIDENCE BAY // LOAD FILE, CAMERA SNAP, OR TRAINING CASE', W * 0.5, 80);
+
+      const cards = [
+        { id: 'pk_img', title: 'BROWSE IMAGE FILE', sub: 'JPG / PNG / WEBP from device', col: '#0f5c52', fn: () => domFileImg.click() },
+        { id: 'pk_vid', title: 'BROWSE VIDEO FILE', sub: 'MP4 / WEBM for live tracking', col: '#0f5c52', fn: () => domFileVid.click() },
+        { id: 'pk_snap', title: 'CAPTURE XR / CAM SNAP', sub: 'Grab live 3D/AR frame', col: '#133152', fn: () => captureCameraSnapshot() },
+        { id: 'pk_c1', title: 'CASE 01: CRIME SCENE', sub: 'Glass, watch 11:42, clue note', col: '#1a2844', fn: () => loadTrainingCase('crime') },
+        { id: 'pk_c2', title: 'CASE 02: GRAPHOLOGY', sub: 'Slant, ink pressure & forgery', col: '#1a2844', fn: () => loadTrainingCase('graphology') },
+        { id: 'pk_c3', title: 'CASE 03: FINGERPRINT', sub: 'Minutiae & Henry classification', col: '#1a2844', fn: () => loadTrainingCase('fingerprint') }
+      ];
+      const imported = [...Array.from(APP.importedImages?.values?.() || []).map((r) => ({ type: 'img', rec: r })), ...Array.from(APP.importedVideos?.values?.() || []).map((r) => ({ type: 'vid', rec: r }))].slice(0, 3);
+      imported.forEach((it, idx) => cards.push({
+        id: 'pk_imp_' + idx, title: `ASSET: ${it.rec.name.slice(0, 18)}`, sub: it.type === 'vid' ? 'Imported Video' : 'Imported Image', col: '#1d3658',
+        fn: () => {
+          if (it.type === 'vid') { const v = document.createElement('video'); v.src = it.rec.url; v.muted = true; v.loop = true; v.playsInline = true; v.crossOrigin = 'anonymous'; v.onloadeddata = () => loadEvidenceFromVideo(v, it.rec.name); }
+          else { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => loadEvidenceFromImage(im, it.rec.name); im.src = it.rec.url; }
+        }
+      }));
+      if (fbiState.evidenceType !== 'none') cards.push({ id: 'pk_back', title: 'RETURN TO EVIDENCE', sub: fbiState.evidenceTitle, col: '#3b1c2a', fn: () => { fbiState.pickerOpen = false; redrawMainViewport(); redrawCmdDeck(); } });
+
+      const cols = 3, padX = 36, gapX = 18, gapY = 16, startY = 110, bw = (W - padX * 2 - gapX * (cols - 1)) / cols, bh = 100;
+      cards.forEach((c, idx) => {
+        const col = idx % cols, row = Math.floor(idx / cols), bx = padX + col * (bw + gapX), by = startY + row * (bh + gapY);
+        if (by + bh > H - padB - 10) return;
+        const hov = hoveredPickerId === c.id;
+        ctx.fillStyle = hov ? '#1e4e68' : c.col; ctx.strokeStyle = hov ? '#7ef7d4' : '#38bdf8'; ctx.lineWidth = hov ? 3.5 : 2;
+        ctx.fillRect(bx, by, bw, bh); ctx.strokeRect(bx, by, bw, bh);
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 16px monospace'; ctx.textAlign = 'center'; ctx.fillText(c.title, bx + bw * 0.5, by + 38);
+        ctx.fillStyle = '#bae6fd'; ctx.font = '13px monospace'; ctx.fillText(c.sub, bx + bw * 0.5, by + 68);
+        pickerButtons.push({ id: c.id, u0: bx / W, u1: (bx + bw) / W, v0: 1 - (by + bh) / H, v1: 1 - by / H, action: c.fn });
+      });
+    } else {
+      syncWorkCanvasFromSource();
+      const asp = workCanvas.width / Math.max(1, workCanvas.height);
+      let dw = W - 28, dh = dw / asp; if (dh > viewH) { dh = viewH; dw = dh * asp; }
+      const imgRect = { x: (W - dw) * 0.5, y: padT + (viewH - dh) * 0.5, w: dw, h: dh };
+      lastImgRect = imgRect;
+      ctx.drawImage(workCanvas, imgRect.x, imgRect.y, imgRect.w, imgRect.h);
+
+      const mapX = (nx) => imgRect.x + nx * imgRect.w, mapY = (ny) => imgRect.y + ny * imgRect.h;
+
+      if (fbiState.outlines.length) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(2, 8, 18, 0.50)';
+        ctx.beginPath(); ctx.rect(imgRect.x, imgRect.y, imgRect.w, imgRect.h);
+        for (const poly of fbiState.outlines) {
+          if (poly.length < 3) continue;
+          ctx.moveTo(mapX(poly[0].x), mapY(poly[0].y));
+          for (let i = 1; i < poly.length; i++) ctx.lineTo(mapX(poly[i].x), mapY(poly[i].y));
+          ctx.closePath();
+        }
+        ctx.fill('evenodd'); ctx.restore();
+        fbiState.outlines.forEach((poly, idx) => {
+          if (poly.length < 2) return;
+          ctx.save(); ctx.strokeStyle = '#00f0b4'; ctx.lineWidth = 3.2; ctx.setLineDash([10, 5]);
+          ctx.beginPath(); poly.forEach((p, i) => { if (i === 0) ctx.moveTo(mapX(p.x), mapY(p.y)); else ctx.lineTo(mapX(p.x), mapY(p.y)); });
+          ctx.closePath(); ctx.stroke(); ctx.restore();
+          const bb = getOutlineBBox(poly);
+          drawMiniTape(ctx, mapX(bb.x + bb.w), mapY(bb.y + bb.h * 0.4), mapX(bb.x + bb.w) + 20, mapY(bb.y) - 8, `MASK-0${idx + 1}`, 'USER TARGET HIGHLIGHTED', '#00f0b4', true);
+        });
+      }
+
+      if (fbiState.activeStroke && fbiState.activeStroke.length > 1) {
+        ctx.save(); ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3; ctx.beginPath();
+        fbiState.activeStroke.forEach((p, i) => { if (i === 0) ctx.moveTo(mapX(p.x), mapY(p.y)); else ctx.lineTo(mapX(p.x), mapY(p.y)); });
+        ctx.stroke(); ctx.restore();
+      }
+
+      for (const p of fbiState.cvPoses) {
+        const lm = p.landmarks; if (!lm) continue;
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)'; ctx.lineWidth = 2.5;
+        for (const [a, b] of [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]]) {
+          if (lm[a] && lm[b]) { ctx.beginPath(); ctx.moveTo(mapX(lm[a].x), mapY(lm[a].y)); ctx.lineTo(mapX(lm[b].x), mapY(lm[b].y)); ctx.stroke(); }
+        }
+      }
+
+      for (const trk of fbiState.tracks) {
+        const bx = mapX(trk.bbox.x), by = mapY(trk.bbox.y), bw = trk.bbox.w * imgRect.w, bh = trk.bbox.h * imgRect.h;
+        ctx.strokeStyle = trk.color; ctx.lineWidth = 2.5; ctx.strokeRect(bx, by, bw, bh);
+        if (trk.trail.length > 1) {
+          ctx.beginPath(); ctx.moveTo(mapX(trk.trail[0].x), mapY(trk.trail[0].y));
+          for (let i = 1; i < trk.trail.length; i++) ctx.lineTo(mapX(trk.trail[i].x), mapY(trk.trail[i].y));
+          ctx.stroke();
+        }
+        drawMiniTape(ctx, bx + bw, by + 12, bx + bw + 18, by - 4, trk.id, `${trk.label} (${trk.tag}) ${Math.round(trk.score * 100)}%`, trk.color, false);
+      }
+
+      if (fbiState.fingerprintReport && fbiState.mode === 'fingerprint') {
+        for (const m of fbiState.fingerprintReport.minutiae || []) {
+          ctx.strokeStyle = m.type === 'ending' ? '#00f0b4' : '#f472b6'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(mapX(m.x), mapY(m.y), 6, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+
+      fbiState.clues.forEach((cl, idx) => {
+        if (!Array.isArray(cl.bbox) || cl.bbox.length !== 4) return;
+        const [nx, ny, nw, nh] = cl.bbox;
+        const bx = mapX(nx), by = mapY(ny), bw = Math.max(24, nw * imgRect.w), bh = Math.max(24, nh * imgRect.h);
+        const isActive = idx === fbiState.activeClueIdx, accent = isActive ? '#fbbf24' : (cl.severity === 'high' ? '#f43f5e' : '#00f0b4');
+        ctx.fillStyle = isActive ? 'rgba(251, 191, 36, 0.16)' : 'rgba(0, 240, 180, 0.06)';
+        ctx.fillRect(bx, by, bw, bh);
+        const cLen = Math.min(20, bw * 0.28, bh * 0.28);
+        ctx.strokeStyle = accent; ctx.lineWidth = isActive ? 3.5 : 2;
+        ctx.beginPath();
+        ctx.moveTo(bx, by + cLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cLen, by);
+        ctx.moveTo(bx + bw - cLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cLen);
+        ctx.moveTo(bx, by + bh - cLen); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cLen, by + bh);
+        ctx.moveTo(bx + bw - cLen, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cLen);
+        ctx.stroke();
+        drawMiniTape(ctx, bx + bw * (idx % 2 === 0 ? 1 : 0), by + bh * 0.35, idx % 2 === 0 ? bx + bw + 26 : bx - 290, by + (idx % 3) * 32 - 14, cl.id || `CLUE-0${idx + 1}`, `${cl.label}`, accent, isActive);
+      });
+    }
+
+    ctx.fillStyle = 'rgba(4, 14, 28, 0.92)'; ctx.fillRect(0, 0, W, padT);
+    ctx.fillStyle = '#00f0b4'; ctx.font = 'bold 16px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(`FBI-HOLMES // ${fbiState.evidenceTitle.toUpperCase().slice(0, 30)}`, 16, 22);
+    ctx.fillStyle = fbiState.busy ? '#fbbf24' : '#38bdf8'; ctx.textAlign = 'right';
+    ctx.fillText(fbiState.statusText.slice(0, 44), W - 16, 22);
+
+    ctx.fillStyle = 'rgba(4, 14, 28, 0.92)'; ctx.fillRect(0, H - padB, W, padB);
+    const activeClue = fbiState.clues[fbiState.activeClueIdx];
+    ctx.fillStyle = activeClue ? '#fde68a' : '#7dd3fc'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'left';
+    const footMsg = activeClue ? `[${activeClue.id}] ${activeClue.detail}` : `DRAW OUTLINE: ${fbiState.drawOutlineMode ? 'ON (Drag freely on picture!)' : 'OFF'} | Undo: ${undoStack.length}`;
+    ctx.fillText(footMsg.slice(0, 110), 16, H - 17);
+
+    winMain.tex.needsUpdate = true;
+  }
+
+  function redrawRadarText() {
+    const ctx = winRadar.ctx, W = winRadar.canvas.width, H = winRadar.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(3, 12, 24, 0.92)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#38bdf8'; ctx.font = 'bold 17px monospace'; ctx.textAlign = 'left';
+    ctx.fillText('LINE-PATTERN RADAR & TELEMETRY', 16, 26);
+
+    ctx.fillStyle = '#94a3b8'; ctx.font = 'bold 13px monospace';
+    ctx.fillText(`DEPTH: ${fbiState.depthSource} | FACES DB: ${faceWatchlist.length}`, 16, 242);
+    ctx.fillText(`MASKS: ${fbiState.outlines.length} | TRACKS: ${fbiState.tracks.length} | UNDO: ${undoStack.length}`, 16, 264);
+    ctx.strokeStyle = 'rgba(56,189,248,0.28)'; ctx.beginPath(); ctx.moveTo(16, 278); ctx.lineTo(W - 16, 278); ctx.stroke();
+
+    ctx.font = '12.5px monospace'; let ly = 300;
+    for (const line of fbiState.logs) {
+      if (ly > H - 14) break;
+      ctx.fillStyle = '#7ef7d4';
+      ctx.fillText(String(line).slice(0, 56), 16, ly); ly += 19;
+    }
+    winRadar.tex.needsUpdate = true;
+  }
+
+  function redrawScanBackdrop() {
+    const ctx = winScan.ctx, W = winScan.canvas.width, H = winScan.canvas.height;
+    ctx.clearRect(0, 0, W, H); ctx.fillStyle = 'rgba(3, 14, 24, 0.74)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#00f0b4'; ctx.font = 'bold 17px monospace'; ctx.textAlign = 'left';
+    ctx.fillText('REAL 3D DEPTH + CONTOUR SCAN', 16, 28);
+    ctx.fillStyle = '#7dd3fc'; ctx.font = '13px monospace';
+    ctx.fillText(`DEPTH: ${fbiState.depthSource} // ${String(fbiState.lastScanSubject).slice(0, 20)}`, 16, 52);
+    ctx.fillStyle = '#94a3b8'; ctx.fillText('DRAG TOP BAR TO MOVE WINDOW', 16, H - 18);
+    winScan.tex.needsUpdate = true;
+  }
+
+  function redrawDeductionWindow() {
+    const ctx = winDed.ctx, W = winDed.canvas.width, H = winDed.canvas.height;
+    ctx.clearRect(0, 0, W, H); ctx.fillStyle = 'rgba(4, 14, 28, 0.94)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#38bdf8'; ctx.font = 'bold 17px monospace'; ctx.textAlign = 'left';
+    ctx.fillText('SHERLOCK HOLMES DEDUCTION & IDEA CONNECTION GRAPH', 18, 26);
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.32)'; ctx.strokeRect(560, 40, 446, 284);
+
+    const links = fbiState.hypothesisLinks;
+    if (links.length) {
+      const nodes = Array.from(new Set(links.flatMap((l) => [l.from, l.to]))).slice(0, 6), posMap = {};
+      nodes.forEach((n, i) => { const a = (i / Math.max(1, nodes.length)) * Math.PI * 2 - Math.PI * 0.5; posMap[n] = { x: 783 + Math.cos(a) * 145, y: 182 + Math.sin(a) * 90 }; });
+      for (const l of links) {
+        const a = posMap[l.from], b = posMap[l.to]; if (!a || !b) continue;
+        ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.fillStyle = '#fde68a'; ctx.font = '11px monospace'; ctx.textAlign = 'center'; ctx.fillText(String(l.relation || '').slice(0, 18), (a.x + b.x) * 0.5, (a.y + b.y) * 0.5 - 5);
+      }
+      for (const [nm, pt] of Object.entries(posMap)) {
+        ctx.fillStyle = '#0f172a'; ctx.strokeStyle = '#00f0b4'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(pt.x, pt.y, 13, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#e2f8ff'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center'; ctx.fillText(nm.slice(0, 18), pt.x, pt.y + 22);
+      }
+    } else {
+      ctx.fillStyle = '#64748b'; ctx.font = '13px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('LINK GRAPH APPEARS AFTER ANALYSE', 783, 184);
+    }
+
+    ctx.fillStyle = '#e2f1ff'; ctx.font = '16px system-ui, sans-serif'; ctx.textAlign = 'left';
+    const words = String(fbiState.deductionSummary || '').split(/\s+/); let line = '', cy = 62;
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > 522 && line) { ctx.fillText(line, 18, cy); line = w; cy += 24; if (cy > H - 16) break; } else line = test;
+    }
+    if (line && cy <= H - 16) ctx.fillText(line, 18, cy);
+    winDed.tex.needsUpdate = true;
+  }
+
+  function redrawCompareWindow() {
+    const ctx = winComp.ctx, W = winComp.canvas.width, H = winComp.canvas.height;
+    ctx.clearRect(0, 0, W, H); ctx.fillStyle = 'rgba(4, 12, 24, 0.94)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#f472b6'; ctx.font = 'bold 16px monospace'; ctx.textAlign = 'left';
+    ctx.fillText('BIOMETRICS & ROI ZOOM INSPECTOR', 16, 26);
+
+    if (fbiState.enhancedCanvas) {
+      const asp = fbiState.enhancedCanvas.width / Math.max(1, fbiState.enhancedCanvas.height);
+      let dw = W - 32, dh = dw / asp; if (dh > H - 64) { dh = H - 64; dw = dh * asp; }
+      ctx.drawImage(fbiState.enhancedCanvas, (W - dw) * 0.5, 44, dw, dh);
+    } else if (fbiState.faceResults.length) {
+      let y = 58;
+      for (const fr of fbiState.faceResults.slice(0, 4)) {
+        ctx.fillStyle = fr.matchScore > 0 ? '#00f0b4' : '#7dd3fc'; ctx.font = 'bold 14px monospace';
+        ctx.fillText(`${fr.matchName} ${fr.matchScore ? fr.matchScore + '%' : ''}`, 16, y);
+        ctx.fillStyle = '#cbd5e1'; ctx.font = '12px monospace';
+        ctx.fillText(`Age~${fr.age} | ${fr.gender} | ${fr.expression}`, 16, y + 18);
+        y += 52;
+      }
+    } else {
+      ctx.fillStyle = '#64748b'; ctx.font = '13px monospace';
+      ctx.fillText('ENHANCED ROI OR FACE MATCHES APPEAR HERE', 16, 170);
+    }
+    winComp.tex.needsUpdate = true;
+  }
+
+  function redrawCmdDeck() {
+    cmdButtons = [];
+    const ctx = winCmd.ctx, W = winCmd.canvas.width, H = winCmd.canvas.height;
+    ctx.clearRect(0, 0, W, H); ctx.fillStyle = 'rgba(4, 14, 28, 0.96)'; ctx.fillRect(0, 0, W, H);
+    const now = performance.now();
+
+    const defs = [
+      { id: 'ev_bay', lbl: fbiState.pickerOpen ? 'VIEW IMG' : 'EVIDENCE BAY', active: fbiState.pickerOpen, fn: () => { fbiState.pickerOpen = !fbiState.pickerOpen; } },
+      { id: 'draw_m', lbl: fbiState.drawOutlineMode ? 'DRAW: ON' : 'DRAW: OFF', active: fbiState.drawOutlineMode, fn: () => { fbiState.drawOutlineMode = !fbiState.drawOutlineMode; APP.ui?.toast?.('Freehand Outline Drawing: ' + (fbiState.drawOutlineMode ? 'ON' : 'OFF'), 1600); } },
+      { id: 'undo', lbl: `UNDO (${undoStack.length})`, fn: () => performUndo() },
+      { id: 'reset', lbl: 'RESET ALL', warn: true, fn: () => performReset() },
+      { id: 'snap', lbl: 'CAM SNAP', fn: () => captureCameraSnapshot() },
+      { id: 'hide', lbl: 'HIDE LAB', warn: true, fn: () => setWorkstationOpen(false) },
+
+      { id: 'ana', lbl: 'ANALYSE (AI)', active: true, fn: () => runForensicAnalyse() },
+      { id: 'enh', lbl: 'ENHANCE ROI', fn: () => runEnhanceBlur() },
+      { id: 'dep', lbl: 'DEPTH 3D (AI)', fn: () => runAIDepthInWorker() },
+      { id: 'frec', lbl: 'FACE RECOG', fn: () => runRealFaceRecognition(null) },
+      { id: 'enr', lbl: 'ENROLL FACE', fn: () => { const nm = prompt('Suspect Name for Watchlist:', 'Suspect_' + (faceWatchlist.length + 1)); if (nm) runRealFaceRecognition(nm.trim()); } },
+      { id: 'trk', lbl: fbiState.trackingActive ? 'STOP TRACK' : 'TRACK VIDEO', active: fbiState.trackingActive, fn: () => togglePersonTracking() },
+
+      { id: 'fp', lbl: 'FINGERPRINT', fn: () => runFingerprintMatch() },
+      { id: 'fedit', lbl: 'FACE EDIT AI', fn: () => runFaceDisguiseRemoval() },
+      { id: 'view_e', lbl: fbiState.showEnhanced ? 'VIEW: ENH' : 'VIEW: RAW', active: fbiState.showEnhanced, fn: () => { if (fbiState.enhancedCanvas) { fbiState.showEnhanced = !fbiState.showEnhanced; } else APP.ui?.toast?.('No enhanced crop yet.', 1500); } },
+      { id: 'next_c', lbl: 'NEXT CLUE >', fn: () => cycleClue(1) },
+      { id: 'edit_kb', lbl: 'detection.txt', fn: () => openDetectionEditor() },
+      { id: 'rst_lay', lbl: 'SNAP WINDOWS', fn: () => { resetWindowLayout(); APP.ui?.toast?.('Windows snapped to formation.', 1400); } }
+    ];
+
+    const cols = 6, pad = 12, gapX = 10, gapY = 10, bw = (W - pad * 2 - gapX * (cols - 1)) / cols, bh = (H - pad * 2 - gapY * 2) / 3;
+    defs.forEach((b, idx) => {
+      const c = idx % cols, r = Math.floor(idx / cols), bx = pad + c * (bw + gapX), by = pad + r * (bh + gapY);
+      const isHov = hoveredCmdId === b.id, isFlash = fbiState.flashBtnId === b.id && now < fbiState.flashUntil;
+      ctx.fillStyle = isFlash ? '#0ea5e9' : (b.warn ? '#4c1420' : (b.active ? '#0f5c52' : (isHov ? '#1e3a5f' : '#0d1b2e')));
+      ctx.strokeStyle = isFlash ? '#ffffff' : (b.warn ? '#f87171' : (b.active || isHov ? '#00f0b4' : '#2b4d78'));
+      ctx.lineWidth = (isHov || isFlash) ? 3.5 : 1.8;
+      ctx.fillRect(bx, by, bw, bh); ctx.strokeRect(bx, by, bw, bh);
+      ctx.fillStyle = '#f8fafc'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(b.lbl, bx + bw * 0.5, by + bh * 0.5);
+      cmdButtons.push({ id: b.id, u0: bx / W, u1: (bx + bw) / W, v0: 1 - (by + bh) / H, v1: 1 - by / H, action: b.fn });
+    });
+    winCmd.tex.needsUpdate = true;
+  }
+
+  function refreshAllWindows() {
+    redrawMainViewport();
+    redrawRadarText();
+    redrawScanBackdrop();
+    redrawDeductionWindow();
+    redrawCompareWindow();
+    redrawCmdDeck();
+    sync2DDrawer();
+  }
+
+  // ====================================================================
+  // 7. CORE FORENSIC WORKFLOWS
+  // ====================================================================
+  function cycleClue(delta = 1) {
+    if (!fbiState.clues.length) { APP.ui?.toast?.('No clues yet — run ANALYSE first.', 1800); return; }
+    fbiState.activeClueIdx = (fbiState.activeClueIdx + delta + fbiState.clues.length) % fbiState.clues.length;
+    redrawMainViewport();
+  }
+
+  function requireEvidenceOrPick(msg) {
+    if (fbiState.evidenceType !== 'none') return true;
+    fbiState.pickerOpen = true;
+    fbiState.statusText = 'PICK EVIDENCE OR TRAINING CASE';
+    refreshAllWindows();
+    APP.ui?.toast?.(msg || 'Load an image/video or click a Case in Evidence Bay!', 3000);
+    return false;
+  }
+
+  async function runForensicAnalyse(forcedDomain, customQuestion) {
+    if (!fbiState.open) setWorkstationOpen(true);
+    if (fbiState.busy) { APP.ui?.toast?.('Scan running...', 1500); return { ok: false }; }
+    if (fbiState.evidenceType === 'none' && !customQuestion) { requireEvidenceOrPick(); return { ok: false }; }
+    if (!APP.ai?.chat) { APP.ui?.toast?.('AI module not loaded.', 3000); return { ok: false }; }
+
+    pushUndoSnapshot('before_analyse');
+    fbiState.pickerOpen = false; fbiState.busy = true;
+    if (forcedDomain) fbiState.mode = forcedDomain;
+    fbiState.statusText = 'ANALYSING // CV + SHERLOCK AI';
+    refreshAllWindows();
+
+    try {
+      await runMediaPipeOnFrame(false);
+      updateDepthShaderMaskAndTexture();
+
+      const activePoly = fbiState.outlines[fbiState.outlines.length - 1] || null;
+      const b64 = getCroppedOutlineBase64(activePoly);
+      const kbText = getRelevantKB((forcedDomain || '') + ' ' + (customQuestion || ''));
+
+      const cvLines = [];
+      if (fbiState.cvDetections.length) cvLines.push('OBJECTS: ' + fbiState.cvDetections.map((d) => `${d.categories?.[0]?.categoryName || 'obj'}(${Math.round((d.categories?.[0]?.score || 0) * 100)}%)`).join(', '));
+      if (fbiState.cvPoses.length) cvLines.push(`POSES: ${fbiState.cvPoses.length} person(s)`);
+      if (fbiState.faceResults.length) cvLines.push('FACES: ' + fbiState.faceResults.map((f) => `${f.matchName}(${f.matchScore}%) ${f.expression}`).join(', '));
+      if (activePoly) cvLines.push('FOCUS: User drew a freehand outline mask isolating the target part.');
+
+      const sysPrompt = [
+        'You are the NEXUS-FBI Sherlock Holmes Forensic Deduction Engine.',
+        'Analyze the evidence (especially the highlighted user-drawn region if masked) using detection.txt rules.',
+        'Return ONLY JSON: { "subject_title": "...", "domain": "body|graphology|crime|physiognomy|mystery", "deduction_summary": "concise Sherlock deduction (max 4 sentences)", "clues": [{ "id": "CLUE-01", "label": "2-5 word tape", "detail": "...", "confidence": 90, "severity": "high|med|low", "bbox": [x,y,w,h] }], "links": [{ "from": "A", "to": "B", "relation": "..." }] }',
+        '', kbText
+      ].join('\n');
+
+      const res = await APP.ai.chat({
+        systemPrompt: sysPrompt,
+        prompt: (customQuestion ? `QUESTION: ${customQuestion}\n` : `DOMAIN: ${forcedDomain || 'Full Multi-Domain Sherlock Analysis'}\n`) + cvLines.join('\n'),
+        imageB64: fbiState.evidenceType !== 'none' ? b64 : undefined,
+        imageMime: 'image/jpeg'
+      });
+
+      if (!res?.ok) throw new Error(res?.error || 'AI analysis failed.');
+      let parsed = null;
+      try { const m = String(res.text || '').match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); } catch (_) {}
+
+      if (parsed && Array.isArray(parsed.clues)) {
+        const bb = activePoly ? getOutlineBBox(activePoly) : { x: 0, y: 0, w: 1, h: 1 };
+        fbiState.clues = parsed.clues.map((c, idx) => {
+          const rawB = Array.isArray(c.bbox) && c.bbox.length === 4 ? c.bbox.map((v) => Math.max(0, Math.min(1, Number(v) || 0))) : [0.2, 0.2, 0.4, 0.4];
+          return {
+            id: c.id || `CLUE-0${idx + 1}`,
+            label: String(c.label || 'Clue').slice(0, 32),
+            detail: String(c.detail || ''),
+            confidence: Number(c.confidence || 85),
+            severity: c.severity || 'med',
+            bbox: [bb.x + rawB[0] * bb.w, bb.y + rawB[1] * bb.h, rawB[2] * bb.w, rawB[3] * bb.h]
+          };
+        });
+        fbiState.deductionSummary = parsed.deduction_summary || res.text;
+        fbiState.hypothesisLinks = Array.isArray(parsed.links) ? parsed.links : [];
+        fbiState.activeClueIdx = 0;
+        fbiState.lastScanSubject = parsed.subject_title || fbiState.evidenceTitle;
+      } else {
+        fbiState.deductionSummary = res.text || 'Analysis complete.';
+      }
+
+      fbiState.statusText = 'SHERLOCK SCAN COMPLETE';
+      playUiBeep(1040, 0.06);
+      APP.ui?.toast?.(`Found ${fbiState.clues.length} clues!`, 2800);
+      if (typeof APP.speakTTS === 'function' && fbiState.deductionSummary) APP.speakTTS(fbiState.deductionSummary.slice(0, 240));
+      return { ok: true, summary: fbiState.deductionSummary };
+    } catch (e) {
+      fbiState.statusText = 'SCAN ERROR'; APP.ui?.toast?.(e.message, 4500);
+      return { ok: false, error: e.message };
+    } finally { fbiState.busy = false; refreshAllWindows(); }
+  }
+
+  async function runEnhanceBlur(customPrompt) {
+    if (!fbiState.open) setWorkstationOpen(true);
+    if (!requireEvidenceOrPick('Load an image first, draw an outline, then Enhance!')) return { ok: false };
+    pushUndoSnapshot('before_enhance');
+    fbiState.pickerOpen = false; fbiState.busy = true;
+    fbiState.statusText = 'ENHANCING DRAWN OUTLINE // DECONVOLUTION';
+    refreshAllWindows();
+    try {
+      const enhC = runLocalSelectiveEnhance();
+      if (!enhC) throw new Error('Could not read pixels.');
+      fbiState.enhancedCanvas = enhC; fbiState.showEnhanced = true;
+      pushLog(`Enhanced ${fbiState.outlines.length ? 'drawn outline' : 'full frame'} (${enhC.width}x${enhC.height}).`);
+      if (APP.ai?.chat) {
+        const aiRes = await APP.ai.chat({
+          systemPrompt: 'FBI Forensic Enhancement Reader: report all text, numbers, faces, or details recovered in this sharpened region.',
+          prompt: customPrompt || 'Read every detail recovered in this enhanced region.',
+          imageB64: enhC.toDataURL('image/jpeg', 0.9).split(',')[1], imageMime: 'image/jpeg'
+        });
+        if (aiRes?.ok && aiRes.text) fbiState.deductionSummary = '[ENHANCED ROI] ' + aiRes.text;
+      }
+      fbiState.statusText = 'ENHANCEMENT READY';
+      playUiBeep(920, 0.05);
+      return { ok: true, summary: fbiState.deductionSummary };
+    } catch (e) { APP.ui?.toast?.(e.message, 4000); return { ok: false, error: e.message }; }
+    finally { fbiState.busy = false; refreshAllWindows(); }
+  }
+
+  async function togglePersonTracking(searchDesc) {
+    if (!fbiState.open) setWorkstationOpen(true);
+    if (!requireEvidenceOrPick('Load a video or image first to Track!')) return { ok: false };
+    fbiState.pickerOpen = false;
+    if (searchDesc !== undefined) fbiState.trackSearchQuery = String(searchDesc || '').toLowerCase().trim();
+    if (fbiState.evidenceType === 'video' && fbiState.sourceVideo) {
+      fbiState.trackingActive = !fbiState.trackingActive;
+      if (fbiState.trackingActive) { fbiState.sourceVideo.play().catch(() => {}); fbiState.statusText = 'LIVE VIDEO TRACKER ON'; }
+      else fbiState.statusText = 'TRACKER PAUSED';
+      refreshAllWindows(); return { ok: true, tracking: fbiState.trackingActive };
+    }
+    fbiState.busy = true; fbiState.statusText = 'TRACKING TARGETS...'; refreshAllWindows();
+    try {
+      await runMediaPipeOnFrame(false);
+      fbiState.deductionSummary = fbiState.tracks.length ? `Tracked ${fbiState.tracks.length} targets: ` + fbiState.tracks.map((t) => `${t.id}:${t.label}(${t.tag})`).join(', ') : 'No targets detected.';
+      fbiState.statusText = `TRACKED ${fbiState.tracks.length}`;
+      return { ok: true, tracks: fbiState.tracks };
+    } finally { fbiState.busy = false; refreshAllWindows(); }
+  }
+
+  async function runFingerprintMatch() {
+    if (!fbiState.open) setWorkstationOpen(true);
+    if (!requireEvidenceOrPick('Load a fingerprint image or Case 03!')) return { ok: false };
+    pushUndoSnapshot('before_fingerprint');
+    fbiState.pickerOpen = false; fbiState.busy = true; fbiState.mode = 'fingerprint';
+    fbiState.statusText = 'MATCHING GALTON MINUTIAE...'; refreshAllWindows();
+    try {
+      syncWorkCanvasFromSource(true);
+      const ev = analyzeFingerprintImage(workCanvas);
+      fbiState.fingerprintReport = ev;
+      let bestName = '', bestScore = 0;
+      if (fbiState.secondaryPrintImg) {
+        const ref = analyzeFingerprintImage(fbiState.secondaryPrintImg);
+        bestScore = Math.max(12, Math.min(99, Math.round(62 + (ev.pattern === ref.pattern ? 35 : 0) - (Math.abs(ev.endings - ref.endings) + Math.abs(ev.bifurcations - ref.bifurcations)) * 1.4)));
+        bestName = '2nd Reference Print';
+      } else {
+        for (const it of [{ name: 'FBI-DB #A104 (Arch)', c: createSyntheticDbPrint(1.2, 'arch') }, { name: 'FBI-DB #L409 (Loop)', c: createSyntheticDbPrint(2.5, 'loop') }, { name: 'FBI-DB #W882 (Whorl)', c: createSyntheticDbPrint(4.1, 'whorl') }]) {
+          const r = analyzeFingerprintImage(it.c);
+          const sc = Math.max(20, Math.min(97, Math.round((r.pattern === ev.pattern ? 88 : 52) - Math.abs(ev.ridgeScore - r.ridgeScore) * 40)));
+          if (sc > bestScore) { bestScore = sc; bestName = it.name; }
+        }
+      }
+      fbiState.clues = [{ id: 'FP-01', label: `${ev.pattern} (${bestScore}%)`, detail: `Endings=${ev.endings}, Bifurcations=${ev.bifurcations}, Match=${bestName}`, confidence: bestScore, severity: 'high', bbox: [0.22, 0.22, 0.56, 0.56] }];
+      fbiState.deductionSummary = `FINGERPRINT: ${ev.pattern} | Endings=${ev.endings} | Bifurcations=${ev.bifurcations} | Match=${bestName} (${bestScore}%).`;
+      fbiState.statusText = `PRINT MATCH ${bestScore}%`;
+      playUiBeep(960, 0.06);
+      return { ok: true, score: bestScore };
+    } finally { fbiState.busy = false; refreshAllWindows(); }
+  }
+
+  async function runFaceDisguiseRemoval(customInstruction) {
+    if (!fbiState.open) setWorkstationOpen(true);
+    if (!requireEvidenceOrPick('Load a suspect portrait first!')) return { ok: false };
+    pushUndoSnapshot('before_face_edit');
+    fbiState.pickerOpen = false; fbiState.busy = true; fbiState.mode = 'physiognomy';
+    fbiState.statusText = 'FREE AI IMAGE EDIT IN PROGRESS...'; refreshAllWindows();
+    try {
+      const activePoly = fbiState.outlines[fbiState.outlines.length - 1] || null;
+      const b64 = getCroppedOutlineBase64(activePoly);
+      const prompt = customInstruction || 'Remove the mustache, beard, and glasses from this exact person face. Reconstruct realistic skin, upper lip, and unobstructed eyes while keeping identical facial identity and lighting.';
+
+      if (typeof APP.ai?.editImage === 'function') {
+        pushLog('Calling free APP.ai.editImage()...');
+        const editRes = await APP.ai.editImage({ prompt, imageB64: b64, imageMime: 'image/jpeg' });
+        if (editRes?.ok && editRes.imageB64) {
+          const img = new Image();
+          await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = `data:${editRes.mimeType || 'image/png'};base64,${editRes.imageB64}`; });
+          const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+          c.getContext('2d').drawImage(img, 0, 0);
+          fbiState.enhancedCanvas = c; fbiState.showEnhanced = true;
+          fbiState.deductionSummary = `[FREE AI EDIT: ${editRes.provider}] Reconstructed unobstructed face.`;
+          fbiState.statusText = 'AI FACE EDIT COMPLETE';
+          APP.ui?.toast?.('Face edited via ' + editRes.provider + '!', 3200);
+          playUiBeep(1080, 0.06);
+          return { ok: true, provider: editRes.provider };
+        }
+        pushLog('Image Edit note: ' + (editRes?.error || 'busy'));
+        APP.ui?.toast?.(editRes?.error || 'Free Image Edit queued/busy — running 128-D Face Recog.', 4000);
+      }
+      await runRealFaceRecognition(null);
+      return { ok: false, error: 'Image Edit endpoint busy.' };
+    } finally { fbiState.busy = false; refreshAllWindows(); }
+  }
+
+  // ====================================================================
+  // 8. FILE INPUTS, TRAINING CASES & CAMERA SNAPSHOT
+  // ====================================================================
+  function handleFileSelected(file, asSecondaryPrint = false) {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    if (file.type.startsWith('video/') || /\.(mp4|webm|mov)$/i.test(file.name)) {
+      const v = document.createElement('video'); v.src = url; v.muted = true; v.loop = true; v.playsInline = true; v.crossOrigin = 'anonymous';
+      v.onloadeddata = () => loadEvidenceFromVideo(v, file.name);
+    } else {
+      const img = new Image(); img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        if (asSecondaryPrint) { fbiState.secondaryPrintImg = img; pushLog(`Loaded 2nd Print: ${file.name}`); APP.ui?.toast?.(`2nd print loaded: ${file.name}`); }
+        else loadEvidenceFromImage(img, file.name);
+      };
+      img.src = url;
+    }
+  }
+
+  function makePersistentInput(id, accept, asPrint = false) {
+    const old = document.getElementById(id); if (old) old.remove();
+    const inp = document.createElement('input'); inp.id = id; inp.type = 'file'; inp.accept = accept;
+    inp.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;';
+    inp.addEventListener('change', (e) => { const f = e.target.files?.[0]; if (f) handleFileSelected(f, asPrint); inp.value = ''; });
+    document.body.appendChild(inp);
+    return inp;
+  }
+  const domFileImg = makePersistentInput('nxr-fbi-inp-img', 'image/*,.png,.jpg,.jpeg,.webp', false);
+  const domFileVid = makePersistentInput('nxr-fbi-inp-vid', 'video/*,.mp4,.webm', false);
+  const domFilePrint = makePersistentInput('nxr-fbi-inp-print', 'image/*,.png,.jpg,.jpeg,.webp', true);
+
+  function loadTrainingCase(kind) {
+    const c = document.createElement('canvas'); c.width = 960; c.height = 600; const ctx = c.getContext('2d');
+    if (kind === 'crime') {
+      ctx.fillStyle = '#1c1917'; ctx.fillRect(0, 0, 960, 600); ctx.fillStyle = '#3b2416'; ctx.fillRect(60, 180, 840, 380);
+      ctx.fillStyle = 'rgba(20, 12, 8, 0.8)'; ctx.beginPath(); ctx.ellipse(270, 360, 110, 55, 0.2, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(186, 230, 253, 0.75)'; ctx.lineWidth = 2;
+      for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; ctx.beginPath(); ctx.moveTo(640, 310); ctx.lineTo(640 + Math.cos(a) * 95, 310 + Math.sin(a) * 85); ctx.stroke(); }
+      ctx.fillStyle = '#d4af37'; ctx.beginPath(); ctx.arc(460, 290, 44, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#f8fafc'; ctx.beginPath(); ctx.arc(460, 290, 36, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(460, 290); ctx.lineTo(445, 268); ctx.moveTo(460, 290); ctx.lineTo(484, 304); ctx.stroke();
+      ctx.save(); ctx.translate(710, 420); ctx.rotate(-0.15); ctx.fillStyle = '#e2e8f0'; ctx.fillRect(0, 0, 170, 110);
+      ctx.fillStyle = 'rgba(30,41,59,0.5)'; ctx.font = 'bold 18px serif'; ctx.fillText('KEY #47B', 20, 46); ctx.fillText('DOCK 9...', 24, 78); ctx.restore();
+      const img = new Image(); img.onload = () => loadEvidenceFromImage(img, 'CASE_01_Crime_Scene.png'); img.src = c.toDataURL('image/png');
+    } else if (kind === 'graphology') {
+      ctx.fillStyle = '#f3ebd8'; ctx.fillRect(0, 0, 960, 600); ctx.strokeStyle = 'rgba(56,189,248,0.35)';
+      for (let y = 100; y < 560; y += 55) { ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(920, y); ctx.stroke(); }
+      ctx.fillStyle = '#1e293b'; ctx.font = 'italic 40px Georgia, serif';
+      ctx.save(); ctx.translate(90, 165); ctx.rotate(-0.04); ctx.fillText('Do not look for me tonight.', 0, 0); ctx.restore();
+      ctx.save(); ctx.translate(95, 255); ctx.rotate(0.05); ctx.fillText('The vault stays CLOSED!!', 0, 0); ctx.restore();
+      ctx.lineWidth = 4; ctx.strokeStyle = '#0f172a'; ctx.beginPath(); ctx.moveTo(110, 380);
+      for (let x = 110; x < 420; x += 12) ctx.lineTo(x, 380 + Math.sin(x * 0.4) * 9); ctx.stroke();
+      ctx.font = 'italic 28px Georgia, serif'; ctx.fillText('— V. Mercer (shaky forgery trace)', 110, 450);
+      const img = new Image(); img.onload = () => loadEvidenceFromImage(img, 'CASE_02_Handwriting_Sample.png'); img.src = c.toDataURL('image/png');
+    } else {
+      const fp = createSyntheticDbPrint(2.5, 'loop');
+      ctx.fillStyle = '#e2e8f0'; ctx.fillRect(0, 0, 960, 600); ctx.drawImage(fp, 240, 60, 480, 480);
+      const img = new Image(); img.onload = () => loadEvidenceFromImage(img, 'CASE_03_Fingerprint_Lift.png'); img.src = c.toDataURL('image/png');
+    }
+  }
+
+  function loadEvidenceFromImage(imgEl, title) {
+    if (fbiState.sourceVideo) { try { fbiState.sourceVideo.pause(); } catch (_) {} fbiState.sourceVideo = null; }
+    fbiState.trackingActive = false; fbiState.pickerOpen = false; fbiState.evidenceType = 'image';
+    fbiState.sourceImg = imgEl; fbiState.evidenceTitle = title || 'Evidence Image';
+    fbiState.enhancedCanvas = null; fbiState.showEnhanced = false;
+    fbiState.outlines = []; fbiState.activeStroke = null; fbiState.clues = []; fbiState.tracks = []; fbiState.faceResults = [];
+    fbiState.depthSource = 'None';
+    if (depthTexRef) { depthTexRef.dispose(); depthTexRef = null; }
+    fbiState.lastScanSubject = fbiState.evidenceTitle;
+    fbiState.statusText = 'LOADED (60FPS) // DRAW OUTLINE OR ANALYSE';
+    fbiState.deductionSummary = `Loaded "${fbiState.evidenceTitle}". Drag freely on the image to draw a highlight outline, or click ANALYSE / DEPTH 3D (AI) / FACE RECOG.`;
+    pushLog(`Loaded (0ms lag): ${fbiState.evidenceTitle}`);
+    updateDepthShaderMaskAndTexture(); // Instant <4ms GPU texture upload, ZERO freeze!
+    refreshAllWindows();
+  }
+
+  function loadEvidenceFromVideo(vidEl, title) {
+    fbiState.pickerOpen = false; fbiState.evidenceType = 'video'; fbiState.sourceVideo = vidEl; fbiState.sourceImg = null;
+    fbiState.evidenceTitle = title || 'Evidence Video';
+    fbiState.enhancedCanvas = null; fbiState.showEnhanced = false; fbiState.outlines = []; fbiState.clues = []; fbiState.tracks = [];
+    fbiState.trackingActive = true; vidEl.play().catch(() => {});
+    fbiState.statusText = 'VIDEO STREAM LIVE // TRACKING ON';
+    pushLog(`Video Live: ${fbiState.evidenceTitle}`);
+    refreshAllWindows();
+  }
+
+  function captureCameraSnapshot() {
+    const b64 = APP.captureVisionFrame?.() || APP.latestVisionB64;
+    if (!b64) { APP.ui?.toast?.('No scene frame available.', 2200); return { ok: false }; }
+    const img = new Image(); img.onload = () => loadEvidenceFromImage(img, 'XR_Scene_Snap.jpg'); img.src = 'data:image/jpeg;base64,' + b64;
+    return { ok: true };
+  }
+
+  // ====================================================================
+  // 9. 2D FLOATING CASE CONSOLE
+  // ====================================================================
+  let drawerEl = null;
+  function ensure2DDrawer() {
+    if (drawerEl && document.body.contains(drawerEl)) return drawerEl;
+    const old = document.getElementById('nxr-fbi-drawer'); if (old) old.remove();
+    if (!document.getElementById('nxr-fbi-css')) {
+      const st = document.createElement('style'); st.id = 'nxr-fbi-css';
+      st.textContent = `#nxr-fbi-drawer{position:fixed;right:12px;top:84px;z-index:9997;width:332px;max-height:70vh;overflow-y:auto;padding:11px;border-radius:14px;display:none;pointer-events:auto;background:rgba(4,12,24,0.92);backdrop-filter:blur(14px);border:1px solid rgba(0,240,180,0.38);color:#e2e8f0;font-family:system-ui,monospace;font-size:11px;box-shadow:0 12px 36px rgba(0,0,0,0.65);}#nxr-fbi-drawer .r{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;}#nxr-fbi-drawer button,#nxr-fbi-drawer .fb{background:rgba(15,32,56,0.95);color:#bae6fd;border:1px solid rgba(56,189,248,0.35);border-radius:7px;padding:5px 8px;font-size:10.5px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;}#nxr-fbi-drawer button:hover,#nxr-fbi-drawer .fb:hover{background:rgba(15,118,110,0.9);color:#fff;border-color:#00f0b4;}#nxr-fbi-drawer input[type=text]{width:100%;background:rgba(2,6,14,0.88);color:#e2e8f0;border:1px solid rgba(56,189,248,0.28);border-radius:7px;padding:6px 8px;font-size:11px;}#nxr-fbi-drawer .vd{margin-top:7px;padding:7px;border-radius:8px;background:rgba(0,240,180,0.08);border-left:3px solid #00f0b4;line-height:1.4;max-height:110px;overflow-y:auto;}`;
+      document.head.appendChild(st);
+    }
+    const el = document.createElement('div'); el.id = 'nxr-fbi-drawer';
+    ['pointerdown', 'mousedown', 'touchstart'].forEach((ev) => el.addEventListener(ev, (e) => e.stopPropagation()));
+    el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(0,240,180,0.2);padding-bottom:5px;">
+        <strong style="color:#00f0b4;">NEXUS-FBI // FORENSIC CONSOLE</strong>
+        <button type="button" id="fd-cls">✕</button>
+      </div>
+      <div class="r">
+        <label class="fb" for="nxr-fbi-inp-img">Load Image</label>
+        <label class="fb" for="nxr-fbi-inp-vid">Load Video</label>
+        <button type="button" id="fd-snap">Snap XR</button>
+        <label class="fb" for="nxr-fbi-inp-print">2nd Print</label>
+      </div>
+      <div class="r">
+        <button type="button" id="fd-c1">Case 1: Crime</button>
+        <button type="button" id="fd-c2">Case 2: Handwriting</button>
+        <button type="button" id="fd-c3">Case 3: Print</button>
+      </div>
+      <div class="r">
+        <button type="button" id="fd-ana" style="border-color:#00f0b4;color:#00f0b4;">Analyse</button>
+        <button type="button" id="fd-enh">Enhance ROI</button>
+        <button type="button" id="fd-dep">Depth 3D (AI)</button>
+        <button type="button" id="fd-frec">Face Recog</button>
+        <button type="button" id="fd-enr">Enroll Face</button>
+      </div>
+      <div class="r">
+        <button type="button" id="fd-trk">Track Video</button>
+        <button type="button" id="fd-fp">Fingerprint</button>
+        <button type="button" id="fd-fe">Face Edit AI</button>
+        <button type="button" id="fd-undo">Undo</button>
+        <button type="button" id="fd-rst" style="border-color:#f87171;color:#fecaca;">Reset</button>
+      </div>
+      <div class="r">
+        <input type="text" id="fd-q" placeholder="Ask Sherlock or name suspect..." />
+        <button type="button" id="fd-ask" style="width:100%;">Ask &amp; Connect Clues</button>
+      </div>
+      <div class="vd" id="fd-vd">Ready.</div>
+      <div class="r">
+        <button type="button" id="fd-ekb" style="flex:1;">Edit detection.txt</button>
+        <button type="button" id="fd-rkb" style="flex:1;">Reload KB</button>
+      </div>`;
+    document.body.appendChild(el); drawerEl = el;
+    el.querySelector('#fd-cls').onclick = () => { el.style.display = 'none'; };
+    el.querySelector('#fd-snap').onclick = () => captureCameraSnapshot();
+    el.querySelector('#fd-c1').onclick = () => loadTrainingCase('crime');
+    el.querySelector('#fd-c2').onclick = () => loadTrainingCase('graphology');
+    el.querySelector('#fd-c3').onclick = () => loadTrainingCase('fingerprint');
+    el.querySelector('#fd-ana').onclick = () => runForensicAnalyse();
+    el.querySelector('#fd-enh').onclick = () => runEnhanceBlur();
+    el.querySelector('#fd-dep').onclick = () => runAIDepthInWorker();
+    el.querySelector('#fd-frec').onclick = () => runRealFaceRecognition(null);
+    el.querySelector('#fd-enr').onclick = () => { const nm = el.querySelector('#fd-q').value.trim() || prompt('Suspect Name:', 'Suspect_' + (faceWatchlist.length + 1)); if (nm) runRealFaceRecognition(nm); };
+    el.querySelector('#fd-trk').onclick = () => togglePersonTracking(el.querySelector('#fd-q').value);
+    el.querySelector('#fd-fp').onclick = () => runFingerprintMatch();
+    el.querySelector('#fd-fe').onclick = () => runFaceDisguiseRemoval();
+    el.querySelector('#fd-undo').onclick = () => performUndo();
+    el.querySelector('#fd-rst').onclick = () => performReset();
+    el.querySelector('#fd-ask').onclick = () => { const q = el.querySelector('#fd-q').value.trim(); if (q) runForensicAnalyse(null, q); };
+    el.querySelector('#fd-ekb').onclick = () => openDetectionEditor();
+    el.querySelector('#fd-rkb').onclick = () => loadDetectionTxt().then(refreshAllWindows);
+    return el;
+  }
+
+  function show2DDrawer(val = true) { const el = ensure2DDrawer(); el.style.display = val ? 'block' : 'none'; sync2DDrawer(); }
+  function sync2DDrawer() { if (drawerEl) drawerEl.querySelector('#fd-vd').textContent = fbiState.deductionSummary || 'Ready.'; }
+
+  function openDetectionEditor() {
+    if (APP.toolbar?.openGitHubEditor) {
+      APP.toolbar.openGitHubEditor();
+      setTimeout(() => {
+        const sel = document.querySelector('#modal-editor-body #gh-file-sel');
+        if (sel && Array.from(sel.options).some((o) => o.value === 'detection.txt')) { sel.value = 'detection.txt'; sel.dispatchEvent(new Event('change')); }
+      }, 60);
+    }
+  }
+
+  // ====================================================================
+  // 10. 3D DRAGGABLE MINI WINDOWS, FREEHAND OUTLINE & TACTILE BUTTONS
+  // ====================================================================
+  let lastPokeTs = 0, activeDragWin = null, dragHandKey = null, dragDist = 1.25;
+  const dragPlane = new THREE.Plane(), dragOff = new THREE.Vector3();
+  const dRay = new THREE.Raycaster(), dNdc = new THREE.Vector2(), tmpDir = new THREE.Vector3(), tmpVec = new THREE.Vector3();
+
+  function uvToNormalizedImage(uv) {
+    const cx = uv.x * winMain.canvas.width, cy = (1 - uv.y) * winMain.canvas.height;
+    return {
+      x: Math.max(0, Math.min(1, (cx - lastImgRect.x) / Math.max(1, lastImgRect.w))),
+      y: Math.max(0, Math.min(1, (cy - lastImgRect.y) / Math.max(1, lastImgRect.h)))
+    };
+  }
+
+  function triggerCmdAtUV(uv) {
+    const now = performance.now();
+    if (now - lastPokeTs < 200) return;
+    lastPokeTs = now;
+    for (const b of cmdButtons) {
+      if (uv.x >= b.u0 && uv.x <= b.u1 && uv.y >= b.v0 && uv.y <= b.v1) {
+        fbiState.flashBtnId = b.id; fbiState.flashUntil = now + 180;
+        playUiBeep(860, 0.04);
+        redrawCmdDeck();
+        b.action();
+        refreshAllWindows();
+        break;
+      }
+    }
+  }
+
+  function triggerPickerAtUV(uv) {
+    const now = performance.now();
+    if (now - lastPokeTs < 220) return;
+    lastPokeTs = now;
+    for (const b of pickerButtons) {
+      if (uv.x >= b.u0 && uv.x <= b.u1 && uv.y >= b.v0 && uv.y <= b.v1) { playUiBeep(920, 0.045); b.action(); break; }
+    }
+  }
+
+  for (const w of miniWindows) {
+    w.dragBar.userData.onPoke = () => {};
+    if (w !== winCmd && w !== winMain) w.screen.userData.onPoke = () => {};
+  }
+  winCmd.screen.userData.onPoke = (hit) => { if (fbiState.open && hit?.uv) triggerCmdAtUV(hit.uv); };
+  winMain.screen.userData.onPoke = (hit) => {
+    if (!fbiState.open || !hit?.uv) return;
+    if (fbiState.pickerOpen || fbiState.evidenceType === 'none') triggerPickerAtUV(hit.uv);
+  };
+
+  function onPtrDown(e) {
+    if (!fbiState.open || e.button !== 0 || !APP.camera) return;
+    const el = APP.renderer?.domElement; if (e.target !== el) return;
+    const rect = el.getBoundingClientRect();
+    dNdc.x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    dNdc.y = -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+    dRay.setFromCamera(dNdc, APP.camera);
+
+    const bh = dRay.intersectObjects(miniWindows.map((w) => w.dragBar), false);
+    if (bh.length) {
+      const win = miniWindows.find((w) => w.dragBar === bh[0].object);
+      if (win) {
+        activeDragWin = win;
+        dragPlane.setFromNormalAndCoplanarPoint(APP.camera.getWorldDirection(new THREE.Vector3()).negate(), bh[0].point);
+        wsRoot.worldToLocal(dragOff.copy(bh[0].point));
+        dragOff.sub(win.group.position).negate();
+        playUiBeep(620, 0.03);
+        return;
+      }
+    }
+
+    if (!fbiState.pickerOpen && fbiState.evidenceType !== 'none' && fbiState.drawOutlineMode) {
+      const mh = dRay.intersectObject(winMain.screen, false);
+      if (mh.length && mh[0].uv) { fbiState.activeStroke = [uvToNormalizedImage(mh[0].uv)]; redrawMainViewport(); }
+    }
+  }
+
+  function onPtrMove(e) {
+    if (!fbiState.open || !APP.camera) return;
+    const el = APP.renderer?.domElement; if (!el) return;
+    const rect = el.getBoundingClientRect();
+    dNdc.x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    dNdc.y = -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+    dRay.setFromCamera(dNdc, APP.camera);
+
+    if (activeDragWin) {
+      const pt = new THREE.Vector3();
+      if (dRay.ray.intersectPlane(dragPlane, pt)) {
+        wsRoot.worldToLocal(pt);
+        activeDragWin.group.position.copy(pt).add(dragOff);
+        updateDynamicConnectors();
+      }
+      return;
+    }
+
+    if (fbiState.activeStroke) {
+      const mh = dRay.intersectObject(winMain.screen, false);
+      if (mh.length && mh[0].uv) {
+        const pt = uvToNormalizedImage(mh[0].uv), last = fbiState.activeStroke[fbiState.activeStroke.length - 1];
+        if (Math.hypot(pt.x - last.x, pt.y - last.y) > 0.015) { fbiState.activeStroke.push(pt); redrawMainViewport(); }
+      }
+      return;
+    }
+
+    const ch = dRay.intersectObject(winCmd.screen, false);
+    let nh = null;
+    if (ch.length && ch[0].uv) for (const b of cmdButtons) if (ch[0].uv.x >= b.u0 && ch[0].uv.x <= b.u1 && ch[0].uv.y >= b.v0 && ch[0].uv.y <= b.v1) { nh = b.id; break; }
+    if (nh !== hoveredCmdId) { hoveredCmdId = nh; redrawCmdDeck(); }
+
+    if (fbiState.pickerOpen || fbiState.evidenceType === 'none') {
+      const mh = dRay.intersectObject(winMain.screen, false);
+      let np = null;
+      if (mh.length && mh[0].uv) for (const b of pickerButtons) if (mh[0].uv.x >= b.u0 && mh[0].uv.x <= b.u1 && mh[0].uv.y >= b.v0 && mh[0].uv.y <= b.v1) { np = b.id; break; }
+      if (np !== hoveredPickerId) { hoveredPickerId = np; redrawMainViewport(); }
+    }
+  }
+
+  function finishActiveOutline() {
+    if (!fbiState.activeStroke) return;
+    const pts = fbiState.activeStroke;
+    fbiState.activeStroke = null;
+    if (pts.length >= 4) {
+      pushUndoSnapshot('draw_outline');
+      fbiState.outlines.push(pts);
+      playUiBeep(940, 0.05);
+      APP.ui?.toast?.(`Outline #${fbiState.outlines.length} highlighted!`, 2000);
+      updateDepthShaderMaskAndTexture();
+    }
+    refreshAllWindows();
+  }
+
+  function onPtrUp() { activeDragWin = null; finishActiveOutline(); }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pointerdown', onPtrDown, { passive: true });
+    window.addEventListener('pointermove', onPtrMove, { passive: true });
+    window.addEventListener('pointerup', onPtrUp, { passive: true });
+  }
+
+  function setWorkstationOpen(val) {
+    fbiState.open = !!val;
+    if (!wsRoot.parent) APP.scene.add(wsRoot);
+    wsRoot.visible = fbiState.open;
+    if (fbiState.open) {
+      const hp = APP.headPos || new THREE.Vector3(0, 1.5, 0), hf = APP.headFwd || new THREE.Vector3(0, 0, -1);
+      const flat = new THREE.Vector3(hf.x, 0, hf.z).normalize(); if (flat.lengthSq() < 0.01) flat.set(0, 0, -1);
+      wsRoot.position.copy(hp).addScaledVector(flat, 1.28);
+      wsRoot.position.y = Math.max(1.02, hp.y - 0.08);
+      wsRoot.lookAt(hp.x, wsRoot.position.y, hp.z);
+      refreshAllWindows();
+      show2DDrawer(APP.xrMode === 'none');
+    } else show2DDrawer(false);
+    return fbiState.open;
+  }
+
+  function updateForensicSuite(dt, elapsed) {
+    if (!fbiState.open || !wsRoot.visible) return;
+    const now = elapsed || (performance.now() * 0.001);
+
+    // 100% GPU Uniform Updates (ZERO CPU canvas lag!)
+    mainLineUniforms.uTime.value = now; mainLineUniforms.uBusy.value = fbiState.busy ? 1.0 : 0.0;
+    radarShaderUniforms.uTime.value = now; radarShaderUniforms.uBusy.value = fbiState.busy ? 1.0 : 0.0;
+    scanShaderUniforms.uTime.value = now;
+
+    scanModelSpinGroup.rotation.y = Math.sin(now * 0.65) * 0.68;
+    holoRingA.rotation.z = now * 0.5;
+    holoSlice.position.y = Math.sin(now * 2.2) * 0.12;
+
+    if (fbiState.flashBtnId && performance.now() > fbiState.flashUntil) { fbiState.flashBtnId = null; redrawCmdDeck(); }
+
+    let showDot = false;
+    if (APP.xrMode !== 'none') {
+      const hands = APP.hands || {};
+      if (dragHandKey && activeDragWin) {
+        const dh = hands[dragHandKey];
+        if (dh && dh.active && (dh.trigger || dh.gripping || dh.pinching)) {
+          const targetPt = new THREE.Vector3();
+          if (dh.isHand && dh.fingerTips?.index) targetPt.copy(dh.fingerTips.index);
+          else if (dh.rayOrigin && dh.rayDir) targetPt.copy(dh.rayOrigin).addScaledVector(tmpDir.copy(dh.rayDir).normalize(), dragDist);
+          wsRoot.worldToLocal(targetPt);
+          activeDragWin.group.position.lerp(targetPt.add(dragOff), 0.55);
+          updateDynamicConnectors();
+        } else { dragHandKey = null; activeDragWin = null; }
+      } else {
+        for (const [hk, hand] of Object.entries(hands)) {
+          if (!hand || !hand.active) continue;
+          if (hand.rayOrigin && hand.rayDir) {
+            tmpDir.copy(hand.rayDir).normalize(); dRay.set(hand.rayOrigin, tmpDir);
+            const bh = dRay.intersectObjects(miniWindows.map((w) => w.dragBar), false);
+            if (bh.length) {
+              showDot = true; vrCursorDot.position.copy(bh[0].point); wsRoot.worldToLocal(vrCursorDot.position);
+              if (hand.justTriggered || hand.justGripped || hand.justPinched) {
+                activeDragWin = miniWindows.find((w) => w.dragBar === bh[0].object);
+                if (activeDragWin) { dragHandKey = hk; dragDist = bh[0].distance; wsRoot.worldToLocal(dragOff.copy(bh[0].point)); dragOff.sub(activeDragWin.group.position).negate(); break; }
+              }
+            }
+            const sh = dRay.intersectObjects([winCmd.screen, winMain.screen], false);
+            if (sh.length && sh[0].uv) {
+              showDot = true; vrCursorDot.position.copy(sh[0].point); wsRoot.worldToLocal(vrCursorDot.position);
+              if (sh[0].object === winCmd.screen) {
+                for (const b of cmdButtons) if (sh[0].uv.x >= b.u0 && sh[0].uv.x <= b.u1 && sh[0].uv.y >= b.v0 && sh[0].uv.y <= b.v1 && hoveredCmdId !== b.id) { hoveredCmdId = b.id; redrawCmdDeck(); break; }
+              } else if (sh[0].object === winMain.screen && !fbiState.pickerOpen && fbiState.evidenceType !== 'none' && fbiState.drawOutlineMode) {
+                if (hand.trigger || hand.pinching) {
+                  const pt = uvToNormalizedImage(sh[0].uv);
+                  if (!fbiState.activeStroke) fbiState.activeStroke = [pt];
+                  else {
+                    const last = fbiState.activeStroke[fbiState.activeStroke.length - 1];
+                    if (Math.hypot(pt.x - last.x, pt.y - last.y) > 0.015) { fbiState.activeStroke.push(pt); redrawMainViewport(); }
+                  }
+                } else if (fbiState.activeStroke) finishActiveOutline();
+              }
+            }
+          }
+        }
+      }
+    }
+    vrCursorDot.visible = showDot;
+
+    if (fbiState.evidenceType === 'video' && fbiState.sourceVideo && !fbiState.sourceVideo.paused && !fbiState.pickerOpen) {
+      const nowMs = performance.now();
+      if (fbiState.trackingActive && nowMs - fbiState.lastVideoDetectTs > 180) {
+        fbiState.lastVideoDetectTs = nowMs;
+        runMediaPipeOnFrame(true);
+      }
+      if (nowMs - fbiState.lastVideoDrawTs > 75) {
+        fbiState.lastVideoDrawTs = nowMs;
+        redrawMainViewport();
+      }
+    }
+  }
+
+  const unsubFrame = APP.onUpdate ? APP.onUpdate(updateForensicSuite) : null;
+  if (!unsubFrame && APP.frameHooks) APP.frameHooks.add(updateForensicSuite);
+
+  APP._inst5Cleanup = function () {
+    if (typeof unsubFrame === 'function') unsubFrame(); else APP.frameHooks?.delete(updateForensicSuite);
+    if (typeof window !== 'undefined') { window.removeEventListener('pointerdown', onPtrDown); window.removeEventListener('pointermove', onPtrMove); window.removeEventListener('pointerup', onPtrUp); }
+    for (const w of miniWindows) { APP.pokeTargets?.delete(w.screen); APP.pokeTargets?.delete(w.dragBar); }
+    if (depthWorker) { try { depthWorker.terminate(); } catch (_) {} depthWorker = null; }
+    if (colorTexRef) colorTexRef.dispose();
+    if (depthTexRef) depthTexRef.dispose();
+    if (maskTexRef) maskTexRef.dispose();
+    fallbackTex.dispose();
+    if (wsRoot.parent) wsRoot.parent.remove(wsRoot);
+    if (drawerEl?.parentNode) drawerEl.parentNode.removeChild(drawerEl);
+    domFileImg.remove(); domFileVid.remove(); domFilePrint.remove();
+  };
+
+  APP.detection = {
+    reload: loadDetectionTxt,
+    setKnowledgeText: (txt) => { parseKnowledgeBase(txt); pushLog('detection.txt synced.'); refreshAllWindows(); },
+    getSections: () => kbState.sections
+  };
+
+  APP.forensics = {
+    open: () => setWorkstationOpen(true),
+    close: () => setWorkstationOpen(false),
+    analyse: runForensicAnalyse,
+    enhanceBlur: runEnhanceBlur,
+    depth3D: runAIDepthInWorker,
+    faceRecog: runRealFaceRecognition,
+    trackPerson: togglePersonTracking,
+    matchFingerprint: runFingerprintMatch,
+    removeDisguise: runFaceDisguiseRemoval,
+    undo: performUndo,
+    reset: performReset,
+    loadSnapshot: captureCameraSnapshot,
+    runCommand: async function (text) {
+      const low = String(text || '').toLowerCase().trim();
+      setWorkstationOpen(true);
+      if (!low || /^(fbi|forensic|forensics|detective|sherlock|open lab|investigation|تحقيق)$/i.test(low)) return { ok: true, message: 'FBI Studio ready.' };
+      if (/undo|تراجع/.test(low)) return performUndo();
+      if (/reset|اعادة/.test(low)) return performReset();
+      if (/enhance|unblur|blur|وضح/.test(low)) return await runEnhanceBlur(text);
+      if (/depth|3d scan/.test(low)) return runAIDepthInWorker();
+      if (/face recog|recognize|identify face/.test(low)) return await runRealFaceRecognition(null);
+      if (/fingerprint|بصمة/.test(low)) return await runFingerprintMatch();
+      if (/mustache|beard|glasses|disguise|face edit|بدون شارب|بدون نظار/.test(low)) return await runFaceDisguiseRemoval(text);
+      if (/track|find suspect|تتبع/.test(low)) return await togglePersonTracking(low.replace(/.*?(track|find)\s*(that|the|a)?\s*(person|suspect|guy)?\s*/i, '').trim());
+      return await runForensicAnalyse('auto', text);
+    }
+  };
+
+  APP.registerBotTool?.({
+    name: 'forensic_investigate',
+    description: 'Run FBI & Sherlock Holmes forensic tools: open, analyse, enhance_blur, depth_3d, face_recog, track_person, match_fingerprint, face_edit, undo, reset.',
+    parameters: { type: 'object', properties: { action: { type: 'string' }, question: { type: 'string' } }, required: ['action'] }
+  }, async (a) => {
+    const act = String(a?.action || 'open').toLowerCase();
+    setWorkstationOpen(true);
+    if (act === 'open') return { ok: true };
+    if (act === 'undo') return performUndo();
+    if (act === 'reset') return performReset();
+    if (act === 'depth_3d') return runAIDepthInWorker();
+    if (act === 'face_recog') return await runRealFaceRecognition(null);
+    if (act === 'enhance_blur') return await runEnhanceBlur(a.question);
+    if (act === 'track_person') return await togglePersonTracking(a.question || '');
+    if (act === 'match_fingerprint') return await runFingerprintMatch();
+    if (act === 'face_edit') return await runFaceDisguiseRemoval(a.question);
+    return await runForensicAnalyse(null, a.question);
+  });
+
+  loadDetectionTxt();
+  APP.registerAbilityHandler?.('fbi_forensic_suite', async (t) => APP.forensics.runCommand(t));
+  if (typeof command === 'string' && command.trim()) setWorkstationOpen(true);
+})();
+@end
+
+# ----------------------------------------------------------------------
+# Pinned Scripted Demand Buttons
+# ----------------------------------------------------------------------
+
+@ability: fbi_analyse_cmd
+@pin: Analyse Clue
+@desc: Runs Sherlock Holmes forensic analysis on the image/video or drawn outline.
+@match: analyse | analyze | sherlock scan | detect secrets | حلل | تحليل
+@code:
+return await APP.forensics?.analyse?.('auto', typeof command === 'string' && command !== 'analyse' ? command : '');
+@end
+
+@ability: fbi_unblur_cmd
+@pin: Enhance Blur
+@desc: Sharpens and unblurs the drawn outline or image.
+@match: enhance & blur | enhance the blur | unblur | deblur | sharpen | ازل الضباب | وضح الصورة
+@code:
+return await APP.forensics?.enhanceBlur?.(typeof command === 'string' ? command : '');
+@end
+
+@ability: fbi_track_cmd
+@pin: Track Suspect
+@desc: Activates real-time MediaPipe tracking in video or frame.
+@match: track & person | track & suspect | find & person | track & find | تتبع & الشخص
+@code:
+return await APP.forensics?.trackPerson?.(String(command || '').replace(/.*?(track|find)\s*(that|the|a)?\s*(person|suspect|guy|it)?\s*/i, '').trim());
+@end
+
+@ability: fbi_fingerprint_cmd
+@pin: Fingerprint
+@desc: Extracts Galton ridge minutiae and matches the fingerprint pattern.
+@match: match & fingerprint | fingerprint | scan print | بصمة | مطابقة البصمة
+@code:
+return await APP.forensics?.matchFingerprint?.();
+@end
+
+@ability: fbi_face_reveal_cmd
+@pin: Face Reveal
+@desc: Calls free APP.ai.editImage to remove mustache/glasses + Face-API 128-D recognition.
+@match: without mustache | without glasses | remove mustache | remove glasses | face reveal | بدون شارب | بدون نظارات
+@code:
+return await APP.forensics?.removeDisguise?.(typeof command === 'string' ? command : '');
+@end
