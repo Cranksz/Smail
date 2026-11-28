@@ -1,0 +1,542 @@
+# ======================================================================
+# instruction6.txt — Separated Batch Training Studio (Images, .GLB
+#   3D Models, Prompts, 128-D Face Enrollment, Auto-Critic & GitHub Sync)
+# ======================================================================
+
+@ability: ai_training_studio
+@autorun
+@pin: Train Studio
+@desc: Separated training studio to train the system on batches of images, .glb 3D models, and prompts, evaluate performance, and commit learned rules directly to training_memory.txt / detection.txt on GitHub.
+@match: train studio | open trainer | batch train | train model | train images | train 3d | استوديو التدريب | تدريب الصور | تدريب المجسمات
+@code:
+(async function () {
+  const APP = window.APP || (window.APP = {});
+  const THREE = APP.THREE;
+  if (!THREE || !APP.scene) return;
+
+  if (typeof APP._inst6Cleanup === 'function') {
+    try { APP._inst6Cleanup(); } catch (_) {}
+  }
+
+  const TARGET_FILE = 'training_memory.txt';
+  const LS_KEY = 'APP_CACHE_' + TARGET_FILE;
+  const LS_FACE_DB = 'nxr_fbi_facedb_v3';
+
+  const DEFAULT_TRAINING_TXT = [
+    '# ======================================================================',
+    '# training_memory.txt — NexusXR Persistent Trained Knowledge Base',
+    '# ======================================================================',
+    '',
+    '[IMAGE_AND_FORENSIC_LESSONS]',
+    '',
+    '[3D_MODEL_BLUEPRINTS]',
+    '',
+    '[MODELING_FIXES]',
+    '',
+    '[PROMPT_RULES]',
+    '',
+    '[MODEL_ROUTING_NOTES]',
+    '',
+    '@ability: training_kb_sync',
+    '@desc: Hot-reloads training_memory.txt into APP.ai.memory in Sandbox.',
+    '@code:',
+    'if (APP.trainer?.syncMemoryFromText) {',
+    '  APP.trainer.syncMemoryFromText(APP.modules?.["training_memory.txt"] || "");',
+    '}',
+    '@end'
+  ].join('\n');
+
+  let trainedText = DEFAULT_TRAINING_TXT;
+  let stopBatchFlag = false;
+  let queuedImages = []; // [{ name, file, url }]
+  let queuedGLBs = [];   // [{ name, file, url }]
+
+  // ====================================================================
+  // 1. PARSE, LOAD & APPLY TRAINED RULES INTO APP.ai.memory
+  // ====================================================================
+  function syncMemoryFromText(rawTxt) {
+    const txt = String(rawTxt || '').trim();
+    if (!txt) return;
+    trainedText = txt;
+    if (APP.modules) APP.modules[TARGET_FILE] = txt;
+    try { localStorage.setItem(LS_KEY, txt); } catch (_) {}
+
+    if (!APP.ai?.memory?.learn) return;
+    const sectionToTask = {
+      IMAGE_AND_FORENSIC_LESSONS: 'forensic_analysis',
+      '3D_MODEL_BLUEPRINTS': '3d_build',
+      MODELING_FIXES: '3d_build',
+      PROMPT_RULES: 'general',
+      MODEL_ROUTING_NOTES: 'general'
+    };
+    let curSec = 'PROMPT_RULES';
+    for (const line of txt.split('\n')) {
+      const tr = line.trim();
+      if (!tr || tr.startsWith('#') || tr.startsWith('@')) continue;
+      const m = tr.match(/^\[([A-Z0-9_]+)\]$/);
+      if (m) { curSec = m[1]; continue; }
+      if (tr.startsWith('- ') && tr.length > 6) {
+        APP.ai.memory.learn({
+          type: curSec === 'MODELING_FIXES' ? 'error_fix' : 'training',
+          taskType: sectionToTask[curSec] || 'general',
+          rule: tr.slice(2).trim(),
+          source: 'github_training_memory'
+        });
+      }
+    }
+  }
+
+  async function loadTrainingMemory() {
+    let txt = null;
+    if (typeof APP.fetchModuleText === 'function') {
+      try { txt = await APP.fetchModuleText(TARGET_FILE); } catch (_) {}
+    }
+    if (!txt) {
+      try {
+        const res = await fetch(`./${TARGET_FILE}?t=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) txt = await res.text();
+      } catch (_) {}
+    }
+    if (!txt) {
+      try { txt = localStorage.getItem(LS_KEY); } catch (_) {}
+    }
+    syncMemoryFromText((txt && txt.trim()) ? txt : DEFAULT_TRAINING_TXT);
+  }
+
+  function appendRuleToSection(sectionHeader, bulletText) {
+    const clean = '- ' + String(bulletText || '').replace(/^\s*-\s*/, '').replace(/\r?\n/g, ' ').trim();
+    if (clean.length < 6) return false;
+    const lines = trainedText.split('\n');
+    const norm = clean.toLowerCase();
+    if (lines.some((l) => l.trim().toLowerCase() === norm)) return false;
+
+    const secIdx = lines.findIndex((l) => l.trim().toUpperCase() === sectionHeader.toUpperCase());
+    if (secIdx === -1) {
+      const abilityIdx = lines.findIndex((l) => l.trim().startsWith('@ability:'));
+      const insertPos = abilityIdx !== -1 ? abilityIdx : lines.length;
+      lines.splice(insertPos, 0, '', sectionHeader, clean, '');
+    } else {
+      let insertAt = lines.length;
+      for (let i = secIdx + 1; i < lines.length; i++) {
+        const t = lines[i].trim();
+        if (/^\[[A-Z0-9_]+\]$/.test(t) || t.startsWith('@ability:')) {
+          insertAt = i;
+          while (insertAt > secIdx + 1 && lines[insertAt - 1].trim() === '') insertAt--;
+          break;
+        }
+      }
+      lines.splice(insertAt, 0, clean);
+    }
+    syncMemoryFromText(lines.join('\n'));
+    return true;
+  }
+
+  // Backward-compatible bridge for anything checking APP.learning
+  APP.learning = {
+    read: () => trainedText,
+    record: (cat, txt) => {
+      const map = { RECOGNITION: '[IMAGE_AND_FORENSIC_LESSONS]', MISTAKE: '[MODELING_FIXES]', FIX: '[MODELING_FIXES]', VOCAB: '[PROMPT_RULES]', COMMAND: '[PROMPT_RULES]' };
+      return appendRuleToSection(map[String(cat || '').toUpperCase()] || '[PROMPT_RULES]', txt);
+    },
+    getRelevantContext: () => APP.ai?.memory?.getPromptContext?.() || '',
+    commitToGitHub: () => commitFileToGitHub(TARGET_FILE, trainedText)
+  };
+
+  // ====================================================================
+  // 2. GITHUB COMMIT ENGINE (Uses APP.repo or UI inputs)
+  // ====================================================================
+  function encodeB64(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  async function commitFileToGitHub(filename, content, commitMsg) {
+    const cfg = APP.repo || {};
+    if (!cfg.owner || !cfg.name || !cfg.pat) {
+      return { ok: false, error: 'Enter GitHub Owner, Repo Name, and PAT first.' };
+    }
+    const branch = cfg.branch || 'main';
+    const headers = {
+      'Accept': 'application/vnd.github+json',
+      'Authorization': 'Bearer ' + cfg.pat,
+      'Content-Type': 'application/json'
+    };
+    const api = async (path, init) => {
+      const res = await fetch(`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.name)}${path}`, Object.assign({}, init || {}, { headers }));
+      const txt = await res.text();
+      if (!res.ok) throw new Error(`GitHub ${res.status}: ${txt.slice(0, 140)}`);
+      return JSON.parse(txt || '{}');
+    };
+    try {
+      const refData = await api(`/git/refs/heads/${encodeURIComponent(branch)}`);
+      const headSha = refData.object.sha;
+      const headCommit = await api(`/git/commits/${headSha}`);
+      const blob = await api('/git/blobs', { method: 'POST', body: JSON.stringify({ content: encodeB64(content), encoding: 'base64' }) });
+      const tree = await api('/git/trees', { method: 'POST', body: JSON.stringify({ base_tree: headCommit.tree.sha, tree: [{ path: filename, mode: '100644', type: 'blob', sha: blob.sha }] }) });
+      const commit = await api('/git/commits', { method: 'POST', body: JSON.stringify({ message: commitMsg || `Train & update ${filename} via Train Studio`, tree: tree.sha, parents: [headSha] }) });
+      await api(`/git/refs/heads/${encodeURIComponent(branch)}`, { method: 'PATCH', body: JSON.stringify({ sha: commit.sha, force: false }) });
+      return { ok: true, sha: commit.sha };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // ====================================================================
+  // 3. REAL BATCH IMAGE TRAINER (Vision Rule Distillation & 128-D Faces)
+  // ====================================================================
+  async function imageToResizedBase64(url, maxDim = 640) {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    await new Promise((ok, bad) => { img.onload = ok; img.onerror = bad; img.src = url; });
+    const sc = Math.min(1, maxDim / Math.max(img.width, img.height));
+    const w = Math.max(32, Math.round(img.width * sc)), h = Math.max(32, Math.round(img.height * sc));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    return { img, canvas: c, b64: c.toDataURL('image/jpeg', 0.86).split(',')[1] };
+  }
+
+  async function trainBatchImages(mode, sharedLabel, logFn, progressFn) {
+    const list = queuedImages.length
+      ? queuedImages
+      : Array.from(APP.importedImages?.values?.() || []).map((r) => ({ name: r.name, url: r.url }));
+    if (!list.length) { logFn('No images queued! Import images first.'); return; }
+
+    stopBatchFlag = false;
+    let faceapi = null;
+    let watchlist = [];
+    if (mode === 'faces') {
+      logFn('Loading 128-D Face Recognition neural net...');
+      faceapi = await import('https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.esm.js');
+      const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
+      await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+      try { watchlist = JSON.parse(localStorage.getItem(LS_FACE_DB) || '[]'); } catch (_) { watchlist = []; }
+    }
+
+    for (let i = 0; i < list.length; i++) {
+      if (stopBatchFlag) { logFn('Stopped by user.'); break; }
+      const item = list[i];
+      progressFn(i + 1, list.length, item.name);
+      try {
+        const { canvas, b64 } = await imageToResizedBase64(item.url, 640);
+        const inferredLabel = sharedLabel || item.name.replace(/\.[^.]+$/, '').replace(/[_-]?\d+$/, '').trim();
+
+        if (mode === 'faces' && faceapi) {
+          const det = await faceapi
+            .detectSingleFace(canvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.35 }))
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+          if (det?.descriptor) {
+            const b = det.detection.box;
+            const tc = document.createElement('canvas'); tc.width = 96; tc.height = 96;
+            tc.getContext('2d').drawImage(canvas, Math.max(0, b.x), Math.max(0, b.y), b.width, b.height, 0, 0, 96, 96);
+            watchlist.unshift({
+              id: 'TRN-' + (watchlist.length + 1),
+              name: inferredLabel,
+              descriptor: Array.from(det.descriptor),
+              age: 30, gender: 'trained',
+              thumbDataUrl: tc.toDataURL('image/jpeg', 0.8)
+            });
+            localStorage.setItem(LS_FACE_DB, JSON.stringify(watchlist.slice(0, 32)));
+            appendRuleToSection('[IMAGE_AND_FORENSIC_LESSONS]', `Face enrolled for "${inferredLabel}" from "${item.name}".`);
+            logFn(`✓ Enrolled 128-D Face "${inferredLabel}" from ${item.name}`);
+          } else {
+            logFn(`✗ No face found in ${item.name}`);
+          }
+        } else {
+          if (!APP.ai?.chat) { logFn('APP.ai unavailable.'); break; }
+          const res = await APP.ai.chat({
+            systemPrompt: 'You are a Forensic & Visual Training Extractor. Given an image and its ground-truth label/category, extract ONE concise, concrete, reusable visual detection rule (max 25 words) that helps recognize or analyze similar images accurately in the future.',
+            prompt: `Image filename: ${item.name}\nGround-truth label / focus: ${inferredLabel}\nReturn ONLY the single concise visual rule starting with a verb.`,
+            imageB64: b64,
+            imageMime: 'image/jpeg'
+          });
+          if (res?.ok && res.text) {
+            const rule = `[${inferredLabel}] ${res.text.replace(/^[-•\s]+/, '').trim()}`;
+            appendRuleToSection('[IMAGE_AND_FORENSIC_LESSONS]', rule);
+            logFn(`✓ Learned from ${item.name}: ${rule}`);
+          } else {
+            logFn(`✗ Vision error on ${item.name}: ${res?.error || 'failed'}`);
+          }
+        }
+      } catch (e) {
+        logFn(`✗ Error on ${item.name}: ${e.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    logFn('Batch Image Training finished.');
+  }
+
+  // ====================================================================
+  // 4. REAL BATCH 3D MODEL (.GLB & PROMPT) TRAINER + AUTO-CRITIC
+  // ====================================================================
+  async function trainBatchGLBModels(logFn, progressFn) {
+    const list = queuedGLBs.length
+      ? queuedGLBs
+      : Array.from(APP.importedGLBs?.values?.() || []).map((r) => ({ name: r.name, url: r.url }));
+    if (!list.length) { logFn('No .glb models queued! Import .glb files first.'); return; }
+    if (!APP.gltfLoader) { logFn('GLTFLoader missing.'); return; }
+
+    stopBatchFlag = false;
+    for (let i = 0; i < list.length; i++) {
+      if (stopBatchFlag) { logFn('Stopped.'); break; }
+      const item = list[i];
+      progressFn(i + 1, list.length, item.name);
+      try {
+        const gltf = await new Promise((resolve, reject) => APP.gltfLoader.load(item.url, resolve, undefined, reject));
+        const root = gltf.scene;
+        root.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(root);
+        const size = new THREE.Vector3(); box.getSize(size);
+        let meshCount = 0;
+        const partNames = [];
+        const mats = new Set();
+        root.traverse((c) => {
+          if (c.isMesh) {
+            meshCount++;
+            if (c.name && partNames.length < 10) partNames.push(c.name);
+            const m = Array.isArray(c.material) ? c.material[0] : c.material;
+            if (m) mats.add(`rough=${(m.roughness ?? 0.5).toFixed(2)},metal=${(m.metalness ?? 0).toFixed(2)}`);
+          }
+        });
+        APP.disposeObject3D?.(root);
+
+        const maxD = Math.max(size.x, size.y, size.z) || 1;
+        const ratio = `${(size.x / maxD).toFixed(2)}:${(size.y / maxD).toFixed(2)}:${(size.z / maxD).toFixed(2)}`;
+        const cleanName = item.name.replace(/\.[^.]+$/, '');
+        let rule = `3D Blueprint "${cleanName}": W:H:D=${ratio}, ${meshCount} sub-meshes, parts=[${partNames.join(', ') || 'multi-part'}], materials=[${Array.from(mats).slice(0, 3).join('; ')}].`;
+
+        if (APP.ai?.chat) {
+          const refine = await APP.ai.chat({
+            systemPrompt: 'Summarize this 3D GLB geometry breakdown into a compact Three.js procedural construction rule (max 30 words).',
+            prompt: rule
+          });
+          if (refine?.ok && refine.text) rule = `${cleanName}: ${refine.text.trim()}`;
+        }
+        appendRuleToSection('[3D_MODEL_BLUEPRINTS]', rule);
+        logFn(`✓ Extracted 3D Blueprint from ${item.name}`);
+      } catch (e) {
+        logFn(`✗ Failed ${item.name}: ${e.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    logFn('3D .GLB Blueprint Training finished.');
+  }
+
+  async function trainBatchPrompts(promptsText, logFn, progressFn) {
+    const prompts = String(promptsText || '').split('\n').map((s) => s.trim()).filter(Boolean);
+    if (!prompts.length) { logFn('Enter at least 1 prompt (one per line).'); return; }
+    if (!APP.ai?.chat) { logFn('APP.ai unavailable.'); return; }
+
+    stopBatchFlag = false;
+    for (let i = 0; i < prompts.length; i++) {
+      if (stopBatchFlag) { logFn('Stopped.'); break; }
+      const p = prompts[i];
+      progressFn(i + 1, prompts.length, p);
+      try {
+        const is3D = /build|create|make|draw|spawn|car|sword|robot|dragon|house|tree|3d/i.test(p);
+        if (is3D && APP.bot?.handleCommand) {
+          const res = await APP.bot.handleCommand(p, { ignoreInstructions: false });
+          if (res?.ok) {
+            await new Promise((r) => setTimeout(r, 600));
+            const snapB64 = APP.captureVisionFrame?.() || APP.latestVisionB64;
+            if (snapB64) {
+              const critic = await APP.ai.chat({
+                systemPrompt: 'You are a 3D Quality Auto-Critic. Inspect the rendered 3D scene for the user prompt. Reply in JSON: {"score": 1-10, "lesson": "one short Three.js improvement rule"}.',
+                prompt: `Prompt tested: "${p}". Grade realism, proportions, and detail.`,
+                imageB64: snapB64, imageMime: 'image/jpeg'
+              });
+              try {
+                const m = String(critic?.text || '').match(/\{[\s\S]*\}/);
+                if (m) {
+                  const j = JSON.parse(m[0]);
+                  if (j.lesson) appendRuleToSection(j.score >= 7 ? '[3D_MODEL_BLUEPRINTS]' : '[MODELING_FIXES]', `[Score ${j.score}/10 for "${p.slice(0, 28)}"] ${j.lesson}`);
+                  logFn(`✓ "${p}" -> Critic ${j.score}/10 | ${j.lesson || ''}`);
+                  continue;
+                }
+              } catch (_) {}
+            }
+            logFn(`✓ Completed "${p}"`);
+          } else {
+            appendRuleToSection('[MODELING_FIXES]', `Avoid failure on "${p.slice(0, 32)}": ${res?.error || 'unknown'}`);
+            logFn(`✗ "${p}" failed -> saved error fix.`);
+          }
+        } else {
+          const res = await APP.ai.chat({ prompt: p });
+          if (res?.ok) {
+            appendRuleToSection('[PROMPT_RULES]', `Verified prompt "${p.slice(0, 40)}" succeeded cleanly via ${res.modelId}.`);
+            logFn(`✓ "${p}" (${res.modelId}): ${(res.text || '').slice(0, 90)}`);
+          } else {
+            logFn(`✗ "${p}" error: ${res?.error}`);
+          }
+        }
+      } catch (e) {
+        logFn(`✗ Error on "${p}": ${e.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    logFn('Batch Prompt Training finished.');
+  }
+
+  // ====================================================================
+  // 5. TRAINING STUDIO MODAL UI
+  // ====================================================================
+  function openTrainingStudio() {
+    const old = document.getElementById('nxr-train-modal');
+    if (old) old.remove();
+
+    const wrap = document.createElement('div');
+    wrap.id = 'nxr-train-modal';
+    wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.78);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:12px;';
+    ['pointerdown', 'mousedown', 'touchstart'].forEach((ev) => wrap.addEventListener(ev, (e) => e.stopPropagation()));
+
+    wrap.innerHTML = `
+      <div class="glass" style="width:min(96vw,860px);max-height:90vh;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;background:rgba(8,14,24,0.96);border:1px solid rgba(0,240,180,0.4);border-radius:14px;color:#e2e8f0;font-family:system-ui,sans-serif;font-size:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.12);padding-bottom:8px;">
+          <div>
+            <strong style="color:#00f0b4;font-size:16px;">NexusXR Training Studio</strong>
+            <span style="font-size:11px;color:#94a3b8;margin-left:8px;">Batch Images · .GLB Models · Prompts → GitHub <code>training_memory.txt</code></span>
+          </div>
+          <button type="button" id="trn-close" class="btn">Close</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;">
+          <!-- Panel 1: Image Batch Training -->
+          <div style="background:rgba(255,255,255,0.04);padding:10px;border-radius:10px;border:1px solid rgba(56,189,248,0.22);">
+            <strong style="color:#38bdf8;">1. Train on Batch Images</strong>
+            <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <label class="btn active" style="cursor:pointer;">+ Select Images<input id="trn-inp-imgs" type="file" multiple accept="image/*" style="display:none;"></label>
+              <span id="trn-cnt-imgs" style="font-size:11px;color:#94a3b8;">0 queued (or uses Assets)</span>
+            </div>
+            <select id="trn-img-mode" style="width:100%;margin-top:6px;">
+              <option value="vision">Vision &amp; Forensic Rule Distillation (AI)</option>
+              <option value="faces">128-D Face Watchlist Enrollment (Real Biometrics)</option>
+            </select>
+            <input id="trn-img-lbl" placeholder="Label / Concept (optional, else uses filename)" style="width:100%;margin-top:6px;">
+            <button type="button" id="trn-run-imgs" class="btn active" style="width:100%;margin-top:6px;">Run Image Training</button>
+          </div>
+
+          <!-- Panel 2: 3D .GLB Model Training -->
+          <div style="background:rgba(255,255,255,0.04);padding:10px;border-radius:10px;border:1px solid rgba(0,240,180,0.22);">
+            <strong style="color:#00f0b4;">2. Train on .GLB 3D Models</strong>
+            <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <label class="btn active" style="cursor:pointer;">+ Select .GLB Files<input id="trn-inp-glbs" type="file" multiple accept=".glb,.gltf" style="display:none;"></label>
+              <span id="trn-cnt-glbs" style="font-size:11px;color:#94a3b8;">0 queued (or uses Assets)</span>
+            </div>
+            <p style="font-size:11px;color:#94a3b8;margin:6px 0;">Extracts real W:H:D ratios, sub-parts, and PBR materials into reusable 3D Blueprints.</p>
+            <button type="button" id="trn-run-glbs" class="btn active" style="width:100%;margin-top:6px;">Extract 3D Blueprints</button>
+          </div>
+
+          <!-- Panel 3: Batch Prompt & Auto-Critic Training -->
+          <div style="background:rgba(255,255,255,0.04);padding:10px;border-radius:10px;border:1px solid rgba(244,114,182,0.24);">
+            <strong style="color:#f472b6;">3. Train Prompts + 3D Auto-Critic</strong>
+            <textarea id="trn-prompts-ta" rows="4" placeholder="Enter prompts (1 per line)&#10;e.g. build a realistic sports car&#10;build a medieval lantern" style="width:100%;margin-top:6px;font-size:11px;"></textarea>
+            <button type="button" id="trn-run-prompts" class="btn active" style="width:100%;margin-top:6px;">Run Prompt Benchmark</button>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <span id="trn-progress" style="color:#fbbf24;font-weight:600;">Idle.</span>
+          <button type="button" id="trn-stop" class="btn danger">Stop Batch</button>
+        </div>
+
+        <div id="trn-log" style="background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:8px;max-height:110px;overflow-y:auto;font-family:monospace;font-size:11px;color:#7ef7d4;">Training logs will appear here.</div>
+
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <strong style="color:#00f0b4;">GitHub Trained Knowledge (<code>training_memory.txt</code>)</strong>
+            <div style="display:flex;gap:6px;">
+              <button type="button" id="trn-save-local" class="btn">Apply to Sandbox</button>
+              <button type="button" id="trn-commit-gh" class="btn active">Commit to GitHub Repo</button>
+            </div>
+          </div>
+          <textarea id="trn-mem-ta" spellcheck="false" style="width:100%;min-height:175px;margin-top:6px;font-family:ui-monospace,monospace;font-size:11.5px;"></textarea>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
+          <input id="trn-gh-owner" placeholder="GitHub Owner" value="${APP.repo?.owner || ''}">
+          <input id="trn-gh-repo" placeholder="Repo Name" value="${APP.repo?.name || ''}">
+          <input id="trn-gh-branch" placeholder="Branch" value="${APP.repo?.branch || 'main'}">
+          <input id="trn-gh-pat" type="password" placeholder="GitHub PAT (repo)" value="${APP.repo?.pat || ''}">
+        </div>
+      </div>
+    `;
+    document.body.appendChild(wrap);
+
+    const logEl = wrap.querySelector('#trn-log');
+    const progEl = wrap.querySelector('#trn-progress');
+    const memTa = wrap.querySelector('#trn-mem-ta');
+    memTa.value = trainedText;
+
+    const addLog = (m) => {
+      const line = document.createElement('div');
+      line.textContent = m;
+      logEl.prepend(line);
+      memTa.value = trainedText;
+    };
+    const setProg = (cur, tot, name) => {
+      progEl.textContent = `Training ${cur} / ${tot}: ${name}`;
+    };
+
+    wrap.querySelector('#trn-close').onclick = () => wrap.remove();
+    wrap.querySelector('#trn-stop').onclick = () => { stopBatchFlag = true; progEl.textContent = 'Stopping...'; };
+
+    wrap.querySelector('#trn-inp-imgs').onchange = (e) => {
+      queuedImages = Array.from(e.target.files || []).map((f) => ({ name: f.name, file: f, url: URL.createObjectURL(f) }));
+      wrap.querySelector('#trn-cnt-imgs').textContent = `${queuedImages.length} image(s) queued`;
+    };
+    wrap.querySelector('#trn-inp-glbs').onchange = (e) => {
+      queuedGLBs = Array.from(e.target.files || []).map((f) => ({ name: f.name, file: f, url: URL.createObjectURL(f) }));
+      wrap.querySelector('#trn-cnt-glbs').textContent = `${queuedGLBs.length} .glb(s) queued`;
+    };
+
+    wrap.querySelector('#trn-run-imgs').onclick = () => trainBatchImages(wrap.querySelector('#trn-img-mode').value, wrap.querySelector('#trn-img-lbl').value.trim(), addLog, setProg);
+    wrap.querySelector('#trn-run-glbs').onclick = () => trainBatchGLBModels(addLog, setProg);
+    wrap.querySelector('#trn-run-prompts').onclick = () => trainBatchPrompts(wrap.querySelector('#trn-prompts-ta').value, addLog, setProg);
+
+    wrap.querySelector('#trn-save-local').onclick = () => {
+      syncMemoryFromText(memTa.value);
+      APP.ui?.toast?.('Applied training_memory.txt live in Sandbox!', 2200);
+    };
+    wrap.querySelector('#trn-commit-gh').onclick = async () => {
+      APP.repo.owner = wrap.querySelector('#trn-gh-owner').value.trim();
+      APP.repo.name = wrap.querySelector('#trn-gh-repo').value.trim();
+      APP.repo.branch = wrap.querySelector('#trn-gh-branch').value.trim() || 'main';
+      APP.repo.pat = wrap.querySelector('#trn-gh-pat').value.trim();
+      try { localStorage.setItem('GH_OWNER', APP.repo.owner); localStorage.setItem('GH_REPO', APP.repo.name); localStorage.setItem('GH_BRANCH', APP.repo.branch); localStorage.setItem('GH_PAT', APP.repo.pat); } catch (_) {}
+
+      syncMemoryFromText(memTa.value);
+      progEl.textContent = 'Committing training_memory.txt to GitHub...';
+      const r = await commitFileToGitHub(TARGET_FILE, trainedText, 'Update trained AI knowledge (training_memory.txt)');
+      progEl.textContent = r.ok ? `Committed to GitHub (${r.sha.slice(0, 7)})!` : `Error: ${r.error}`;
+      if (r.ok) APP.ui?.toast?.('Trained Brain committed to GitHub!', 2800);
+    };
+  }
+
+  await loadTrainingMemory();
+
+  APP.trainer = {
+    open: openTrainingStudio,
+    syncMemoryFromText,
+    appendRule: appendRuleToSection,
+    commitToGitHub: () => commitFileToGitHub(TARGET_FILE, trainedText),
+    reload: loadTrainingMemory
+  };
+
+  APP.on?.('modules:loaded', () => syncMemoryFromText(trainedText));
+
+  APP._inst6Cleanup = () => {
+    stopBatchFlag = true;
+    const m = document.getElementById('nxr-train-modal');
+    if (m) m.remove();
+  };
+
+  APP.registerAbilityHandler?.('ai_training_studio', async function () {
+    openTrainingStudio();
+    return { ok: true, message: 'Opened Training Studio.' };
+  });
+})();
+@end

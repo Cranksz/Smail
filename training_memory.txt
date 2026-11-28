@@ -1,0 +1,28 @@
+# ======================================================================
+# training_memory.txt — NexusXR Persistent Trained Knowledge Base
+#   Automatically loaded on startup into APP.ai.memory & Geeny Brain.
+#   Updated & committed directly by instruction6.txt (Train Studio).
+# ======================================================================
+
+[IMAGE_AND_FORENSIC_LESSONS]
+- Verify specular highlights, shadows, and multiple converging indicators before concluding a scene anomaly.
+
+[3D_MODEL_BLUEPRINTS]
+- Always construct multi-part 3D assemblies (chassis, trim, bevels, metallic/roughness contrast, emissive accents) centered at X/Z=0 and resting at Y=0.
+
+[MODELING_FIXES]
+- Never return 1-box placeholder geometry; use APP.craft.bevelBox, LatheGeometry, TubeGeometry, and procedural CanvasTexture maps.
+
+[PROMPT_RULES]
+- Keep voice responses concise and physically grounded in APP.bot spatial awareness.
+
+[MODEL_ROUTING_NOTES]
+- Use gemini-4-hydrogen / gemini-3.8-flash for fast 3D & multimodal tasks, and Qwen ZeroGPU for photo edits.
+
+@ability: training_kb_sync
+@desc: Hot-reloads training_memory.txt into APP.ai.memory in Sandbox.
+@code:
+if (APP.trainer?.syncMemoryFromText) {
+  APP.trainer.syncMemoryFromText(APP.modules?.['training_memory.txt'] || '');
+}
+@end
